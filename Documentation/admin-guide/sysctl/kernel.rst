@@ -1672,6 +1672,16 @@ entry will default to 2 instead of 0.
 = =============================================================
 
 
+unprivileged_userns_clone
+=========================
+
+This value controls if unprivileged users could unshare a new user
+namespace. When the value is zero, unprivileged users are not allowed
+to unshare a new user namespace. Privileged users (with CAP_SYS_ADMIN)
+are not affected and are always capable of unsharing a new user
+namespace.
+
+
 warn_limit
 ==========
 
