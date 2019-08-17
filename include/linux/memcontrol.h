@@ -361,6 +361,7 @@ struct mem_cgroup {
 
 	unsigned int		wmark_ratio;
 	struct work_struct	wmark_work;
+	unsigned int		wmark_scale_factor;
 
 #ifdef CONFIG_MEMSLI
 	struct mem_cgroup_lat_stat_cpu __percpu *lat_stat_cpu;
@@ -1895,6 +1896,9 @@ void setup_memcg_wmark(struct mem_cgroup *memcg);
 int memory_wmark_ratio_show(struct seq_file *m, void *v);
 ssize_t memory_wmark_ratio_write(struct kernfs_open_file *of,
 				 char *buf, size_t nbytes, loff_t off);
+int memory_wmark_scale_factor_show(struct seq_file *m, void *v);
+ssize_t memory_wmark_scale_factor_write(struct kernfs_open_file *of,
+					char *buf, size_t nbytes, loff_t off);
 #else
 static inline bool mem_cgroup_kmem_disabled(void)
 {
@@ -1988,6 +1992,18 @@ static inline int memory_wmark_ratio_show(struct seq_file *m, void *v)
 static inline ssize_t memory_wmark_ratio_write(struct kernfs_open_file *of,
 					       char *buf, size_t nbytes,
 					       loff_t off)
+{
+	return 0;
+}
+
+static inline int memory_wmark_scale_factor_show(struct seq_file *m, void *v)
+{
+	return 0;
+}
+
+static inline ssize_t memory_wmark_scale_factor_write(struct kernfs_open_file *of,
+						      char *buf,
+						      size_t nbytes, loff_t off)
 {
 	return 0;
 }
