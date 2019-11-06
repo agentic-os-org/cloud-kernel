@@ -388,6 +388,9 @@ static int cpuacct_proc_stats_show(struct seq_file *sf, void *v)
 		struct cpuacct_usage_result res;
 
 		for_each_possible_cpu(cpu) {
+			if (!housekeeping_cpu(cpu, HK_TYPE_DOMAIN))
+				continue;
+
 			rcu_read_lock();
 			__cpuacct_get_usage_result(ca, cpu,
 					cgroup_tg(cgrp), &res);
