@@ -1643,7 +1643,7 @@ static void __mcheck_cpu_mce_banks_init(void)
 		 * __mcheck_cpu_init_clear_banks() does the final bank setup.
 		 */
 		b->ctl = -1ULL;
-		b->init = 1;
+		b->init = true;
 	}
 }
 
@@ -1826,7 +1826,7 @@ static int __mcheck_cpu_apply_quirks(struct cpuinfo_x86 *c)
 		 */
 
 		if (c->x86 == 6 && c->x86_model < 0x1A && this_cpu_read(mce_num_banks) > 0)
-			mce_banks[0].init = 0;
+			mce_banks[0].init = false;
 
 		/*
 		 * All newer Intel systems support MCE broadcasting. Enable
