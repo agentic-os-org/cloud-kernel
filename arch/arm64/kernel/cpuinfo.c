@@ -220,13 +220,20 @@ static int c_show(struct seq_file *m, void *v)
 	bool compat = personality(current->personality) == PER_LINUX32;
 	struct cpuinfo_arm64 *cpuinfo = v;
 	u32 midr = cpuinfo->reg_midr;
+	unsigned int index, total;
+	bool rich_container = false;
+
+	index = cpu;
+
+	if (check_rich_container(cpu, &index, &rich_container, &total))
+		return 0;
 
 	/*
 	 * glibc reads /proc/cpuinfo to determine the number of
 	 * online processors, looking for lines beginning with
 	 * "processor".  Give glibc what it expects.
 	 */
-	seq_printf(m, "processor\t: %d\n", cpu);
+	seq_printf(m, "processor\t: %d\n", index);
 	if (compat)
 		seq_printf(m, "model name\t: ARMv8 Processor rev %d (%s)\n",
 			   MIDR_REVISION(midr), COMPAT_ELF_PLATFORM);
