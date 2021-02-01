@@ -2302,6 +2302,7 @@ static int memcg_hotplug_cpu_dead(unsigned int cpu)
 static void reclaim_wmark(struct mem_cgroup *memcg)
 {
 	long nr_pages;
+	unsigned long pflags;
 
 	if (is_wmark_ok(memcg, false))
 		return;
@@ -2313,10 +2314,12 @@ static void reclaim_wmark(struct mem_cgroup *memcg)
 
 	nr_pages = max_t(unsigned long, SWAP_CLUSTER_MAX, nr_pages);
 
+	psi_memstall_enter(&pflags);
 	try_to_free_mem_cgroup_pages(memcg, nr_pages,
 				     GFP_KERNEL,
 				     MEMCG_RECLAIM_MAY_SWAP,
 				     NULL);
+	psi_memstall_leave(&pflags);
 }
 
 static void wmark_work_func(struct work_struct *work)
