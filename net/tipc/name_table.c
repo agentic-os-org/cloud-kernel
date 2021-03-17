@@ -219,9 +219,12 @@ static int hash(int x)
 
 /**
  * tipc_publ_create - create a publication structure
+ * @ua: the service range the user is binding to
+ * @sk: the address of the socket that is bound
+ * @key: publication key
  */
-static struct publication *tipc_publ_create(u32 type, u32 lower, u32 upper,
-					    u32 scope, u32 node, u32 port,
+static struct publication *tipc_publ_create(struct tipc_uaddr *ua,
+					    struct tipc_socket_addr *sk,
 					    u32 key)
 {
 	struct publication *p = kzalloc(sizeof(*p), GFP_ATOMIC);
@@ -229,12 +232,9 @@ static struct publication *tipc_publ_create(u32 type, u32 lower, u32 upper,
 	if (!p)
 		return NULL;
 
-	p->sr.type = type;
-	p->sr.lower = lower;
-	p->sr.upper = upper;
-	p->scope = scope;
-	p->sk.node = node;
-	p->sk.ref = port;
+	p->sr = ua->sr;
+	p->sk = *sk;
+	p->scope = ua->scope;
 	p->key = key;
 	INIT_LIST_HEAD(&p->binding_sock);
 	INIT_LIST_HEAD(&p->binding_node);
@@ -454,22 +454,23 @@ static struct tipc_service *tipc_service_find(struct net *net, u32 type)
 	return NULL;
 };
 
-struct publication *tipc_nametbl_insert_publ(struct net *net, u32 type,
-					     u32 lower, u32 upper,
-					     u32 scope, u32 node,
-					     u32 port, u32 key)
+struct publication *tipc_nametbl_insert_publ(struct net *net,
+					     struct tipc_uaddr *ua,
+					     struct tipc_socket_addr *sk,
+					     u32 key)
 {
 	struct name_table *nt = tipc_name_table(net);
 	struct tipc_service *sc;
 	struct publication *p;
+	u32 type = ua->sr.type;
 
-	p = tipc_publ_create(type, lower, upper, scope, node, port, key);
+	p = tipc_publ_create(ua, sk, key);
 	if (!p)
 		return NULL;
 
-	if (scope > TIPC_NODE_SCOPE || lower > upper) {
-		pr_debug("Failed to bind illegal {%u,%u,%u} with scope %u\n",
-			 type, lower, upper, scope);
+	if (ua->sr.lower > ua->sr.upper) {
+		pr_debug("Failed to bind illegal {%u,%u,%u} from node %u\n",
+			 type, ua->sr.lower, ua->sr.upper, sk->node);
 		return NULL;
 	}
 	sc = tipc_service_find(net, type);
@@ -729,6 +730,8 @@ struct publication *tipc_nametbl_publish(struct net *net, u32 type, u32 lower,
 	struct publication *p = NULL;
 	struct sk_buff *skb = NULL;
 	u32 rc_dests;
+	struct tipc_uaddr ua;
+	struct tipc_socket_addr sk;
 
 	spin_lock_bh(&tn->nametbl_lock);
 
@@ -737,8 +740,10 @@ struct publication *tipc_nametbl_publish(struct net *net, u32 type, u32 lower,
 		goto exit;
 	}
 
-	p = tipc_nametbl_insert_publ(net, type, lower, upper, scope,
-				     tipc_own_addr(net), port, key);
+	tipc_uaddr(&ua, TIPC_SERVICE_RANGE, scope, type, lower, upper);
+	sk.ref = port;
+	sk.node = tipc_own_addr(net);
+	p = tipc_nametbl_insert_publ(net, &ua, &sk, key);
 	if (p) {
 		nt->local_publ_count++;
 		skb = tipc_named_publish(net, p);
