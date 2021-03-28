@@ -365,6 +365,7 @@ extern const char *smca_get_long_name(enum smca_bank_types t);
 extern bool amd_mce_is_memory_error(struct mce *m);
 
 void mce_amd_feature_init(struct cpuinfo_x86 *c);
+enum smca_bank_types smca_get_bank_type(unsigned int bank);
 #else
 static inline bool amd_mce_is_memory_error(struct mce *m)		{ return false; };
 static inline void mce_amd_feature_init(struct cpuinfo_x86 *c)		{ }
