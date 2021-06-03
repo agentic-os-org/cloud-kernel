@@ -2461,6 +2461,11 @@ static inline int sched_core_idle_cpu(int cpu) { return idle_cpu(cpu); }
 
 extern void sched_set_stop_task(int cpu, struct task_struct *stop);
 
+struct cpuacct_usage_result {
+	u64 user, nice, system, irq, softirq;
+	u64 steal, iowait, idle, guest, guest_nice;
+};
+
 #ifdef CONFIG_MEM_ALLOC_PROFILING
 static __always_inline struct alloc_tag *alloc_tag_save(struct alloc_tag *tag)
 {
