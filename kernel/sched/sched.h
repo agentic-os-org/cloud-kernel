@@ -795,6 +795,8 @@ struct cfs_rq {
 # endif /* CONFIG_CFS_BANDWIDTH */
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
+	unsigned long		nr_uninterruptible;
+
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -895,6 +897,8 @@ struct rt_rq {
 #ifdef CONFIG_CGROUP_SCHED
 	struct task_group	*tg; /* this tg has "this" rt_rq on given CPU for runnable entities */
 #endif
+
+	unsigned long		nr_uninterruptible;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -1259,7 +1263,14 @@ struct rq {
 	struct task_struct	*stop;
 	const struct sched_class *next_class;
 	unsigned long		next_balance;
-	struct mm_struct	*prev_mm;
+
+	/*
+	 * Frequent writing to prev_mm and clock_update_flags on local
+	 * CPU causes cacheline containing idle to be invalidated on
+	 * other CPUs. Put prev_mm and sequential fields on a new
+	 * cacheline to fix it.
+	 */
+	struct mm_struct        *prev_mm ____cacheline_aligned;
 
 	/*
 	 * The following fields of clock data are frequently referenced
@@ -2746,6 +2757,8 @@ struct sched_class {
 	int (*task_is_throttled)(struct task_struct *p, int cpu);
 #endif
 
+	void (*update_nr_uninterruptible)(struct task_struct *p, long inc);
+
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -3048,10 +3061,18 @@ static inline void sub_nr_running(struct rq *rq, unsigned count)
 	sched_update_tick_dependency(rq);
 }
 
+static inline void update_nr_uninterruptible(struct task_struct *tsk, long inc)
+{
+	if (tsk->sched_class->update_nr_uninterruptible)
+		tsk->sched_class->update_nr_uninterruptible(tsk, inc);
+}
+
 static inline void __block_task(struct rq *rq, struct task_struct *p)
 {
-	if (p->sched_contributes_to_load)
+	if (p->sched_contributes_to_load) {
+		update_nr_uninterruptible(p, 1);
 		rq->nr_uninterruptible++;
+	}
 
 	if (p->in_iowait) {
 		atomic_inc(&rq->nr_iowait);
