@@ -140,6 +140,8 @@ void cgroup_file_show(struct cgroup_file *cfile, bool show);
 int cgroupstats_build(struct cgroupstats *stats, struct dentry *dentry);
 int proc_cgroup_show(struct seq_file *m, struct pid_namespace *ns,
 		     struct pid *pid, struct task_struct *tsk);
+extern struct cgroup_subsys_state *global_cgroup_css(struct cgroup *cgrp,
+							int ssid);
 
 void cgroup_fork(struct task_struct *p);
 extern int cgroup_can_fork(struct task_struct *p,

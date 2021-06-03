@@ -3709,8 +3709,10 @@ ttwu_do_activate(struct rq *rq, struct task_struct *p, int wake_flags,
 
 	lockdep_assert_rq_held(rq);
 
-	if (p->sched_contributes_to_load)
+	if (p->sched_contributes_to_load) {
+		update_nr_uninterruptible(p, -1);
 		rq->nr_uninterruptible--;
+	}
 
 	if (wake_flags & WF_RQ_SELECTED)
 		en_flags |= ENQUEUE_RQ_SELECTED;
@@ -9451,7 +9453,20 @@ void sched_move_task(struct task_struct *tsk, bool for_autogroup)
 	rq = rq_guard.rq;
 
 	scoped_guard (sched_change, tsk, queue_flags) {
+		/* decrease old group */
+		if ((!scope->queued && task_contributes_to_load(tsk)) ||
+		    (READ_ONCE(tsk->__state) == TASK_WAKING &&
+		    tsk->sched_contributes_to_load))
+			update_nr_uninterruptible(tsk, -1);
+
 		sched_change_group(tsk);
+
+		/* increase new group after change */
+		if ((!scope->queued && task_contributes_to_load(tsk)) ||
+		    (READ_ONCE(tsk->__state) == TASK_WAKING &&
+		    tsk->sched_contributes_to_load))
+			update_nr_uninterruptible(tsk, 1);
+
 		if (!for_autogroup)
 			scx_cgroup_move_task(tsk);
 		if (scope->running)

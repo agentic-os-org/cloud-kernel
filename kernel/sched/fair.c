@@ -14165,6 +14165,16 @@ static unsigned int get_rr_interval_fair(struct rq *rq, struct task_struct *task
 	return rr_interval;
 }
 
+#ifdef CONFIG_SCHED_SLI
+static void update_nr_uninterruptible_fair(struct task_struct *p, long inc)
+{
+	struct sched_entity *se = &p->se;
+
+	for_each_sched_entity(se)
+		cfs_rq_of(se)->nr_uninterruptible += inc;
+}
+#endif
+
 /*
  * All the scheduling class methods:
  */
@@ -14209,6 +14219,9 @@ DEFINE_SCHED_CLASS(fair) = {
 
 #ifdef CONFIG_SCHED_CORE
 	.task_is_throttled	= task_is_throttled_fair,
+#endif
+#ifdef CONFIG_SCHED_SLI
+	.update_nr_uninterruptible = update_nr_uninterruptible_fair,
 #endif
 
 #ifdef CONFIG_UCLAMP_TASK
