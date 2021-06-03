@@ -155,6 +155,10 @@ struct user_event_mm;
 #define task_is_traced(task)		((READ_ONCE(task->jobctl) & JOBCTL_TRACED) != 0)
 #define task_is_stopped(task)		((READ_ONCE(task->jobctl) & JOBCTL_STOPPED) != 0)
 #define task_is_stopped_or_traced(task)	((READ_ONCE(task->jobctl) & (JOBCTL_STOPPED | JOBCTL_TRACED)) != 0)
+#define task_contributes_to_load(task)					\
+		((READ_ONCE((task)->__state) & TASK_UNINTERRUPTIBLE) != 0 && \
+		(READ_ONCE((task)->__state) & TASK_FROZEN) == 0 && \
+		(READ_ONCE((task)->__state) & TASK_NOLOAD) == 0)
 
 /*
  * Special states are those that do not use the normal wait-loop pattern. See
