@@ -2744,6 +2744,7 @@ struct sched_class {
 #endif
 
 	void (*update_nr_uninterruptible)(struct task_struct *p, long inc);
+	void (*update_nr_iowait)(struct task_struct *p, long inc);
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -2755,6 +2756,12 @@ static inline void put_prev_task(struct rq *rq, struct task_struct *prev)
 {
 	WARN_ON_ONCE(rq->donor != prev);
 	prev->sched_class->put_prev_task(rq, prev, NULL);
+}
+
+static inline void update_nr_iowait(struct task_struct *p, long inc)
+{
+	if (p->sched_class->update_nr_iowait)
+		p->sched_class->update_nr_iowait(p, inc);
 }
 
 static inline void set_next_task(struct rq *rq, struct task_struct *next)
@@ -3062,6 +3069,7 @@ static inline void __block_task(struct rq *rq, struct task_struct *p)
 
 	if (p->in_iowait) {
 		atomic_inc(&rq->nr_iowait);
+		update_nr_iowait(p, 1);
 		delayacct_blkio_start();
 	}
 
