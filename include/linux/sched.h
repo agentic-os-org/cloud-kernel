@@ -2480,6 +2480,19 @@ struct cpuacct_usage_result {
 	u64 steal, iowait, idle, guest, guest_nice;
 };
 
+#ifdef CONFIG_RICH_CONTAINER
+bool child_cpuacct(struct task_struct *tsk);
+bool check_rich_container(unsigned int cpu, unsigned int *index,
+		bool *rich_container, unsigned int *total);
+
+#else
+static inline bool check_rich_container(unsigned int cpu, unsigned int *index,
+		bool *rich_container, unsigned int *total)
+{
+	return false;
+}
+#endif
+
 #ifdef CONFIG_MEM_ALLOC_PROFILING
 static __always_inline struct alloc_tag *alloc_tag_save(struct alloc_tag *tag)
 {
