@@ -902,4 +902,16 @@ struct cgroup *task_get_cgroup1(struct task_struct *tsk, int hierarchy_id);
 
 struct cgroup_of_peak *of_peak(struct kernfs_open_file *of);
 
+#ifdef CONFIG_SCHED_SLI
+void cpuacct_cpuset_changed(struct cgroup *cgrp,
+		struct cpumask *deleted, struct cpumask *added);
+void cgroup_idle_end(struct sched_entity *se);
+void cgroup_idle_start(struct sched_entity *se);
+#else
+static inline void cpuacct_cpuset_changed(struct cgroup *cgrp,
+		struct cpumask *deleted, struct cpumask *added) { }
+static inline void cgroup_idle_end(struct sched_entity *se) { }
+static inline void cgroup_idle_start(struct sched_entity *se) { }
+#endif
+
 #endif /* _LINUX_CGROUP_H */

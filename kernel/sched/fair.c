@@ -7223,6 +7223,9 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 		enqueue_entity(cfs_rq, se, flags);
 		slice = cfs_rq_min_slice(cfs_rq);
 
+		if (!entity_is_task(se))
+			cgroup_idle_end(se);
+
 		cfs_rq->h_nr_runnable += h_nr_runnable;
 		cfs_rq->h_nr_queued++;
 		cfs_rq->h_nr_idle += h_nr_idle;
@@ -7321,6 +7324,9 @@ static int dequeue_entities(struct rq *rq, struct sched_entity *se, int flags)
 			slice = cfs_rq_min_slice(cfs_rq);
 			break;
 		}
+
+		if (!entity_is_task(se))
+			cgroup_idle_start(se);
 
 		cfs_rq->h_nr_runnable -= h_nr_runnable;
 		cfs_rq->h_nr_queued -= h_nr_queued;
@@ -14028,6 +14034,8 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
 	/* guarantee group entities always have weight */
 	update_load_set(&se->load, NICE_0_LOAD);
 	se->parent = parent;
+	seqlock_init(&se->idle_seqlock);
+	se->cg_idle_start = cpu_clock(cpu);
 }
 
 static DEFINE_MUTEX(shares_mutex);
