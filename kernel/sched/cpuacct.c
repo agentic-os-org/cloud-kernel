@@ -488,6 +488,10 @@ void cpuacct_cpuset_changed(struct cgroup *cgrp, struct cpumask *deleted,
 		for_each_cpu(cpu, added) {
 			se = tg->se[cpu];
 			cgroup_idle_start(se);
+			__schedstat_add(se->cg_ineffective_sum,
+				__rq_clock_broken(cpu_rq(cpu)) -
+					se->cg_ineffective_start);
+			__schedstat_set(se->cg_ineffective_start, 0);
 		}
 	}
 
@@ -496,6 +500,9 @@ void cpuacct_cpuset_changed(struct cgroup *cgrp, struct cpumask *deleted,
 		for_each_cpu(cpu, deleted) {
 			se = tg->se[cpu];
 			cgroup_idle_end(se);
+			/* Use __rq_clock_broken to avoid warning */
+			__schedstat_set(se->cg_ineffective_start,
+				__rq_clock_broken(cpu_rq(cpu)));
 		}
 	}
 
@@ -546,7 +553,7 @@ static void __cpuacct_get_usage_result(struct cpuacct *ca, int cpu,
 
 	if (se && schedstat_enabled()) {
 		unsigned int seq;
-		u64 idle_start;
+		u64 idle_start, ineff, ineff_start, elapse, complement;
 		u64 clock;
 
 		do {
@@ -558,7 +565,18 @@ static void __cpuacct_get_usage_result(struct cpuacct *ca, int cpu,
 				res->idle += clock - idle_start;
 		} while (read_seqretry(&se->idle_seqlock, seq));
 
+		ineff = schedstat_val(se->cg_ineffective_sum);
+		ineff_start = schedstat_val(se->cg_ineffective_start);
+		if (ineff_start)
+			__schedstat_add(ineff, clock - ineff_start);
+
 		res->steal = 0;
+
+		elapse = clock - schedstat_val(se->cg_init_time);
+		complement = res->idle + se->sum_exec_raw + ineff;
+		if (elapse > complement)
+			res->steal = elapse - complement;
+
 	} else {
 		res->idle = res->iowait = res->steal = 0;
 	}
