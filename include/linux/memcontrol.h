@@ -1151,6 +1151,10 @@ static inline u64 cgroup_id_from_mm(struct mm_struct *mm)
 void mem_cgroup_flush_workqueue(void);
 
 extern int mem_cgroup_init(void);
+
+void memcg_meminfo(struct mem_cgroup *memcg,
+		struct sysinfo *info, struct sysinfo_ext *ext);
+
 #else /* CONFIG_MEMCG */
 
 #define MEM_CGROUP_ID_SHIFT	0
@@ -1559,6 +1563,12 @@ static inline void count_memcg_events_mm(struct mm_struct *mm,
 
 static inline
 void count_memcg_event_mm(struct mm_struct *mm, enum vm_event_item idx)
+{
+}
+
+static inline void
+memcg_meminfo(struct mem_cgroup *memcg,
+		struct sysinfo *info, struct sysinfo_ext *ext)
 {
 }
 
