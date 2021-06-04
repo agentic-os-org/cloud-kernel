@@ -144,4 +144,16 @@ static inline bool task_is_in_init_pid_ns(struct task_struct *tsk)
 	return task_active_pid_ns(tsk) == &init_pid_ns;
 }
 
+#ifdef CONFIG_RICH_CONTAINER
+static inline bool in_rich_container(struct task_struct *tsk)
+{
+	return !task_is_in_init_pid_ns(tsk) && child_cpuacct(tsk);
+}
+#else
+static inline bool in_rich_container(struct task_struct *tsk)
+{
+	return false;
+}
+#endif
+
 #endif /* _LINUX_PID_NS_H */
