@@ -13813,8 +13813,26 @@ static void switching_from_fair(struct rq *rq, struct task_struct *p)
 		dequeue_task(rq, p, DEQUEUE_SLEEP | DEQUEUE_DELAYED | DEQUEUE_NOCLOCK);
 }
 
+#ifdef CONFIG_FAIR_GROUP_SCHED
+static void update_nr_iowait_fair(struct task_struct *p, long inc);
+#else
+static inline void update_nr_iowait_fair(struct task_struct *p, long inc) {}
+#endif
+
 static void switched_from_fair(struct rq *rq, struct task_struct *p)
 {
+	/*
+	 * If p was charged to this (fair) class's cg_nr_iowait by __schedule()
+	 * before its sched_class got switched away, we must give the charge
+	 * back here -- the later try_to_wake_up() will dispatch update_nr_iowait
+	 * to the new class and miss this fair-side counter, leaving it leaked.
+	 *
+	 * Guard on !task_on_rq_queued(p) to skip the window where in_iowait is
+	 * already set by io_schedule_prepare() but __schedule() has not yet
+	 * deactivated the task and charged the +1.
+	 */
+	if (p->in_iowait && !task_on_rq_queued(p))
+		update_nr_iowait_fair(p, -1);
 	detach_task_cfs_rq(p);
 }
 
@@ -13836,6 +13854,15 @@ static void switched_to_fair(struct rq *rq, struct task_struct *p)
 			resched_curr(rq);
 		else
 			wakeup_preempt(rq, p, 0);
+	} else if (p->in_iowait) {
+		/*
+		 * Symmetric to switched_from_fair(): the prior class's
+		 * __schedule()->update_nr_iowait() was a no-op (only fair
+		 * implements the callback), so we must charge the +1 to the
+		 * fair-side counter ourselves; the upcoming try_to_wake_up()
+		 * will balance it with -1 on the fair class.
+		 */
+		update_nr_iowait_fair(p, 1);
 	}
 }
 
@@ -13891,6 +13918,46 @@ void init_cfs_rq(struct cfs_rq *cfs_rq)
 }
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
+
+#ifdef CONFIG_SCHED_SLI
+static void update_nr_iowait_fair(struct task_struct *p, long inc)
+{
+	unsigned long flags;
+	struct sched_entity *se = p->se.parent;
+	u64 clock;
+
+	if (!schedstat_enabled())
+		return;
+
+	clock = __rq_clock_broken(cpu_rq(task_cpu(p)));
+
+	for_each_sched_entity(se) {
+		/*
+		 * Avoid locking rq->lock from try_to_wakeup hot path, in
+		 * the price of poor consistency among cgroup hierarchy,
+		 * which we can tolerate.
+		 * While accessing se->on_rq does need to hold rq->lock. We
+		 * already do, because when inc==1, the caller is __schedule
+		 * and task_move_group_fair
+		 */
+		spin_lock_irqsave(&se->iowait_lock, flags);
+		if (!se->on_rq && !schedstat_val(se->cg_nr_iowait) && inc > 0)
+			__schedstat_set(se->cg_iowait_start, clock);
+		if (schedstat_val(se->cg_iowait_start) > 0 &&
+			schedstat_val(se->cg_nr_iowait) + inc == 0) {
+			__schedstat_add(se->cg_iowait_sum, clock -
+				schedstat_val(se->cg_iowait_start));
+			__schedstat_set(se->cg_iowait_start, 0);
+		}
+		__schedstat_add(se->cg_nr_iowait, inc);
+		spin_unlock_irqrestore(&se->iowait_lock, flags);
+	}
+}
+#else
+static void update_nr_iowait_fair(struct task_struct *p, long inc) {}
+#endif
+
+
 static void task_change_group_fair(struct task_struct *p)
 {
 	/*
@@ -13900,12 +13967,31 @@ static void task_change_group_fair(struct task_struct *p)
 	if (READ_ONCE(p->__state) == TASK_NEW)
 		return;
 
+	/*
+	 * p->in_iowait is obvious. If p is in_iowait, we should transfer
+	 * iowait to the new cgroup, otherwise try_to_wake_up will decrease
+	 * from the new cgroup, leaving old cgroup's nr_iowait to be 1, and
+	 * new cgroup's nr_iowait to be -1
+	 *
+	 * !p->on_rq is necessary too, because iowait and on_rq are not
+	 * updated at the same time. After try_to_wake_up, p->in_iowait
+	 * remains 1, while on_rq becomes 1. In this case, p is not at all
+	 * in_iowait already, so don't be stupid to transfer nr_iowait.
+	 * Similarly, when io_schedule, there's a window between setting
+	 * p->in_iowait to 1 and setting p->on_rq to 0, don't either.
+	 */
+	if (p->in_iowait && !p->on_rq)
+		update_nr_iowait_fair(p, -1);
+
 	detach_task_cfs_rq(p);
 
 	/* Tell se's cfs_rq has been changed -- migrated */
 	p->se.avg.last_update_time = 0;
 	set_task_rq(p, task_cpu(p));
 	attach_task_cfs_rq(p);
+	/* Same as above */
+	if (p->in_iowait && !p->on_rq)
+		update_nr_iowait_fair(p, 1);
 }
 
 void free_fair_sched_group(struct task_group *tg)
@@ -14046,6 +14132,7 @@ void init_tg_cfs_entry(struct task_group *tg, struct cfs_rq *cfs_rq,
 	update_load_set(&se->load, NICE_0_LOAD);
 	se->parent = parent;
 	seqlock_init(&se->idle_seqlock);
+	spin_lock_init(&se->iowait_lock);
 	se->cg_idle_start = se->cg_init_time = cpu_clock(cpu);
 }
 
@@ -14241,6 +14328,7 @@ DEFINE_SCHED_CLASS(fair) = {
 #endif
 #ifdef CONFIG_SCHED_SLI
 	.update_nr_uninterruptible = update_nr_uninterruptible_fair,
+	.update_nr_iowait	= update_nr_iowait_fair,
 #endif
 
 #ifdef CONFIG_UCLAMP_TASK
