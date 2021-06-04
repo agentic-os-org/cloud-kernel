@@ -28,6 +28,22 @@ struct reclaim_stat {
 	unsigned nr_demoted;
 };
 
+struct sysinfo_ext {
+	unsigned long lrupages[NR_LRU_LISTS];
+	unsigned long cached;
+	unsigned long available;
+	unsigned long file_dirty;
+	unsigned long writeback;
+	unsigned long anon_mapped;
+	unsigned long file_mapped;
+	unsigned long slab_reclaimable;
+	unsigned long slab_unreclaimable;
+	unsigned long kernel_stack_kb;
+	unsigned long anon_thps;
+	unsigned long shmem_thps;
+	unsigned long shmem_pmd_mapped;
+};
+
 /* Stat data for system wide items */
 enum vm_stat_item {
 	NR_DIRTY_THRESHOLD,
