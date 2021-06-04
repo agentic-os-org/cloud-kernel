@@ -145,8 +145,12 @@ static inline bool task_is_in_init_pid_ns(struct task_struct *tsk)
 }
 
 #ifdef CONFIG_RICH_CONTAINER
+extern int sysctl_rich_container_enable;
 static inline bool in_rich_container(struct task_struct *tsk)
 {
+	if (sysctl_rich_container_enable == 0)
+		return false;
+
 	return !task_is_in_init_pid_ns(tsk) && child_cpuacct(tsk);
 }
 #else

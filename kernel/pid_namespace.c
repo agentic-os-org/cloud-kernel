@@ -27,6 +27,10 @@
 #include <uapi/linux/wait.h>
 #include "pid_sysctl.h"
 
+#ifdef CONFIG_RICH_CONTAINER
+int sysctl_rich_container_enable;
+#endif
+
 static DEFINE_MUTEX(pid_caches_mutex);
 static struct kmem_cache *pid_ns_cachep;
 /* Write once array, filled from the beginning. */
@@ -457,12 +461,30 @@ const struct proc_ns_operations pidns_for_children_operations = {
 	.get_parent	= pidns_get_parent,
 };
 
+#ifdef CONFIG_RICH_CONTAINER
+static const struct ctl_table rich_container_ctl_table[] = {
+	{
+		.procname	= "rich_container_enable",
+		.data		= &sysctl_rich_container_enable,
+		.maxlen		= sizeof(int),
+		.mode		= 0600,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
+};
+#endif
+
 static __init int pid_namespaces_init(void)
 {
 	pid_ns_cachep = KMEM_CACHE(pid_namespace, SLAB_PANIC | SLAB_ACCOUNT);
 
 #ifdef CONFIG_CHECKPOINT_RESTORE
 	register_sysctl_init("kernel", pid_ns_ctl_table);
+#endif
+
+#ifdef CONFIG_RICH_CONTAINER
+	register_sysctl_init("kernel", rich_container_ctl_table);
 #endif
 
 	register_pid_ns_sysctl_table_vm();
