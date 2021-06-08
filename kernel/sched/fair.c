@@ -1441,8 +1441,10 @@ static void update_curr_fair(struct rq *rq)
 static inline void
 update_stats_wait_start_fair(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	struct sched_statistics *stats;
+	struct sched_statistics *stats, *pstats;
 	struct task_struct *p = NULL;
+	u64 parent_wait_sum, delta, clock = rq_clock(rq_of(cfs_rq));
+	struct sched_entity *pse = parent_entity(se);
 
 	if (!schedstat_enabled())
 		return;
@@ -1453,13 +1455,28 @@ update_stats_wait_start_fair(struct cfs_rq *cfs_rq, struct sched_entity *se)
 		p = task_of(se);
 
 	__update_stats_wait_start(rq_of(cfs_rq), p, stats);
+
+	if (!pse)
+		return;
+
+	pstats = __schedstats_from_se(pse);
+
+	if (schedstat_val(pstats->wait_start))
+		delta = clock - schedstat_val(pstats->wait_start);
+	else
+		delta = 0;
+	parent_wait_sum = schedstat_val(pstats->wait_sum) + delta;
+	__schedstat_set(stats->parent_wait_sum_base, parent_wait_sum);
 }
 
 static inline void
 update_stats_wait_end_fair(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	struct sched_statistics *stats;
+	struct sched_statistics *stats, *pstats;
 	struct task_struct *p = NULL;
+	struct sched_entity *pse = parent_entity(se);
+	u64 parent_wait_sum, clock = rq_clock(rq_of(cfs_rq));
+	u64 delta;
 
 	if (!schedstat_enabled())
 		return;
@@ -1479,6 +1496,20 @@ update_stats_wait_end_fair(struct cfs_rq *cfs_rq, struct sched_entity *se)
 		p = task_of(se);
 
 	__update_stats_wait_end(rq_of(cfs_rq), p, stats);
+
+	if (!pse)
+		return;
+
+	pstats = __schedstats_from_se(pse);
+
+	/* pick_next_task_fair() can update parent wait_start to 0 */
+	if (schedstat_val(pstats->wait_start))
+		delta = clock - schedstat_val(pstats->wait_start);
+	else
+		delta = 0;
+	parent_wait_sum = schedstat_val(pstats->wait_sum) + delta;
+	delta = parent_wait_sum - schedstat_val(stats->parent_wait_sum_base);
+	__schedstat_add(stats->parent_wait_contrib, delta);
 }
 
 static inline void
