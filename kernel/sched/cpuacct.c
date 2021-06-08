@@ -27,6 +27,13 @@ struct cpuacct_prev_cputime {
 	struct prev_cputime prev_cputime2; /* user and nice */
 } ____cacheline_aligned;
 
+#ifdef CONFIG_SCHED_SLI
+/* Maintain various statistics */
+struct cpuacct_alistats {
+	u64		nr_migrations;
+} ____cacheline_aligned;
+#endif
+
 /* track CPU usage of a group of tasks and its child groups */
 struct cpuacct {
 	struct cgroup_subsys_state	css;
@@ -35,6 +42,7 @@ struct cpuacct {
 	struct cpuacct_prev_cputime __percpu *prev_cputime;
 	struct kernel_cpustat __percpu	*cpustat;
 #ifdef CONFIG_SCHED_SLI
+	struct cpuacct_alistats __percpu *alistats;
 	struct list_head sli_list;
 	bool sli_enabled;
 	u64 load_update_version;
@@ -60,11 +68,31 @@ static inline struct cpuacct *parent_ca(struct cpuacct *ca)
 
 static DEFINE_PER_CPU(u64, root_cpuacct_cpuusage);
 static DEFINE_PER_CPU(struct cpuacct_prev_cputime, root_cpuacct_prev_cputime);
+#ifdef CONFIG_SCHED_SLI
+static DEFINE_PER_CPU(struct cpuacct_alistats, root_alistats);
+#endif
+
 static struct cpuacct root_cpuacct = {
 	.cpustat	= &kernel_cpustat,
 	.prev_cputime	= &root_cpuacct_prev_cputime,
 	.cpuusage	= &root_cpuacct_cpuusage,
+#ifdef CONFIG_SCHED_SLI
+	.alistats	= &root_alistats,
+#endif
 };
+
+#ifdef CONFIG_SCHED_SLI
+void task_ca_increase_nr_migrations(struct task_struct *tsk)
+{
+	struct cpuacct *ca;
+
+	rcu_read_lock();
+	ca = task_ca(tsk);
+	if (ca)
+		this_cpu_ptr(ca->alistats)->nr_migrations++;
+	rcu_read_unlock();
+}
+#endif
 
 #ifdef CONFIG_SCHED_SLI
 static DEFINE_SPINLOCK(sli_ca_lock);
@@ -145,6 +173,10 @@ cpuacct_css_alloc(struct cgroup_subsys_state *parent_css)
 
 #ifdef CONFIG_SCHED_SLI
 	INIT_LIST_HEAD(&ca->sli_list);
+
+	ca->alistats = alloc_percpu(struct cpuacct_alistats);
+	if (!ca->alistats)
+		goto out_free_pre_cputime;
 #endif
 
 	for_each_possible_cpu(i) {
@@ -156,6 +188,8 @@ cpuacct_css_alloc(struct cgroup_subsys_state *parent_css)
 
 	return &ca->css;
 
+out_free_pre_cputime:
+	free_percpu(ca->prev_cputime);
 out_free_cpustat:
 	free_percpu(ca->cpustat);
 out_free_cpuusage:
@@ -181,6 +215,9 @@ static void cpuacct_css_free(struct cgroup_subsys_state *css)
 	free_percpu(ca->prev_cputime);
 	free_percpu(ca->cpustat);
 	free_percpu(ca->cpuusage);
+#ifdef CONFIG_SCHED_SLI
+	free_percpu(ca->alistats);
+#endif
 	kfree(ca);
 }
 
@@ -749,6 +786,8 @@ static int cpuacct_proc_stats_show(struct seq_file *sf, void *v)
 	struct cpuacct *ca = css_ca(seq_css(sf));
 	struct cgroup *cgrp = seq_css(sf)->cgroup;
 	u64 user, nice, system, idle, iowait, irq, softirq, steal, guest;
+	u64 nr_migrations = 0;
+	struct cpuacct_alistats *alistats;
 	unsigned long load, avnrun[3];
 	unsigned long nr_run = 0, nr_uninter = 0;
 	int cpu;
@@ -779,6 +818,8 @@ static int cpuacct_proc_stats_show(struct seq_file *sf, void *v)
 			iowait += res.iowait;
 			idle += res.idle;
 
+			alistats = per_cpu_ptr(ca->alistats, cpu);
+			nr_migrations += alistats->nr_migrations;
 			nr_run += ca_running(ca, cpu);
 			nr_uninter += ca_uninterruptible(ca, cpu);
 		}
@@ -799,6 +840,8 @@ static int cpuacct_proc_stats_show(struct seq_file *sf, void *v)
 			idle += get_idle_time(kcpustat, cpu);
 			iowait += get_iowait_time(kcpustat, cpu);
 			steal += kcpustat_cpu(cpu).cpustat[CPUTIME_STEAL];
+			alistats = per_cpu_ptr(ca->alistats, cpu);
+			nr_migrations += alistats->nr_migrations;
 		}
 
 		nr_run = nr_running();
@@ -828,6 +871,7 @@ static int cpuacct_proc_stats_show(struct seq_file *sf, void *v)
 	if ((long) nr_uninter < 0)
 		nr_uninter = 0;
 	seq_printf(sf, "nr_uninterruptible %lld\n", (u64)nr_uninter);
+	seq_printf(sf, "nr_migrations %lld\n", (u64)nr_migrations);
 
 	return 0;
 }
