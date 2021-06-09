@@ -2488,7 +2488,7 @@ void cpuacct_get_usage_result(struct task_struct *tsk, int cpu,
 		struct cpuacct_usage_result *res);
 unsigned long task_ca_running(struct task_struct *tsk, int cpu);
 void get_cgroup_avenrun(struct task_struct *tsk, unsigned long *loads,
-		unsigned long offset, int shift);
+		unsigned long offset, int shift, bool running);
 bool check_rich_container(unsigned int cpu, unsigned int *index,
 		bool *rich_container, unsigned int *total);
 
@@ -2502,7 +2502,8 @@ static inline unsigned long task_ca_running(struct task_struct *tsk, int cpu)
 }
 
 static inline void get_cgroup_avenrun(struct task_struct *tsk,
-		unsigned long *loads, unsigned long offset, int shift) { }
+		unsigned long *loads, unsigned long offset,
+		int shift, bool running) { }
 
 static inline bool check_rich_container(unsigned int cpu, unsigned int *index,
 		bool *rich_container, unsigned int *total)
