@@ -1494,10 +1494,10 @@ update_stats_wait_end_fair(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	if (unlikely(!schedstat_val(stats->wait_start)))
 		return;
 
-	if (entity_is_task(se)) {
+	if (entity_is_task(se))
 		p = task_of(se);
-		cpuacct_update_latency(p, delta);
-	}
+
+	cpuacct_update_latency(se, delta);
 
 	__update_stats_wait_end(rq_of(cfs_rq), p, stats);
 
