@@ -1483,6 +1483,8 @@ update_stats_wait_end_fair(struct cfs_rq *cfs_rq, struct sched_entity *se)
 
 	stats = __schedstats_from_se(se);
 
+	delta = clock - schedstat_val(stats->wait_start);
+
 	/*
 	 * When the sched_schedstat changes from 0 to 1, some sched se
 	 * maybe already in the runqueue, the se->statistics.wait_start
@@ -1492,8 +1494,10 @@ update_stats_wait_end_fair(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	if (unlikely(!schedstat_val(stats->wait_start)))
 		return;
 
-	if (entity_is_task(se))
+	if (entity_is_task(se)) {
 		p = task_of(se);
+		cpuacct_update_latency(p, delta);
+	}
 
 	__update_stats_wait_end(rq_of(cfs_rq), p, stats);
 
