@@ -27,8 +27,8 @@ static int loadavg_proc_show(struct seq_file *m, void *v)
 		init_tsk = task_active_pid_ns(current)->child_reaper;
 		get_task_struct(init_tsk);
 		read_unlock(&tasklist_lock);
+		get_cgroup_avenrun(init_tsk, avnrun, FIXED_1/200, 0, false);
 
-		get_cgroup_avenrun(init_tsk, avnrun, FIXED_1/200, 0);
 		cpuset_cpus_allowed(init_tsk, &cpuset_allowed);
 		for_each_cpu(i, &cpuset_allowed)
 			nr_R += task_ca_running(init_tsk, i);
