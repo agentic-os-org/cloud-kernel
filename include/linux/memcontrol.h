@@ -1155,6 +1155,15 @@ extern int mem_cgroup_init(void);
 void memcg_meminfo(struct mem_cgroup *memcg,
 		struct sysinfo *info, struct sysinfo_ext *ext);
 
+#ifdef CONFIG_RICH_CONTAINER
+struct mem_cgroup *rich_container_get_memcg(void);
+#else
+static inline struct mem_cgroup *rich_container_get_memcg(void)
+{
+	return NULL;
+}
+#endif
+
 #else /* CONFIG_MEMCG */
 
 #define MEM_CGROUP_ID_SHIFT	0
