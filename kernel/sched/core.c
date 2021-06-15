@@ -9870,7 +9870,7 @@ static int tg_set_cfs_bandwidth(struct task_group *tg,
 	return 0;
 }
 
-static u64 tg_get_cfs_period(struct task_group *tg)
+u64 tg_get_cfs_period(struct task_group *tg)
 {
 	u64 cfs_period_us;
 
@@ -9880,7 +9880,7 @@ static u64 tg_get_cfs_period(struct task_group *tg)
 	return cfs_period_us;
 }
 
-static u64 tg_get_cfs_quota(struct task_group *tg)
+u64 tg_get_cfs_quota(struct task_group *tg)
 {
 	u64 quota_us;
 
