@@ -220,14 +220,23 @@ static ssize_t show_cpus_attr(struct device *dev,
 {
 	struct cpu_attr *ca = container_of(attr, struct cpu_attr, attr);
 	struct cpumask cpuset_allowed;
+	struct task_struct __maybe_unused *scenario;
 	bool rich_container;
 
 	rcu_read_lock();
 	rich_container = in_rich_container(current);
 	rcu_read_unlock();
 
-	if (rich_container && !strcmp(attr->attr.name, "online"))
-		rich_container_get_cpuset_cpus(&cpuset_allowed);
+	if (rich_container && !strcmp(attr->attr.name, "online")) {
+		read_lock(&tasklist_lock);
+		scenario = rich_container_get_scenario();
+		get_task_struct(scenario);
+		read_unlock(&tasklist_lock);
+
+		rich_container_get_cpus(scenario, &cpuset_allowed);
+
+		put_task_struct(scenario);
+	}
 	else
 		cpumask_copy(&cpuset_allowed, ca->map);
 
