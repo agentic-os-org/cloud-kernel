@@ -37,6 +37,7 @@
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 #include <linux/task_work.h>
+#include <linux/pid_namespace.h>
 
 DEFINE_STATIC_KEY_FALSE(cpusets_pre_enable_key);
 DEFINE_STATIC_KEY_FALSE(cpusets_enabled_key);
@@ -4078,6 +4079,29 @@ void cpuset_cpus_allowed(struct task_struct *tsk, struct cpumask *pmask)
 	__cpuset_cpus_allowed_locked(tsk, pmask);
 	spin_unlock_irqrestore(&callback_lock, flags);
 }
+
+#ifdef CONFIG_RICH_CONTAINER
+void rich_container_get_cpuset_cpus(struct cpumask *pmask)
+{
+	unsigned long flags;
+	struct task_struct *p;
+
+	rcu_read_lock();
+	if (sysctl_rich_container_source == 1) {
+		read_lock(&tasklist_lock);
+		p = task_active_pid_ns(current)->child_reaper;
+		read_unlock(&tasklist_lock);
+
+	} else {
+		p = current;
+	}
+
+	spin_lock_irqsave(&callback_lock, flags);
+	guarantee_active_cpus(p, pmask);
+	spin_unlock_irqrestore(&callback_lock, flags);
+	rcu_read_unlock();
+}
+#endif
 
 /**
  * cpuset_cpus_allowed_fallback - final fallback before complete catastrophe.
