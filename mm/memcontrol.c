@@ -64,6 +64,7 @@
 #include <linux/sched/isolation.h>
 #include <linux/kmemleak.h>
 #include <linux/proc_fs.h>
+#include <linux/pid_namespace.h>
 #include "internal.h"
 #include <net/sock.h>
 #include <net/ip.h>
@@ -6829,6 +6830,38 @@ void mem_cgroup_show_protected_memory(struct mem_cgroup *memcg)
 		K(atomic_long_read(&memcg->memory.children_min_usage)),
 		K(atomic_long_read(&memcg->memory.children_low_usage)));
 }
+
+#ifdef CONFIG_RICH_CONTAINER
+static inline struct mem_cgroup *css_memcg(struct cgroup_subsys_state *css)
+{
+	return css ? container_of(css, struct mem_cgroup, css) : NULL;
+}
+
+/* with rcu lock held */
+struct mem_cgroup *rich_container_get_memcg(void)
+{
+	struct cgroup_subsys_state *css;
+	struct mem_cgroup *memcg_src;
+
+	if (sysctl_rich_container_source == 1)
+		css = NULL;
+	else
+		css = task_css(current, memory_cgrp_id);
+
+	if (css) {
+		memcg_src = css_memcg(css);
+	} else {
+		read_lock(&tasklist_lock);
+		memcg_src = mem_cgroup_from_task(task_active_pid_ns(current)->child_reaper);
+		read_unlock(&tasklist_lock);
+	}
+
+	if (css_tryget(&memcg_src->css))
+		return memcg_src;
+	else
+		return NULL;
+}
+#endif
 
 void memcg_meminfo(struct mem_cgroup *memcg,
 		struct sysinfo *info, struct sysinfo_ext *ext)

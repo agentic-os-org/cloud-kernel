@@ -29,6 +29,7 @@
 
 #ifdef CONFIG_RICH_CONTAINER
 int sysctl_rich_container_enable;
+int sysctl_rich_container_source; /* 0 - current; 1 - child_reaper */
 #endif
 
 static DEFINE_MUTEX(pid_caches_mutex);
@@ -466,6 +467,15 @@ static const struct ctl_table rich_container_ctl_table[] = {
 	{
 		.procname	= "rich_container_enable",
 		.data		= &sysctl_rich_container_enable,
+		.maxlen		= sizeof(int),
+		.mode		= 0600,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
+	{
+		.procname	= "rich_container_source",
+		.data		= &sysctl_rich_container_source,
 		.maxlen		= sizeof(int),
 		.mode		= 0600,
 		.proc_handler	= proc_dointvec_minmax,
