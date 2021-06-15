@@ -482,6 +482,23 @@ static const struct ctl_table rich_container_ctl_table[] = {
 		.extra1		= SYSCTL_ZERO,
 		.extra2		= SYSCTL_ONE,
 	},
+	{
+		.procname	= "rich_container_cpuinfo_source",
+		.data		= &sysctl_rich_container_cpuinfo_source,
+		.maxlen		= sizeof(int),
+		.mode		= 0600,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_TWO,
+	},
+	{
+		.procname	= "rich_container_cpuinfo_sharesbase",
+		.data		= &sysctl_rich_container_cpuinfo_sharesbase,
+		.maxlen		= sizeof(int),
+		.mode		= 0600,
+		.proc_handler	= proc_douintvec_minmax,
+		.extra1		= SYSCTL_TWO,
+	},
 };
 #endif
 
