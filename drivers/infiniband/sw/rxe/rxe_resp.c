@@ -292,26 +292,41 @@ static enum resp_states get_srq_wqe(struct rxe_qp *qp)
 	struct rxe_queue *q = srq->rq.queue;
 	struct rxe_recv_wqe *wqe;
 	struct ib_event ev;
+	unsigned int count;
+	size_t size;
 
 	if (srq->error)
 		return RESPST_ERR_RNR;
 
 	spin_lock_bh(&srq->rq.consumer_lock);
 
-	wqe = queue_head(q);
+	if (qp->is_user)
+		wqe = queue_head(q, QUEUE_TYPE_FROM_USER);
+	else
+		wqe = queue_head(q, QUEUE_TYPE_KERNEL);
 	if (!wqe) {
 		spin_unlock_bh(&srq->rq.consumer_lock);
 		return RESPST_ERR_RNR;
 	}
 
-	/* note kernel and user space recv wqes have same size */
-	memcpy(&qp->resp.srq_wqe, wqe, sizeof(qp->resp.srq_wqe));
+	/* don't trust user space data */
+	if (unlikely(wqe->dma.num_sge > srq->rq.max_sge)) {
+		pr_warn("%s: invalid num_sge in SRQ entry\n", __func__);
+		return RESPST_ERR_MALFORMED_WQE;
+	}
+	size = sizeof(wqe) + wqe->dma.num_sge*sizeof(struct rxe_sge);
+	memcpy(&qp->resp.srq_wqe, wqe, size);
 
 	qp->resp.wqe = &qp->resp.srq_wqe.wqe;
-	advance_consumer(q);
+	if (qp->is_user) {
+		advance_consumer(q, QUEUE_TYPE_FROM_USER);
+		count = queue_count(q, QUEUE_TYPE_FROM_USER);
+	} else {
+		advance_consumer(q, QUEUE_TYPE_KERNEL);
+		count = queue_count(q, QUEUE_TYPE_KERNEL);
+	}
 
-	if (srq->limit && srq->ibsrq.event_handler &&
-	    (queue_count(q) < srq->limit)) {
+	if (srq->limit && srq->ibsrq.event_handler && (count < srq->limit)) {
 		srq->limit = 0;
 		goto event;
 	}
