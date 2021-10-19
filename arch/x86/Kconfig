@@ -549,6 +549,18 @@ config X86_CPU_RESCTRL_INTEL_AET
 
 	  Say N if unsure.
 
+config X86_CPU_RESCTRL_INTEL_HWDRC
+	bool "Intel Hardware Dynamic Resource Controller (DRC)"
+	depends on X86_CPU_RESCTRL && CPU_SUP_INTEL && AUXILIARY_BUS && INTEL_VSEC=y && INTEL_TPMI=y
+	help
+	  Intel HWDRC support.
+
+	  Intel servers since ICX have hardware based dynamic resource controller
+	  which enables customers to achieve higher utilization of resources and
+	  control of workload priorities.
+
+	  Say N if unsure.
+
 config X86_FRED
 	bool "Flexible Return and Event Delivery"
 	depends on X86_64
