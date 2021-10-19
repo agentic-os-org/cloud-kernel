@@ -26,6 +26,26 @@
 #include <asm/resctrl.h>
 #include "internal.h"
 
+#ifdef CONFIG_X86_CPU_RESCTRL_INTEL_HWDRC
+#include <linux/auxiliary_bus.h>
+#include <linux/intel_tpmi.h>
+#include <linux/io.h>
+#include <asm/intel-family.h>
+
+/* Memory bandwidth HWDRC */
+#define HWDRC_MSR_OS_MAILBOX_INTERFACE	0xb0
+#define HWDRC_MSR_OS_MAILBOX_DATA	0xb1
+#define HWDRC_MSR_OS_MAILBOX_BUSY_BIT	BIT_ULL(31)
+#define HWDRC_COMMAND_MEM_CLOS_EN	0xd0
+#define HWDRC_SUB_COMMAND_MEM_CLOS_EN	0x54
+#define HWDRC_MEMCLOS_AVAILABLE		BIT_ULL(0)
+#define HWDRC_OS_MAILBOX_RETRY_COUNT	30
+
+#define HWDRC_TPMI_OFFSET_STATUS	(9*sizeof(u64))
+#define HWDRC_TPMI_STATUS_FEATURE_EN	0x1
+#define HWDRC_TPMI_DEV_NAME		"intel_vsec.tpmi-drc"
+#endif
+
 /*
  * rdt_domain structures are kfree()d when their last CPU goes offline,
  * and allocated when the first CPU in a new domain comes online.
@@ -201,6 +221,167 @@ static inline bool rdt_get_mb_table(struct rdt_resource *r)
 	return false;
 }
 
+#ifdef CONFIG_X86_CPU_RESCTRL_INTEL_HWDRC
+/*
+ * Detect memory bandwidth HWDRC feature by mailbox.
+ *
+ * For servers from ICX to GNR (not including), HWDRC is exposed by mailbox.
+ */
+static __init bool hwdrc_detect_by_mailbox(void)
+{
+	u32 retries;
+	u64 data;
+	int status;
+
+	/* Check presence of mailbox MSRs */
+	if (rdmsrq_safe(HWDRC_MSR_OS_MAILBOX_INTERFACE, &data)) {
+		pr_err("HWDRC: Can't access OS mailbox interface MSR\n");
+		goto out;
+	}
+
+	if (rdmsrq_safe(HWDRC_MSR_OS_MAILBOX_DATA, &data)) {
+		pr_err("HWDRC: Can't access OS mailbox data MSR\n");
+		goto out;
+	}
+
+	/* Poll for run_busy bit == 0 */
+	status = -EBUSY;
+	retries = HWDRC_OS_MAILBOX_RETRY_COUNT;
+	do {
+		rdmsrl(HWDRC_MSR_OS_MAILBOX_INTERFACE, data);
+		if (!(data & HWDRC_MSR_OS_MAILBOX_BUSY_BIT)) {
+			status = 0;
+			break;
+		}
+	} while (--retries);
+
+	if (status)
+		goto out;
+
+	/* Write command register: 0x800054d0 */
+	data = HWDRC_MSR_OS_MAILBOX_BUSY_BIT |
+		HWDRC_SUB_COMMAND_MEM_CLOS_EN << 8 |
+		HWDRC_COMMAND_MEM_CLOS_EN;
+	pr_debug("HWDRC: Write command register: 0x%llx\n", data);
+	if (wrmsrq_safe(HWDRC_MSR_OS_MAILBOX_INTERFACE, data)) {
+		pr_err("HWDRC: Write command register 0x%llx failed!\n", data);
+		goto out;
+	}
+
+	/* Poll for run_busy bit == 0 */
+	retries = HWDRC_OS_MAILBOX_RETRY_COUNT;
+	do {
+		rdmsrl(HWDRC_MSR_OS_MAILBOX_INTERFACE, data);
+		if (!(data & HWDRC_MSR_OS_MAILBOX_BUSY_BIT)) {
+			rdmsrl(HWDRC_MSR_OS_MAILBOX_DATA, data);
+			pr_debug("HWDRC: Read MEM_CLOS_EN data: 0x%llx\n", data);
+
+			/* Feature capability bit is set */
+			if (data & HWDRC_MEMCLOS_AVAILABLE) {
+				pr_info("HWDRC: Memory bandwidth HWDRC/mailbox is capable\n");
+				return true;
+			}
+
+			/* Feature capability bit is not set */
+			break;
+		}
+	} while (--retries);
+
+out:
+	pr_info("HWDRC: Memory bandwidth HWDRC/mailbox is not capable\n");
+	return false;
+}
+
+static __init int match_hwdrc_auxdev(struct device *dev, const void *data)
+{
+	return !strncmp(dev_name(dev), HWDRC_TPMI_DEV_NAME,
+			strlen(HWDRC_TPMI_DEV_NAME));
+}
+
+/*
+ * Detect memory bandwidth HWDRC feature by TPMI.
+ *
+ * For servers since GNR, HWDRC is exposed by TPMI
+ */
+static __init bool hwdrc_detect_by_tpmi(void)
+{
+	struct auxiliary_device *auxdev;
+	struct resource *res;
+	void __iomem *base;
+	unsigned long size;
+	bool ret = false;
+	u64 status;
+
+	auxdev = auxiliary_find_device(NULL, NULL, match_hwdrc_auxdev);
+	if (!auxdev) {
+		pr_err("Can't find auxiliary_device for tpmi-drc\n");
+		return false;
+	}
+
+	if (tpmi_get_resource_count(auxdev) != 1) {
+		dev_err(&auxdev->dev, "Resource count is not 1\n");
+		goto out;
+	}
+
+	res = tpmi_get_resource_at_index(auxdev, 0);
+	if (!res) {
+		dev_err(&auxdev->dev, "Can't fetch resource\n");
+		goto out;
+	}
+
+	size = resource_size(res);
+	if (size < HWDRC_TPMI_OFFSET_STATUS + sizeof(u64)) {
+		dev_err(&auxdev->dev, "Incorrect resource region size\n");
+		goto out;
+	}
+
+	if (!request_mem_region(res->start, size, "tpmi-drc")) {
+		dev_err(&auxdev->dev, "Resource is busy\n");
+		goto out;
+	}
+	base = ioremap(res->start, size);
+	if (!base) {
+		dev_err(&auxdev->dev, "Can't ioremap resource\n");
+		goto out_release_region;
+	}
+
+	status = readq(base + HWDRC_TPMI_OFFSET_STATUS);
+
+	if (status & HWDRC_TPMI_STATUS_FEATURE_EN)
+		ret = true;
+
+	pr_info("HWDRC: memory bandwidth HWDRC/tpmi is %s\n",
+		ret ? "capable" : "not capable");
+
+	iounmap(base);
+out_release_region:
+	release_mem_region(res->start, size);
+out:
+	put_device(&auxdev->dev);
+	return ret;
+}
+
+static __init bool hwdrc_detect_intel(void)
+{
+	switch (boot_cpu_data.x86_vfm) {
+	case INTEL_ICELAKE_X:
+	case INTEL_SAPPHIRERAPIDS_X:
+	case INTEL_EMERALDRAPIDS_X:
+		return hwdrc_detect_by_mailbox();
+	case INTEL_GRANITERAPIDS_X:
+	case INTEL_ATOM_CRESTMONT_X:
+	case INTEL_ATOM_DARKMONT_X:
+	case INTEL_DIAMONDRAPIDS_X:
+		return hwdrc_detect_by_tpmi();
+	default:
+		break;
+	}
+
+	pr_info("HWDRC: memory bandwidth HWDRC is not supported\n");
+	return false;
+}
+#endif
+
 static __init bool __get_mem_config_intel(struct rdt_resource *r)
 {
 	struct rdt_hw_resource *hw_res = resctrl_to_arch_res(r);
@@ -228,6 +409,11 @@ static __init bool __get_mem_config_intel(struct rdt_resource *r)
 	else
 		r->membw.throttle_mode = THREAD_THROTTLE_MAX;
 
+#ifdef CONFIG_X86_CPU_RESCTRL_INTEL_HWDRC
+	r->hwdrc_capable = hwdrc_detect_intel();
+#else
+	r->hwdrc_capable = false;
+#endif
 	r->alloc_capable = true;
 
 	return true;
