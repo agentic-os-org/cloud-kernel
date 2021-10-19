@@ -317,6 +317,8 @@ struct resctrl_mon {
  * @name:		Name to use in "schemata" file.
  * @schema_fmt:		Which format string and parser is used for this schema.
  * @cdp_capable:	Is the CDP feature available on this resource
+ * @hwdrc_capable:	Is the hardware Dynamic Resource Controller available
+ *			on this resource.
  */
 struct rdt_resource {
 	int			rid;
@@ -332,6 +334,7 @@ struct rdt_resource {
 	char			*name;
 	enum resctrl_schema_fmt	schema_fmt;
 	bool			cdp_capable;
+	bool			hwdrc_capable;
 };
 
 /*
