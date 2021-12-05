@@ -50,6 +50,7 @@
 #include <linux/hashtable.h>
 
 #include <linux/ck_kabi.h>
+#include <linux/ref_tracker.h>
 
 struct netpoll_info;
 struct device;
@@ -316,6 +317,12 @@ struct netdev_boot_setup {
 #define NETDEV_BOOT_SETUP_MAX 8
 
 int __init netdev_boot_setup(char *str);
+
+#ifdef CONFIG_NET_DEV_REFCNT_TRACKER
+typedef struct ref_tracker *netdevice_tracker;
+#else
+typedef struct {} netdevice_tracker;
+#endif
 
 struct gro_list {
 	struct list_head	list;
@@ -1846,6 +1853,7 @@ enum netdev_stat_type {
  *
  *	@proto_down_reason:	reason a netdev interface is held down
  *	@pcpu_refcnt:		Number of references to this device
+ *	@refcnt_tracker:	Tracker directory for tracked references to this device
  *	@todo_list:		Delayed register/unregister
  *	@link_watch_list:	XXX: need comments on this one
  *
@@ -2149,6 +2157,7 @@ struct net_device {
 
 	struct list_head	todo_list;
 	int __percpu		*pcpu_refcnt;
+	struct ref_tracker_dir	refcnt_tracker;
 
 	struct list_head	link_watch_list;
 
@@ -4083,6 +4092,7 @@ void netdev_run_todo(void);
  *	@dev: network device
  *
  * Release reference to device to allow it to be freed.
+ * Try using dev_put_track() instead.
  */
 static inline void dev_put(struct net_device *dev)
 {
@@ -4095,11 +4105,46 @@ static inline void dev_put(struct net_device *dev)
  *	@dev: network device
  *
  * Hold reference to device to keep it from being freed.
+ * Try using dev_hold_track() instead.
  */
 static inline void dev_hold(struct net_device *dev)
 {
 	if (dev)
 		this_cpu_inc(*dev->pcpu_refcnt);
+}
+
+static inline void netdev_tracker_alloc(struct net_device *dev,
+					netdevice_tracker *tracker, gfp_t gfp)
+{
+#ifdef CONFIG_NET_DEV_REFCNT_TRACKER
+	ref_tracker_alloc(&dev->refcnt_tracker, tracker, gfp);
+#endif
+}
+
+static inline void netdev_tracker_free(struct net_device *dev,
+				       netdevice_tracker *tracker)
+{
+#ifdef CONFIG_NET_DEV_REFCNT_TRACKER
+	ref_tracker_free(&dev->refcnt_tracker, tracker);
+#endif
+}
+
+static inline void dev_hold_track(struct net_device *dev,
+				  netdevice_tracker *tracker, gfp_t gfp)
+{
+	if (dev) {
+		dev_hold(dev);
+		netdev_tracker_alloc(dev, tracker, gfp);
+	}
+}
+
+static inline void dev_put_track(struct net_device *dev,
+				 netdevice_tracker *tracker)
+{
+	if (dev) {
+		netdev_tracker_free(dev, tracker);
+		dev_put(dev);
+	}
 }
 
 /* Carrier loss detection, dial on demand. The functions netif_carrier_on
