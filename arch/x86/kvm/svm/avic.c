@@ -295,6 +295,22 @@ static int avic_init_backing_page(struct kvm_vcpu *vcpu)
 	return 0;
 }
 
+static void avic_ring_doorbell(struct kvm_vcpu *vcpu)
+{
+	/*
+	 * Note, the vCPU could get migrated to a different pCPU at any point,
+	 * which could result in signalling the wrong/previous pCPU.  But if
+	 * that happens the vCPU is guaranteed to do a VMRUN (after being
+	 * migrated) and thus will process pending interrupts, i.e. a doorbell
+	 * is not needed (and the spurious one is harmless).
+	 */
+	int cpu = READ_ONCE(vcpu->cpu);
+
+	if (cpu != get_cpu())
+		wrmsrl(SVM_AVIC_DOORBELL, kvm_cpu_get_apicid(cpu));
+	put_cpu();
+}
+
 int avic_incomplete_ipi_interception(struct vcpu_svm *svm)
 {
 	u32 icrh = svm->vmcb->control.exit_info_1 >> 32;
@@ -662,11 +678,7 @@ int svm_deliver_avic_intr(struct kvm_vcpu *vcpu, int vec)
 	smp_mb__after_atomic();
 
 	if (avic_vcpu_is_running(vcpu)) {
-		int cpuid = vcpu->cpu;
-
-		if (cpuid != get_cpu())
-			wrmsrl(SVM_AVIC_DOORBELL, kvm_cpu_get_apicid(cpuid));
-		put_cpu();
+		avic_ring_doorbell(vcpu);
 	} else
 		kvm_vcpu_wake_up(vcpu);
 
