@@ -53,10 +53,11 @@ int rxe_mcast_add_grp_elem(struct rxe_dev *rxe, struct rxe_qp *qp,
 {
 	int err;
 	struct rxe_mc_elem *elem;
+	unsigned long flags;
 
 	/* check to see of the qp is already a member of the group */
 	spin_lock_bh(&qp->grp_lock);
-	spin_lock_bh(&grp->mcg_lock);
+	spin_lock_irqsave(&grp->mcg_lock, flags);
 	list_for_each_entry(elem, &grp->qp_list, qp_list) {
 		if (elem->qp == qp) {
 			err = 0;
@@ -87,7 +88,7 @@ int rxe_mcast_add_grp_elem(struct rxe_dev *rxe, struct rxe_qp *qp,
 
 	err = 0;
 out:
-	spin_unlock_bh(&grp->mcg_lock);
+	spin_unlock_irqrestore(&grp->mcg_lock, flags);
 	spin_unlock_bh(&qp->grp_lock);
 	return err;
 }
@@ -97,13 +98,14 @@ int rxe_mcast_drop_grp_elem(struct rxe_dev *rxe, struct rxe_qp *qp,
 {
 	struct rxe_mc_grp *grp;
 	struct rxe_mc_elem *elem, *tmp;
+	unsigned long flags;
 
 	grp = rxe_pool_get_key(&rxe->mc_grp_pool, mgid);
 	if (!grp)
 		goto err1;
 
 	spin_lock_bh(&qp->grp_lock);
-	spin_lock_bh(&grp->mcg_lock);
+	spin_lock_irqsave(&grp->mcg_lock, flags);
 
 	list_for_each_entry_safe(elem, tmp, &grp->qp_list, qp_list) {
 		if (elem->qp == qp) {
@@ -111,7 +113,7 @@ int rxe_mcast_drop_grp_elem(struct rxe_dev *rxe, struct rxe_qp *qp,
 			list_del(&elem->grp_list);
 			grp->num_qp--;
 
-			spin_unlock_bh(&grp->mcg_lock);
+			spin_unlock_irqrestore(&grp->mcg_lock, flags);
 			spin_unlock_bh(&qp->grp_lock);
 			rxe_drop_ref(elem);
 			rxe_drop_ref(grp);	/* ref held by QP */
@@ -120,7 +122,7 @@ int rxe_mcast_drop_grp_elem(struct rxe_dev *rxe, struct rxe_qp *qp,
 		}
 	}
 
-	spin_unlock_bh(&grp->mcg_lock);
+	spin_unlock_irqrestore(&grp->mcg_lock, flags);
 	spin_unlock_bh(&qp->grp_lock);
 	rxe_drop_ref(grp);			/* ref from get_key */
 err1:

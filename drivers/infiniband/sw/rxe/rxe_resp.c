@@ -294,24 +294,25 @@ static enum resp_states get_srq_wqe(struct rxe_qp *qp)
 	struct ib_event ev;
 	unsigned int count;
 	size_t size;
+	unsigned long flags;
 
 	if (srq->error)
 		return RESPST_ERR_RNR;
 
-	spin_lock_bh(&srq->rq.consumer_lock);
+	spin_lock_irqsave(&srq->rq.consumer_lock, flags);
 
 	if (qp->is_user)
 		wqe = queue_head(q, QUEUE_TYPE_FROM_USER);
 	else
 		wqe = queue_head(q, QUEUE_TYPE_KERNEL);
 	if (!wqe) {
-		spin_unlock_bh(&srq->rq.consumer_lock);
+		spin_unlock_irqrestore(&srq->rq.consumer_lock, flags);
 		return RESPST_ERR_RNR;
 	}
 
 	/* don't trust user space data */
 	if (unlikely(wqe->dma.num_sge > srq->rq.max_sge)) {
-		spin_unlock_bh(&srq->rq.consumer_lock);
+		spin_unlock_irqrestore(&srq->rq.consumer_lock, flags);
 		pr_warn("%s: invalid num_sge in SRQ entry\n", __func__);
 		return RESPST_ERR_MALFORMED_WQE;
 	}
@@ -332,11 +333,11 @@ static enum resp_states get_srq_wqe(struct rxe_qp *qp)
 		goto event;
 	}
 
-	spin_unlock_bh(&srq->rq.consumer_lock);
+	spin_unlock_irqrestore(&srq->rq.consumer_lock, flags);
 	return RESPST_CHK_LENGTH;
 
 event:
-	spin_unlock_bh(&srq->rq.consumer_lock);
+	spin_unlock_irqrestore(&srq->rq.consumer_lock, flags);
 	ev.device = qp->ibqp.device;
 	ev.element.srq = qp->ibqp.srq;
 	ev.event = IB_EVENT_SRQ_LIMIT_REACHED;
