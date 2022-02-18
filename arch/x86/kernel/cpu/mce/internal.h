@@ -163,7 +163,10 @@ struct mce_vendor_flags {
 	/* AMD-style error thresholding banks present. */
 	amd_threshold		: 1,
 
-	__reserved_0		: 60;
+	/* Skylake, Cascade Lake, Cooper Lake REP;MOVS* quirk */
+	skx_repmov_quirk	: 1,
+
+	__reserved_0		: 59;
 };
 
 extern struct mce_vendor_flags mce_flags;
