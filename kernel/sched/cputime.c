@@ -244,6 +244,14 @@ void __account_forceidle_time(struct task_struct *p, u64 delta)
 	task_group_account_field(p, CPUTIME_FORCEIDLE, delta);
 }
 #endif /* CONFIG_SCHED_CORE */
+#ifdef CONFIG_SCHED_ACPU
+void __account_sibidle_time(struct task_struct *p, u64 delta)
+{
+	__schedstat_add(p->stats.core_sibidle_sum, delta);
+
+	task_group_account_field(p, CPUTIME_SIBIDLE, delta);
+}
+#endif
 
 /*
  * When a guest is interrupted for a longer amount of time, missed clock

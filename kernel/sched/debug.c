@@ -1326,6 +1326,9 @@ void proc_sched_show_task(struct task_struct *p, struct pid_namespace *ns,
 #ifdef CONFIG_SCHED_CORE
 		PN_SCHEDSTAT(core_forceidle_sum);
 #endif
+#ifdef CONFIG_SCHED_ACPU
+		PN_SCHEDSTAT(core_sibidle_sum);
+#endif
 	}
 
 	__P(nr_switches);
