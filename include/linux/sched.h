@@ -591,6 +591,10 @@ struct sched_statistics {
 #ifdef CONFIG_SCHED_CORE
 	u64				core_forceidle_sum;
 #endif
+#ifdef CONFIG_SCHED_ACPU
+	u64				core_sibidle_sum;
+#endif
+
 #endif /* CONFIG_SCHEDSTATS */
 
 	CK_KABI_RESERVE(1)
@@ -2674,4 +2678,10 @@ extern void migrate_enable(void);
 
 DEFINE_LOCK_GUARD_0(migrate, migrate_disable(), migrate_enable())
 
+#endif
+
+#ifdef CONFIG_SCHED_ACPU
+extern void acpu_enable(void);
+#else
+static inline void acpu_enable(void) { }
 #endif

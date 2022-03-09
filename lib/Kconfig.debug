@@ -1406,6 +1406,13 @@ config SCHEDSTATS
 	  application, you can say N to avoid the very slight overhead
 	  this adds.
 
+config SCHED_ACPU
+	bool "ACPU info: account idle time of smt to task"
+	depends on DEBUG_KERNEL && PROC_FS && SMP && SCHED_SMT
+	default y
+	help
+	  Add ACPU info in /proc/<pid>/sched.
+
 endmenu
 
 config DEBUG_PREEMPT

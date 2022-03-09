@@ -30,6 +30,9 @@ enum cpu_usage_stat {
 #ifdef CONFIG_SCHED_CORE
 	CPUTIME_FORCEIDLE,
 #endif
+#ifdef CONFIG_SCHED_ACPU
+	CPUTIME_SIBIDLE,
+#endif
 	NR_STATS,
 };
 
@@ -140,6 +143,9 @@ extern void account_idle_ticks(unsigned long ticks);
 
 #ifdef CONFIG_SCHED_CORE
 extern void __account_forceidle_time(struct task_struct *tsk, u64 delta);
+#endif
+#ifdef CONFIG_SCHED_ACPU
+extern void __account_sibidle_time(struct task_struct *tsk, u64 delta);
 #endif
 
 #endif /* _LINUX_KERNEL_STAT_H */
