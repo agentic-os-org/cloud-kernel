@@ -2847,6 +2847,8 @@ void zap_vma_ptes(struct vm_area_struct *vma, unsigned long address,
 		  unsigned long size);
 void zap_page_range_single(struct vm_area_struct *vma, unsigned long address,
 			   unsigned long size, struct zap_details *details);
+void zap_vma_range(struct vm_area_struct *vma, unsigned long address,
+		   unsigned long size);
 static inline void zap_vma_pages(struct vm_area_struct *vma)
 {
 	zap_page_range_single(vma, vma->vm_start,

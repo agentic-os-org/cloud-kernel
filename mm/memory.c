@@ -2253,6 +2253,21 @@ void zap_page_range_single(struct vm_area_struct *vma, unsigned long address,
 }
 
 /**
+ * zap_vma_range - remove user pages in a given range (3-arg wrapper)
+ * @vma: vm_area_struct holding the applicable pages
+ * @address: starting address of pages to zap
+ * @size: number of bytes to zap
+ *
+ * The range must fit into one VMA.
+ */
+void zap_vma_range(struct vm_area_struct *vma, unsigned long address,
+		unsigned long size)
+{
+	zap_page_range_single(vma, address, size, NULL);
+}
+EXPORT_SYMBOL_GPL(zap_vma_range);
+
+/**
  * zap_vma_ptes - remove ptes mapping the vma
  * @vma: vm_area_struct holding ptes to be zapped
  * @address: starting address of pages to zap
