@@ -1682,6 +1682,14 @@ are not affected and are always capable of unsharing a new user
 namespace.
 
 
+userns_max_level
+================
+
+This value indicates the maximum nested level of user namespace. The
+valid configuration values are 0-33. When configured to zero, user
+namespace is effectively disabled.
+
+
 warn_limit
 ==========
 
