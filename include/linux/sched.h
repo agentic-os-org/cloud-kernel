@@ -636,7 +636,7 @@ struct sched_entity {
 	u64				cg_iowait_start;
 	u64				cg_ineffective_sum;
 	u64				cg_ineffective_start;
-	seqlock_t			idle_seqlock;
+	seqcount_t			idle_seqcount;
 	spinlock_t			iowait_lock;
 
 	u64				nr_migrations;
