@@ -569,18 +569,14 @@ void cgroup_idle_start(struct sched_entity *se)
 
 	clock = __rq_clock_broken(se->cfs_rq->rq);
 
-	local_irq_save(flags);
-
-	write_seqlock(&se->idle_seqlock);
+	write_seqcount_begin(&se->idle_seqcount);
 	__schedstat_set(se->cg_idle_start, clock);
-	write_sequnlock(&se->idle_seqlock);
+	write_seqcount_end(&se->idle_seqcount);
 
-	spin_lock(&se->iowait_lock);
+	spin_lock_irqsave(&se->iowait_lock, flags);
 	if (schedstat_val(se->cg_nr_iowait))
 		__schedstat_set(se->cg_iowait_start, clock);
-	spin_unlock(&se->iowait_lock);
-
-	local_irq_restore(flags);
+	spin_unlock_irqrestore(&se->iowait_lock, flags);
 }
 
 void cgroup_idle_end(struct sched_entity *se)
@@ -594,28 +590,26 @@ void cgroup_idle_end(struct sched_entity *se)
 
 	clock = __rq_clock_broken(se->cfs_rq->rq);
 
-	local_irq_save(flags);
-
-	write_seqlock(&se->idle_seqlock);
+	write_seqcount_begin(&se->idle_seqcount);
 	idle_start = schedstat_val(se->cg_idle_start);
 	__schedstat_add(se->cg_idle_sum, clock - idle_start);
 	__schedstat_set(se->cg_idle_start, 0);
-	write_sequnlock(&se->idle_seqlock);
+	write_seqcount_end(&se->idle_seqcount);
 
-	spin_lock(&se->iowait_lock);
+	spin_lock_irqsave(&se->iowait_lock, flags);
 	if (schedstat_val(se->cg_nr_iowait)) {
 		iowait_start = schedstat_val(se->cg_iowait_start);
 		__schedstat_add(se->cg_iowait_sum, clock - iowait_start);
 		__schedstat_set(se->cg_iowait_start, 0);
 	}
-	spin_unlock(&se->iowait_lock);
-
-	local_irq_restore(flags);
+	spin_unlock_irqrestore(&se->iowait_lock, flags);
 }
 
 void cpuacct_cpuset_changed(struct cgroup *cgrp, struct cpumask *deleted,
 		struct cpumask *added)
 {
+	struct rq_flags rf;
+	struct rq *rq;
 	struct task_group *tg;
 	struct sched_entity *se;
 	int cpu;
@@ -634,10 +628,13 @@ void cpuacct_cpuset_changed(struct cgroup *cgrp, struct cpumask *deleted,
 	if (added) {
 		/* Mark newly added cpus as newly-idle */
 		for_each_cpu(cpu, added) {
+			rq = cpu_rq(cpu);
 			se = tg->se[cpu];
+			rq_lock_irqsave(rq, &rf);
 			cgroup_idle_start(se);
+			rq_unlock_irqrestore(rq, &rf);
 			__schedstat_add(se->cg_ineffective_sum,
-				__rq_clock_broken(cpu_rq(cpu)) -
+				__rq_clock_broken(rq) -
 					se->cg_ineffective_start);
 			__schedstat_set(se->cg_ineffective_start, 0);
 		}
@@ -646,11 +643,14 @@ void cpuacct_cpuset_changed(struct cgroup *cgrp, struct cpumask *deleted,
 	if (deleted) {
 		/* Mark ineffective_cpus as idle-invalid */
 		for_each_cpu(cpu, deleted) {
+			rq = cpu_rq(cpu);
 			se = tg->se[cpu];
+			rq_lock_irqsave(rq, &rf);
 			cgroup_idle_end(se);
+			rq_unlock_irqrestore(rq, &rf);
 			/* Use __rq_clock_broken to avoid warning */
 			__schedstat_set(se->cg_ineffective_start,
-				__rq_clock_broken(cpu_rq(cpu)));
+				__rq_clock_broken(rq));
 		}
 	}
 
@@ -755,13 +755,13 @@ static void __cpuacct_get_usage_result(struct cpuacct *ca, int cpu,
 		u64 clock, iowait_start;
 
 		do {
-			seq = read_seqbegin(&se->idle_seqlock);
+			seq = read_seqcount_begin(&se->idle_seqcount);
 			res->idle = schedstat_val(se->cg_idle_sum);
 			idle_start = schedstat_val(se->cg_idle_start);
 			clock = cpu_clock(cpu);
 			if (idle_start && clock > idle_start)
 				res->idle += clock - idle_start;
-		} while (read_seqretry(&se->idle_seqlock, seq));
+		} while (read_seqcount_retry(&se->idle_seqcount, seq));
 
 		ineff = schedstat_val(se->cg_ineffective_sum);
 		ineff_start = schedstat_val(se->cg_ineffective_start);
