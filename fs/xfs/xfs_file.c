@@ -244,7 +244,7 @@ xfs_file_dio_aio_read(
 	} else {
 		xfs_ilock(ip, XFS_IOLOCK_SHARED);
 	}
-	ret = iomap_dio_rw(iocb, to, &xfs_read_iomap_ops, NULL, 0);
+	ret = iomap_dio_rw(iocb, to, &xfs_read_iomap_ops, NULL, 0, NULL);
 	xfs_iunlock(ip, XFS_IOLOCK_SHARED);
 
 	return ret;
@@ -627,7 +627,7 @@ xfs_file_dio_aio_write(
 	 */
 	ret = iomap_dio_rw(iocb, from, &xfs_direct_write_iomap_ops,
 			   &xfs_dio_write_ops,
-			   unaligned_io ? IOMAP_DIO_FORCE_WAIT : 0);
+			   unaligned_io ? IOMAP_DIO_FORCE_WAIT : 0, NULL);
 out:
 	xfs_iunlock(ip, iolock);
 
