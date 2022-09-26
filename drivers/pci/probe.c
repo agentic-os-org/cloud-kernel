@@ -2292,6 +2292,11 @@ struct pci_dev *pci_alloc_dev(struct pci_bus *bus)
 #endif
 	dev->dev.type = &pci_dev_type;
 	dev->bus = pci_bus_get(bus);
+	dev->driver_exclusive_resource = (struct resource) {
+		.name = "PCI Exclusive",
+		.start = 0,
+		.end = -1,
+	};
 
 	return dev;
 }
