@@ -241,6 +241,8 @@ static int vmci_host_setup_notify(struct vmci_ctx *context,
 	retval = get_user_pages_fast(uva, 1, FOLL_WRITE, &page);
 	if (retval != 1)
 		return VMCI_ERROR_GENERIC;
+	if (page == NULL)
+		return VMCI_ERROR_UNAVAILABLE;
 
 	context->notify_page = page;
 
@@ -499,7 +501,7 @@ static int vmci_host_do_alloc_queuepair(struct vmci_host_dev *vmci_host_dev,
 	if (put_user(vmci_status, retptr)) {
 		if (vmci_status >= VMCI_SUCCESS) {
 			vmci_status = vmci_qp_broker_detach(handle,
-							vmci_host_dev->context);
+						vmci_host_dev->context);
 		}
 		return -EFAULT;
 	}
@@ -597,9 +599,9 @@ static int vmci_host_do_queuepair_setpf(struct vmci_host_dev *vmci_host_dev,
 	}
 
 	result = vmci_qp_broker_set_page_store(page_file_info.handle,
-						page_file_info.produce_va,
-						page_file_info.consume_va,
-						vmci_host_dev->context);
+					page_file_info.produce_va,
+					page_file_info.consume_va,
+					vmci_host_dev->context);
 	if (result < VMCI_SUCCESS) {
 		if (put_user(result, &info->result)) {
 			/*
@@ -718,7 +720,7 @@ static int vmci_host_do_ctx_get_cpt_state(struct vmci_host_dev *vmci_host_dev,
 
 	cid = vmci_ctx_get_id(vmci_host_dev->context);
 	get_info.result = vmci_ctx_get_chkpt_state(cid, get_info.cpt_type,
-						&get_info.buf_size, &cpt_buf);
+					&get_info.buf_size, &cpt_buf);
 	if (get_info.result == VMCI_SUCCESS && get_info.buf_size) {
 		void __user *ubuf = (void __user *)(uintptr_t)get_info.cpt_buf;
 		retval = copy_to_user(ubuf, cpt_buf, get_info.buf_size);
