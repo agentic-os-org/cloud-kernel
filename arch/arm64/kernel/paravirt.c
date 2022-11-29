@@ -248,9 +248,23 @@ static bool has_kvm_pvsched(void)
 	return (res.a0 == SMCCC_RET_SUCCESS);
 }
 
+static bool pvpreempted;
+
+static __init int parse_pvpreempted(char *arg)
+{
+	pvpreempted = true;
+	return 0;
+}
+early_param("pvpreempted", parse_pvpreempted);
+
 int __init pv_sched_init(void)
 {
 	int ret;
+
+	if (!pvpreempted) {
+		pr_info("PV sched disabled\n");
+		return 0;
+	}
 
 	if (is_hyp_mode_available())
 		return 0;
