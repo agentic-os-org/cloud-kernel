@@ -1505,4 +1505,16 @@ config PGTABLE_BIND
 
 source "mm/damon/Kconfig"
 
+config PAGECACHE_LIMIT
+	bool "Enable pagecache limit function"
+	depends on MMU && MEMCG
+	default n
+	help
+	  This feature is used to solve the problem that the system has large number memory of
+	  pagecache, which may cause insufficient remaining memory in the system, and, service
+	  performance and usage are affected. Therefore, in some scenarios, you need to limit
+	  the page cache usage to ensure that the remaining memory can meet service requirements.
+
+	  If unsure, say N.
+
 endmenu
