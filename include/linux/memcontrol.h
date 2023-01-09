@@ -397,6 +397,12 @@ struct mem_cgroup {
 #ifdef CONFIG_PRE_OOM
 	bool pre_oom;
 #endif
+
+#ifdef CONFIG_PAGECACHE_LIMIT
+	bool allow_pgcache_limit;
+	unsigned long pgcache_limit_size;
+#endif
+
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
