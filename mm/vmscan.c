@@ -8297,8 +8297,19 @@ void __memcg_pagecache_shrink(struct mem_cgroup *memcg,
 		 * driect reclaim, we only enable mapped pages to be reclaimed
 		 * when priority value is smaller than DEF_PRIORITY - 4.
 		 */
-		if (sc.priority < DEF_PRIORITY - 4)
+		if (memcg->pgcache_limit_sync &&
+		    (sc.priority < DEF_PRIORITY - 4))
 			sc.may_unmap = 1;
+
+		/*
+		 * We only enable dirty pages to be reclaimed when priority
+		 * value is smaller than DEF_PRIORITY - 2, and the reclaim
+		 * must be in asynchronous scenario, in order to minimize the
+		 * performance jitter when dirty pages to be reclaimed.
+		 */
+		if (current_is_kswapd() && !memcg->pgcache_limit_sync &&
+		    (sc.priority < DEF_PRIORITY - 2))
+			sc.may_writepage = 1;
 
 		if (__pagecache_shrink(memcg, &sc) < 0)
 			break;

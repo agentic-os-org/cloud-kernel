@@ -155,4 +155,10 @@ ssize_t mem_cgroup_pgcache_limit_size_write(struct kernfs_open_file *of, char *b
 					    size_t nbytes, loff_t off);
 #endif
 
+#ifdef CONFIG_PAGECACHE_LIMIT
+u64 mem_cgroup_allow_pgcache_sync_read(struct cgroup_subsys_state *css, struct cftype *cft);
+int mem_cgroup_allow_pgcache_sync_write(struct cgroup_subsys_state *css,
+					struct cftype *cft, u64 val);
+#endif
+
 #endif	/* __MM_MEMCONTROL_V1_H */

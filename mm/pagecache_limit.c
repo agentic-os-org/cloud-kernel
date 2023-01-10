@@ -12,6 +12,7 @@
 #include <linux/pagecache_limit.h>
 
 DEFINE_STATIC_KEY_FALSE(pagecache_limit_enabled_key);
+struct workqueue_struct *memcg_pgcache_limit_wq;
 
 static int __init setup_pagecache_limit(char *s)
 {
@@ -70,6 +71,19 @@ void memcg_add_pgcache_limit_reclaimed(struct mem_cgroup *memcg,
 	preempt_enable();
 }
 
+void memcg_pgcache_limit_work_func(struct work_struct *work)
+{
+	struct mem_cgroup *memcg;
+
+	memcg = container_of(work, struct mem_cgroup, pgcache_limit_work);
+	if (!is_memcg_pgcache_limit_enabled(memcg))
+		return;
+
+	current->flags |= PF_MEMALLOC | PF_KSWAPD;
+	__memcg_pagecache_shrink(memcg, true, GFP_KERNEL);
+	current->flags &= ~(PF_MEMALLOC | PF_KSWAPD);
+}
+
 void memcg_pagecache_shrink(struct mem_cgroup *memcg, gfp_t gfp_mask)
 {
 	struct mem_cgroup *tmp_memcg = memcg;
@@ -92,7 +106,11 @@ void memcg_pagecache_shrink(struct mem_cgroup *memcg, gfp_t gfp_mask)
 		 * traverses, we select the appropriate time to enable mapped pagecache
 		 * to be reclaimed.
 		 */
-		__memcg_pagecache_shrink(tmp_memcg, false, gfp_mask);
+		if (tmp_memcg->pgcache_limit_sync == PGCACHE_RECLAIM_DIRECT)
+			__memcg_pagecache_shrink(tmp_memcg, false, gfp_mask);
+		else
+			queue_work(memcg_pgcache_limit_wq,
+				   &tmp_memcg->pgcache_limit_work);
 	} while ((tmp_memcg = parent_mem_cgroup(tmp_memcg)) &&
 		 is_memcg_pgcache_limit_enabled(tmp_memcg));
 }

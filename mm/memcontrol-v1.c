@@ -2153,6 +2153,11 @@ struct cftype mem_cgroup_legacy_files[] = {
 		.read_u64 = mem_cgroup_pgcache_limit_size_read,
 		.write = mem_cgroup_pgcache_limit_size_write,
 	},
+	{
+		.name = "pagecache_limit.sync",
+		.read_u64 = mem_cgroup_allow_pgcache_sync_read,
+		.write_u64 = mem_cgroup_allow_pgcache_sync_write,
+	},
 #endif
 	{
 		.name = "usage_in_bytes",
