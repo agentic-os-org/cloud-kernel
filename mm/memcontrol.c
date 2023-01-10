@@ -4022,6 +4022,31 @@ ssize_t mem_cgroup_pgcache_limit_size_write(struct kernfs_open_file *of, char *b
 
 	return nbytes;
 }
+
+u64 mem_cgroup_allow_pgcache_sync_read(struct cgroup_subsys_state *css, struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	return READ_ONCE(memcg->pgcache_limit_sync);
+}
+
+int mem_cgroup_allow_pgcache_sync_write(struct cgroup_subsys_state *css,
+					struct cftype *cft, u64 val)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	if (val > 1)
+		return -EINVAL;
+	if (memcg->pgcache_limit_sync == val)
+		return 0;
+
+	if (val)
+		memcg->pgcache_limit_sync = PGCACHE_RECLAIM_DIRECT;
+	else
+		memcg->pgcache_limit_sync = PGCACHE_RECLAIM_ASYNC;
+
+	return 0;
+}
 #endif /* CONFIG_PAGECACHE_LIMIT */
 
 /*
@@ -4257,6 +4282,9 @@ static struct mem_cgroup *mem_cgroup_alloc(struct mem_cgroup *parent)
 
 	INIT_WORK(&memcg->high_work, high_work_func);
 	INIT_WORK(&memcg->wmark_work, wmark_work_func);
+#ifdef CONFIG_PAGECACHE_LIMIT
+	INIT_WORK(&memcg->pgcache_limit_work, memcg_pgcache_limit_work_func);
+#endif
 	vmpressure_init(&memcg->vmpressure);
 	INIT_LIST_HEAD(&memcg->memory_peaks);
 	INIT_LIST_HEAD(&memcg->swap_peaks);
@@ -4448,6 +4476,9 @@ static void mem_cgroup_css_free(struct cgroup_subsys_state *css)
 	vmpressure_cleanup(&memcg->vmpressure);
 	cancel_work_sync(&memcg->high_work);
 	cancel_work_sync(&memcg->wmark_work);
+#ifdef CONFIG_PAGECACHE_LIMIT
+	cancel_work_sync(&memcg->pgcache_limit_work);
+#endif
 	memcg1_remove_from_trees(memcg);
 	free_shrinker_info(memcg);
 	mem_cgroup_free(memcg);
@@ -6004,6 +6035,15 @@ int __init mem_cgroup_init(void)
 
 	if (!memcg_wmark_wq)
 		return -ENOMEM;
+#ifdef CONFIG_PAGECACHE_LIMIT
+	memcg_pgcache_limit_wq = alloc_workqueue("memcg_pgcache_limit",
+						 WQ_FREEZABLE |
+							 WQ_UNBOUND | WQ_MEM_RECLAIM,
+						 WQ_UNBOUND_MAX_ACTIVE);
+
+	if (!memcg_pgcache_limit_wq)
+		return -ENOMEM;
+#endif
 
 	cpuhp_setup_state_nocalls(CPUHP_MM_MEMCQ_DEAD, "mm/memctrl:dead", NULL,
 				  memcg_hotplug_cpu_dead);
