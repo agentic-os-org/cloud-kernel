@@ -2398,6 +2398,11 @@ int memcg_exstat_show(struct seq_file *m, void *v)
 	seq_printf(m, "wmark_reclaim_work_ms %llu\n",
 		   memcg_exstat_gather(memcg, MEMCG_WMARK_RECLAIM) >> 20);
 
+#ifdef CONFIG_PAGECACHE_LIMIT
+	seq_printf(m, "pagecache_limit_reclaimed_kb %llu\n",
+		   memcg_exstat_gather(memcg, MEMCG_PGCACHE_RECLAIM) * PAGE_SIZE >> 10);
+#endif
+
 #ifdef CONFIG_LRU_GEN
 	for_each_node_state(nid, N_MEMORY) {
 		struct lruvec *lruvec;
