@@ -23,6 +23,80 @@ static int __init setup_pagecache_limit(char *s)
 }
 __setup("pagecache_limit=", setup_pagecache_limit);
 
+bool is_memcg_pgcache_limit_enabled(struct mem_cgroup *memcg)
+{
+	if (!pagecache_limit_enabled())
+		return false;
+
+	return READ_ONCE(memcg->allow_pgcache_limit);
+}
+
+static inline unsigned long memcg_get_pgcache_nr_pages(struct mem_cgroup *memcg)
+{
+	/*
+	 * There use 'NR_INACTIVE_FILE' + 'NR_ACTIVE_FILE'
+	 * to represent pagecache.
+	 */
+	return memcg_page_state(memcg, NR_INACTIVE_FILE) +
+	       memcg_page_state(memcg, NR_ACTIVE_FILE);
+}
+
+unsigned long memcg_get_pgcache_overflow_size(struct mem_cgroup *memcg)
+{
+	unsigned long limit_pgcache, total_pgcache;
+
+	limit_pgcache = READ_ONCE(memcg->pgcache_limit_size) / PAGE_SIZE;
+	if (!limit_pgcache)
+		return 0;
+
+	total_pgcache = memcg_get_pgcache_nr_pages(memcg);
+	if (total_pgcache > limit_pgcache)
+		return total_pgcache - limit_pgcache;
+
+	return 0;
+}
+
+void memcg_add_pgcache_limit_reclaimed(struct mem_cgroup *memcg,
+				       unsigned long nr)
+{
+	struct mem_cgroup *iter;
+
+	preempt_disable();
+
+	for (iter = memcg; iter; iter = parent_mem_cgroup(iter))
+		__this_cpu_add(iter->exstat_cpu->item[MEMCG_PGCACHE_RECLAIM],
+			       nr);
+
+	preempt_enable();
+}
+
+void memcg_pagecache_shrink(struct mem_cgroup *memcg, gfp_t gfp_mask)
+{
+	struct mem_cgroup *tmp_memcg = memcg;
+
+	if (!memcg || !is_memcg_pgcache_limit_enabled(memcg))
+		return;
+
+	/*
+	 * We support pagecache to check not only current memcg, but also
+	 * there parent memcg, to prevent the parent group which has large
+	 * number of pagecache but not release it in time.
+	 */
+	do {
+		if (!memcg_get_pgcache_overflow_size(tmp_memcg))
+			continue;
+		/*
+		 * In direct memory reclaim path, we default support file pagecache
+		 * which is unmapped, but we also concern most of pagecache are mapped,
+		 * it would lead to "pagecache limit" has no effect, so in "sc.priority"
+		 * traverses, we select the appropriate time to enable mapped pagecache
+		 * to be reclaimed.
+		 */
+		__memcg_pagecache_shrink(tmp_memcg, false, gfp_mask);
+	} while ((tmp_memcg = parent_mem_cgroup(tmp_memcg)) &&
+		 is_memcg_pgcache_limit_enabled(tmp_memcg));
+}
+
 #ifdef CONFIG_SYSFS
 static ssize_t pagecache_limit_enabled_show(struct kobject *kobj,
 				    struct kobj_attribute *attr, char *buf)
