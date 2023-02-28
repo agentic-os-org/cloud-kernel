@@ -294,9 +294,10 @@ void __sched_core_account_sibidle(struct rq *rq)
 		 */
 		__account_sibidle_time(p, delta, delta_task,
 				       !!rq->core->core_forceidle_count);
+		account_ht_aware_quota(p, delta_task);
 	}
 
-out:
+out:;
 #ifdef CONFIG_SCHED_ACPU
 	for_each_cpu(i, smt_mask) {
 		rq_i = cpu_rq(i);

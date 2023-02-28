@@ -9279,6 +9279,9 @@ struct task_group *sched_create_group(struct task_group *parent)
 	scx_tg_init(tg);
 	alloc_uclamp_sched_group(tg, parent);
 
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
+	tg->ht_ratio = 100;
+#endif
 	return tg;
 
 err:
@@ -10137,6 +10140,38 @@ static int cpu_idle_write_s64(struct cgroup_subsys_state *css,
 }
 #endif /* CONFIG_GROUP_SCHED_WEIGHT */
 
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
+static int cpu_ht_ratio_write(struct cgroup_subsys_state *css,
+			      struct cftype *cftype, u64 ht_ratio)
+{
+	struct task_group *tg = css_tg(css);
+	int cpu;
+
+	if (ht_ratio < 100 || ht_ratio > 200)
+		return -1;
+
+	if (tg == &root_task_group)
+		return -1;
+
+	tg->ht_ratio = ht_ratio;
+	for_each_online_cpu(cpu) {
+		struct sched_entity *se = tg->se[cpu];
+
+		se->ht_ratio = ht_ratio;
+	}
+
+	return 0;
+}
+
+static u64 cpu_ht_ratio_read(struct cgroup_subsys_state *css,
+					       struct cftype *cft)
+{
+	struct task_group *tg = css_tg(css);
+
+	return tg->ht_ratio;
+}
+#endif
+
 static struct cftype cpu_legacy_files[] = {
 #ifdef CONFIG_GROUP_SCHED_WEIGHT
 	{
@@ -10189,6 +10224,13 @@ static struct cftype cpu_legacy_files[] = {
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.seq_show = cpu_uclamp_max_show,
 		.write = cpu_uclamp_max_write,
+	},
+#endif
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
+	{
+		.name = "ht_ratio",
+		.read_u64 = cpu_ht_ratio_read,
+		.write_u64 = cpu_ht_ratio_write,
 	},
 #endif
 	{ }	/* Terminate */
@@ -11038,6 +11080,13 @@ static struct cftype cpu_files[] = {
 	{
 		.name = "usage_all",
 		.seq_show = cpu_usage_all_show,
+	},
+#endif
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
+	{
+		.name = "ht_ratio",
+		.read_u64 = cpu_ht_ratio_read,
+		.write_u64 = cpu_ht_ratio_write,
 	},
 #endif
 	{ }	/* terminate */
