@@ -620,6 +620,9 @@ struct task_group {
 	unsigned long		avenrun_r[3];
 #endif
 
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
+	unsigned int		ht_ratio;
+#endif
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -1697,6 +1700,12 @@ extern void sched_core_dequeue(struct rq *rq, struct task_struct *p, int flags);
 
 extern void sched_core_get(void);
 extern void sched_core_put(void);
+
+#ifdef CONFIG_CFS_BANDWIDTH
+extern void account_ht_aware_quota(struct task_struct *p, u64 delta);
+#else
+static inline void account_ht_aware_quota(struct task_struct *p, u64 delta) { }
+#endif
 
 #else /* !CONFIG_SCHED_CORE: */
 
