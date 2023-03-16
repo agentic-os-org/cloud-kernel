@@ -818,6 +818,8 @@ struct iommu_ops {
  * @unpreserve: Unpreserve the iommu domain that was preserved earlier.
  * @restore: Restore the iommu domain after liveupdate.
  *           Returns 0 on success, a negative errno on failure.
+ * @get_msi_mapping_domain: Return the related iommu_domain that should hold the
+ *                          MSI cookie and accept mapping(s).
  */
 struct iommu_domain_ops {
 	int (*attach_dev)(struct iommu_domain *domain, struct device *dev,
@@ -866,6 +868,8 @@ struct iommu_domain_ops {
 	int (*preserve)(struct iommu_domain *domain, struct iommu_domain_ser *ser);
 	void (*unpreserve)(struct iommu_domain *domain, struct iommu_domain_ser *ser);
 	int (*restore)(struct iommu_domain *domain, struct iommu_domain_ser *ser);
+	struct iommu_domain *
+		(*get_msi_mapping_domain)(struct iommu_domain *domain);
 };
 
 /**
