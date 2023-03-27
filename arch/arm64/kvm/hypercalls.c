@@ -126,6 +126,10 @@ static bool kvm_smccc_test_fw_bmap(struct kvm_vcpu *vcpu, u32 func_id)
 		return test_bit(KVM_REG_ARM_VENDOR_HYP_BIT_PV_LOCK,
 				&smccc_feat->vendor_hyp_bmap);
 #endif /* CONFIG_PARAVIRT_SCHED */
+	case ARM_SMCCC_HV_PV_CPU_FREQ_GET:
+	case ARM_SMCCC_HV_PV_CPU_FREQ_GET_V2:
+		return test_bit(KVM_REG_ARM_VENDOR_HYP_BIT_PV_CPU_FREQ,
+				&smccc_feat->vendor_hyp_bmap);
 	default:
 		return false;
 	}
@@ -363,6 +367,16 @@ int kvm_smccc_call_handler(struct kvm_vcpu *vcpu)
 			val[0] = SMCCC_RET_SUCCESS;
 			break;
 #endif /* CONFIG_PARAVIRT_SPINLOCKS */
+		case ARM_SMCCC_HV_PV_CPU_FREQ_FEATURES:
+			if (test_bit(KVM_REG_ARM_VENDOR_HYP_BIT_PV_CPU_FREQ,
+				     &smccc_feat->vendor_hyp_bmap))
+				val[0] = SMCCC_RET_SUCCESS;
+			break;
+		case ARM_SMCCC_HV_PV_CPU_FREQ_GET_V2:
+			if (test_bit(KVM_REG_ARM_VENDOR_HYP_BIT_PV_CPU_FREQ,
+				     &smccc_feat->vendor_hyp_bmap))
+				val[0] = SMCCC_RET_SUCCESS;
+			break;
 		}
 		break;
 	case ARM_SMCCC_HV_PV_TIME_FEATURES:
@@ -399,6 +413,12 @@ int kvm_smccc_call_handler(struct kvm_vcpu *vcpu)
 		break;
 	case ARM_SMCCC_VENDOR_HYP_KVM_PTP_FUNC_ID:
 		kvm_ptp_get_time(vcpu, val);
+		break;
+	case ARM_SMCCC_HV_PV_CPU_FREQ_GET:
+		val[0] = kvm_pv_cpu_freq_get(vcpu);
+		break;
+	case ARM_SMCCC_HV_PV_CPU_FREQ_GET_V2:
+		val[0] = kvm_pv_cpu_freq_get_v2(vcpu);
 		break;
 	case ARM_SMCCC_TRNG_VERSION:
 	case ARM_SMCCC_TRNG_FEATURES:
