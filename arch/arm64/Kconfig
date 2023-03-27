@@ -1693,6 +1693,16 @@ config PARAVIRT_TIME_ACCOUNTING
 
 	  If in doubt, say N here.
 
+config PARAVIRT_GUEST_CPUFREQ
+	bool "Paravirtual cpu frequency"
+	def_bool n
+	help
+	  Select this option to enable guest kernel to obtain cpu frequency
+	  from /proc/cpuinfo. This config should only be enabled for guest
+	  kernel.
+
+	  If in doubt, say N here.
+
 config ARCH_SUPPORTS_KEXEC
 	def_bool PM_SLEEP_SMP
 
