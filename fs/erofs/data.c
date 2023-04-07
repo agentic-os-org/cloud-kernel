@@ -34,12 +34,14 @@ void erofs_put_metabuf(struct erofs_buf *buf)
 	put_page(buf->page);
 	buf->page = NULL;
 
+#ifdef CONFIG_EROFS_FS_RAFS_V6
 	if (buf->mapping) {
 		buf->mapping->a_ops->endpfn(buf->mapping, index,
 				&buf->iomap, 0);
 		buf->mapping = NULL;
 		memset(&buf->iomap, 0, sizeof(buf->iomap));
 	}
+#endif
 }
 
 /*
@@ -47,9 +49,9 @@ void erofs_put_metabuf(struct erofs_buf *buf)
  * anonymous inode in fscache mode.
  */
 void *__erofs_bread(struct super_block *sb, struct erofs_buf *buf,
-		    struct inode *inode, erofs_blk_t blkaddr,
-		    enum erofs_kmap_type type)
+		    erofs_blk_t blkaddr, enum erofs_kmap_type type)
 {
+	struct inode *inode = buf->inode;
 	erofs_off_t offset = (erofs_off_t)blkaddr << inode->i_blkbits;
 	struct address_space *const mapping = inode->i_mapping;
 	pgoff_t index = offset >> PAGE_SHIFT;
@@ -100,25 +102,34 @@ void *__erofs_bread(struct super_block *sb, struct erofs_buf *buf,
 	return buf->base + (offset & ~PAGE_MASK);
 }
 
-void *erofs_bread(struct erofs_buf *buf, struct inode *inode,
-		  erofs_blk_t blkaddr, enum erofs_kmap_type type)
+void *erofs_bread(struct erofs_buf *buf, erofs_blk_t blkaddr,
+		  enum erofs_kmap_type type)
 {
-	return __erofs_bread(NULL, buf, inode, blkaddr, type);
+	return __erofs_bread(NULL, buf, blkaddr, type);
+}
+
+void erofs_init_metabuf(struct erofs_buf *buf, struct super_block *sb)
+{
+	if (erofs_is_fscache_mode(sb))
+		buf->inode = EROFS_SB(sb)->s_fscache->inode;
+#ifdef CONFIG_EROFS_FS_RAFS_V6
+	else if (erofs_is_rafsv6_mode(sb))
+		buf->inode = EROFS_SB(sb)->bootstrap->f_inode;
+#endif
+	else
+		buf->inode = sb->s_bdev->bd_inode;
+
 }
 
 void *erofs_read_metabuf(struct erofs_buf *buf, struct super_block *sb,
 			 erofs_blk_t blkaddr, enum erofs_kmap_type type)
 {
+	erofs_init_metabuf(buf, sb);
 #ifdef CONFIG_EROFS_FS_RAFS_V6
 	if (erofs_is_rafsv6_mode(sb))
-		return __erofs_bread(sb, buf, EROFS_SB(sb)->bootstrap->f_inode,
-				     blkaddr, type);
+		return __erofs_bread(sb, buf, blkaddr, type);
 #endif
-	if (erofs_is_fscache_mode(sb))
-		return erofs_bread(buf, EROFS_SB(sb)->s_fscache->inode,
-				   blkaddr, type);
-
-	return erofs_bread(buf, sb->s_bdev->bd_inode, blkaddr, type);
+	return erofs_bread(buf, blkaddr, type);
 }
 
 int erofs_map_blocks(struct inode *inode, struct erofs_map_blocks *map)
