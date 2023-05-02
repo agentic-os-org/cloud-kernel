@@ -41,14 +41,6 @@ static inline bool __chk_range_not_ok(unsigned long addr, unsigned long size, un
 	__chk_range_not_ok((unsigned long __force)(addr), size, limit); \
 })
 
-#ifdef CONFIG_DEBUG_ATOMIC_SLEEP
-static inline bool pagefault_disabled(void);
-# define WARN_ON_IN_IRQ()	\
-	WARN_ON_ONCE(!in_task() && !pagefault_disabled())
-#else
-# define WARN_ON_IN_IRQ()
-#endif
-
 /**
  * access_ok - Checks if a user space pointer is valid
  * @addr: User space pointer to start of block to check
@@ -68,7 +60,6 @@ static inline bool pagefault_disabled(void);
  */
 #define access_ok(addr, size)					\
 ({									\
-	WARN_ON_IN_IRQ();						\
 	likely(!__range_not_ok(addr, size, TASK_SIZE_MAX));		\
 })
 
