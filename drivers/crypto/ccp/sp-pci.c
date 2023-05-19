@@ -312,6 +312,14 @@ static const struct tee_vdata teev1 = {
 	.ring_rptr_reg          = 0x10554,
 };
 
+static const struct tee_vdata teev2 = {
+	.cmdresp_reg		= 0x10944,	/* C2PMSG_17 */
+	.cmdbuff_addr_lo_reg	= 0x10948,	/* C2PMSG_18 */
+	.cmdbuff_addr_hi_reg	= 0x1094c,	/* C2PMSG_19 */
+	.ring_wptr_reg		= 0x10950,	/* C2PMSG_20 */
+	.ring_rptr_reg		= 0x10954,	/* C2PMSG_21 */
+};
+
 static const struct sev_vdata csvv1 = {
 	.cmdresp_reg		= 0x10580,
 	.cmdbuff_addr_lo_reg	= 0x105e0,
@@ -360,6 +368,14 @@ static const struct psp_vdata psp_csvv1 = {
 	.p2c_cmdbuff_addr_hi_reg = 0x105f0,
 #endif
 };
+
+static const struct psp_vdata pspv5 = {
+	.tee			= &teev2,
+	.feature_reg		= 0x109fc,	/* C2PMSG_63 */
+	.inten_reg		= 0x10510,	/* P2CMSG_INTEN */
+	.intsts_reg		= 0x10514,	/* P2CMSG_INTSTS */
+};
+
 #endif
 
 static const struct sp_dev_vdata dev_vdata[] = {
@@ -417,6 +433,12 @@ static const struct sp_dev_vdata dev_vdata[] = {
 		.psp_vdata = &psp_csvv1,
 #endif
 	},
+	{	/* 7 */
+		.bar = 2,
+#ifdef CONFIG_CRYPTO_DEV_SP_PSP
+		.psp_vdata = &pspv5,
+#endif
+	},
 };
 static const struct pci_device_id sp_pci_table[] = {
 	{ PCI_VDEVICE(AMD, 0x1537), (kernel_ulong_t)&dev_vdata[0] },
@@ -434,6 +456,7 @@ static const struct pci_device_id sp_pci_table[] = {
 	{ PCI_VDEVICE(HYGON, 0x14d8), (kernel_ulong_t)&dev_vdata[2] },
 	{ PCI_VDEVICE(HYGON, 0x14c6), (kernel_ulong_t)&dev_vdata[6] },
 	{ PCI_VDEVICE(HYGON, 0x2006), (kernel_ulong_t)&dev_vdata[6] },
+	{ PCI_VDEVICE(AMD, 0x17E0), (kernel_ulong_t)&dev_vdata[7] },
 	/* Last entry must be zero */
 	{ 0, }
 };
