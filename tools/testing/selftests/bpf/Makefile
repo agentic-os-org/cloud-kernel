@@ -80,7 +80,8 @@ endif
 TEST_GEN_PROGS = test_verifier test_tag test_maps test_lru_map test_progs \
 	test_sockmap \
 	test_tcpnotify_user \
-	test_progs-no_alu32
+	test_progs-no_alu32 \
+	test_rich_container
 TEST_INST_SUBDIRS := no_alu32
 
 # Also test bpf-gcc, if present
@@ -324,6 +325,7 @@ $(OUTPUT)/flow_dissector_load: $(TESTING_HELPERS)
 $(OUTPUT)/test_maps: $(TESTING_HELPERS)
 $(OUTPUT)/test_verifier: $(TESTING_HELPERS) $(CAP_HELPERS) $(UNPRIV_HELPERS)
 $(OUTPUT)/xsk.o: $(BPFOBJ)
+$(OUTPUT)/test_rich_container: $(CGROUP_HELPERS) $(TESTING_HELPERS)
 
 BPFTOOL ?= $(DEFAULT_BPFTOOL)
 $(DEFAULT_BPFTOOL): $(wildcard $(BPFTOOLDIR)/*.[ch] $(BPFTOOLDIR)/Makefile)    \
@@ -888,6 +890,9 @@ $(OUTPUT)/bench: $(OUTPUT)/bench.o \
 #   char a[PATH_MAX], b[PATH_MAX];
 #   snprintf(a, "%s/foo", b);      // triggers -Wformat-truncation
 $(OUTPUT)/veristat.o: CFLAGS += -Wno-format-truncation
+
+$(OUTPUT)/test_rich_container: $(OUTPUT)/rich_container.skel.h
+
 $(OUTPUT)/veristat.o: $(BPFOBJ)
 $(OUTPUT)/veristat: $(OUTPUT)/veristat.o
 	$(call msg,BINARY,,$@)
