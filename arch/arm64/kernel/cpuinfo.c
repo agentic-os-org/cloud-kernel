@@ -27,6 +27,7 @@
 #include <linux/smp.h>
 #include <linux/delay.h>
 #include <linux/kvm_types.h>
+#include <linux/bpf-cgroup.h>
 
 /*
  * In case the boot CPU is hotpluggable, we record its initial state and
@@ -225,8 +226,24 @@ static int c_show(struct seq_file *m, void *v)
 	unsigned int index, total;
 	unsigned int freq;
 	bool rich_container = false;
+	struct bpf_rich_container_info *info;
 
 	index = cpu;
+
+#ifdef CONFIG_CGROUP_BPF
+	if (cgroup_bpf_enabled(CGROUP_RICH_CONTAINER_CPU)) {
+		info = kzalloc_obj(*info);
+		if (info) {
+			if (!__cgroup_bpf_run_filter_rich_container(info,
+								    CGROUP_RICH_CONTAINER_CPU) &&
+			    !cpumask_test_cpu(cpu, &info->cpus_mask)) {
+				kfree(info);
+				return 0;
+			}
+			kfree(info);
+		}
+	}
+#endif
 
 	if (check_rich_container(cpu, &index, &rich_container, &total))
 		return 0;
