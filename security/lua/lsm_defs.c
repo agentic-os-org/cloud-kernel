@@ -295,7 +295,7 @@ LUA_LSM_INT_DEFINE1(bprm_check_security, struct linux_binprm *, bprm)
  * bprm_committing_creds
  * Default: LSM_RET_VOID
  */
-LUA_LSM_VOID_DEFINE1(bprm_committing_creds, struct linux_binprm *, bprm)
+LUA_LSM_VOID_DEFINE1(bprm_committing_creds, const struct linux_binprm *, bprm)
 {
 	*(const struct linux_binprm **)newbinprm(L) = bprm;
 }
