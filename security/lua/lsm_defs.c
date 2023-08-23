@@ -215,7 +215,7 @@ LUA_LSM_INT_DEFINE4(capable, const struct cred *, cred,
  * Default: 0
  */
 LUA_LSM_INT_DEFINE4(quotactl, int, cmds, int, type, int, id,
-		struct super_block *, sb)
+		const struct super_block *, sb)
 {
 	lua_pushinteger(L, (lua_Integer)cmds);
 	lua_pushinteger(L, (lua_Integer)type);
