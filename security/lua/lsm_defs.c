@@ -440,7 +440,7 @@ LUA_LSM_INT_DEFINE2(sb_remount, struct super_block *, sb, void *, mnt_opts)
  * sb_kern_mount
  * Default: 0
  */
-LUA_LSM_INT_DEFINE1(sb_kern_mount, struct super_block *, sb)
+LUA_LSM_INT_DEFINE1(sb_kern_mount, const struct super_block *, sb)
 {
 	*(const struct super_block **)newsuperblock(L) = sb;
 }
