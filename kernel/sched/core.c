@@ -10489,6 +10489,41 @@ static ssize_t cpu_max_write(struct kernfs_open_file *of,
 }
 #endif /* CONFIG_CFS_BANDWIDTH */
 
+#ifdef CONFIG_SCHED_SLI
+static int cpu_sched_cfs_show(struct seq_file *sf, void *v)
+{
+	struct task_group *tg = css_tg(seq_css(sf));
+	struct sched_entity *se;
+	struct sched_statistics *stats;
+	int cpu;
+	u64 wait_max = 0, wait_sum = 0, wait_sum_other = 0, exec_sum = 0;
+
+	if (!schedstat_enabled())
+		goto out_show;
+
+	rcu_read_lock();
+	for_each_online_cpu(cpu) {
+		se = tg->se[cpu];
+		if (!se)
+			continue;
+		stats = __schedstats_from_se(se);
+		exec_sum += schedstat_val(se->sum_exec_runtime);
+		wait_sum_other +=
+			schedstat_val(stats->parent_wait_contrib);
+		wait_sum += schedstat_val(stats->wait_sum);
+		wait_max = max(wait_max, schedstat_val(stats->wait_max));
+	}
+	rcu_read_unlock();
+out_show:
+	/* [Serve time] [On CPU time] [Queue other time] [Queue sibling time] [Queue max time] */
+	seq_printf(sf, "%lld %lld %lld %lld %lld\n",
+			exec_sum + wait_sum, exec_sum, wait_sum_other,
+			wait_sum - wait_sum_other, wait_max);
+
+	return 0;
+}
+#endif
+
 static struct cftype cpu_files[] = {
 #ifdef CONFIG_GROUP_SCHED_WEIGHT
 	{
@@ -10538,6 +10573,12 @@ static struct cftype cpu_files[] = {
 		.write = cpu_uclamp_max_write,
 	},
 #endif /* CONFIG_UCLAMP_TASK_GROUP */
+#ifdef CONFIG_SCHED_SLI
+	{
+		.name = "sched_cfs_statistics",
+		.seq_show = cpu_sched_cfs_show,
+	},
+#endif
 	{ }	/* terminate */
 };
 
