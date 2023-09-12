@@ -465,6 +465,57 @@ static inline u64 default_bw_period_us(void)
 }
 #endif /* CONFIG_GROUP_SCHED_BANDWIDTH */
 
+enum sched_lat_stat_item {
+	SCHED_LAT_WAIT,
+	SCHED_LAT_BLOCK,
+	SCHED_LAT_IOBLOCK,
+	SCHED_LAT_CGROUP_WAIT,
+	SCHED_LAT_NR_STAT
+};
+
+/*
+ * [0, 1ms)
+ * [1, 4ms)
+ * [4, 7ms)
+ * [7, 10ms)
+ * [10, 20ms)
+ * [20, 30ms)
+ * [30, 40ms)
+ * [40, 50ms)
+ * [50, 100ms)
+ * [100, 500ms)
+ * [500, 1000ms)
+ * [1000, 5000ms)
+ * [5000, 10000ms)
+ * [10000ms, INF)
+ * total(ms)
+ * nr
+ */
+/* Scheduler latency histogram distribution, in milliseconds */
+enum sched_lat_count_t {
+	SCHED_LAT_0_1,
+	SCHED_LAT_1_4,
+	SCHED_LAT_4_7,
+	SCHED_LAT_7_10,
+	SCHED_LAT_10_20,
+	SCHED_LAT_20_30,
+	SCHED_LAT_30_40,
+	SCHED_LAT_40_50,
+	SCHED_LAT_50_100,
+	SCHED_LAT_100_500,
+	SCHED_LAT_500_1000,
+	SCHED_LAT_1000_5000,
+	SCHED_LAT_5000_10000,
+	SCHED_LAT_10000_INF,
+	SCHED_LAT_TOTAL,
+	SCHED_LAT_NR,
+	SCHED_LAT_NR_COUNT,
+};
+
+struct sched_cgroup_lat_stat_cpu {
+	unsigned long item[SCHED_LAT_NR_STAT][SCHED_LAT_NR_COUNT];
+};
+
 struct cfs_bandwidth {
 #ifdef CONFIG_CFS_BANDWIDTH
 	raw_spinlock_t		lock;
@@ -548,6 +599,10 @@ struct task_group {
 	struct uclamp_se	uclamp_req[UCLAMP_CNT];
 	/* Effective clamp values used for a task group */
 	struct uclamp_se	uclamp[UCLAMP_CNT];
+#endif
+
+#ifdef CONFIG_SCHED_SLI
+	struct sched_cgroup_lat_stat_cpu __percpu *lat_stat_cpu;
 #endif
 
 	CK_KABI_RESERVE(1)
@@ -4260,15 +4315,19 @@ DEFINE_CLASS_IS_UNCONDITIONAL(sched_change)
 extern u64 get_idle_time(struct kernel_cpustat *kcs, int cpu);
 extern u64 get_iowait_time(struct kernel_cpustat *kcs, int cpu);
 extern void task_ca_increase_nr_migrations(struct task_struct *tsk);
-void cpuacct_update_latency(struct sched_entity *se, u64 delta);
-void task_ca_update_block(struct task_struct *tsk, u64 runtime);
+void cpu_update_latency(struct sched_entity *se, u64 delta);
+void task_cpu_update_block(struct task_struct *tsk, u64 runtime);
 void calc_cgroup_load(void);
 bool async_load_calc_enabled(void);
+struct task_group *cgroup_tg(struct cgroup *cgrp);
+int sched_lat_stat_show(struct seq_file *sf, void *v);
+int sched_lat_stat_write(struct cgroup_subsys_state *css,
+				struct cftype *cft, u64 val);
 #else
 static inline void task_ca_increase_nr_migrations(struct task_struct *tsk) { }
-static inline void cpuacct_update_latency(struct sched_entity *se,
+static inline void cpu_update_latency(struct sched_entity *se,
 		u64 delta) { }
-static inline void task_ca_update_block(struct task_struct *tsk,
+static inline void task_cpu_update_block(struct task_struct *tsk,
 		u64 runtime) { }
 static inline void calc_cgroup_load(void) { }
 static inline bool async_load_calc_enabled(void)

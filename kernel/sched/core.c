@@ -8869,11 +8869,19 @@ int in_sched_functions(unsigned long addr)
 }
 
 #ifdef CONFIG_CGROUP_SCHED
+#ifdef CONFIG_SCHED_SLI
+static DEFINE_PER_CPU(struct sched_cgroup_lat_stat_cpu, root_lat_stat_cpu);
+#endif
+
 /*
  * Default task group.
  * Every task in system belongs to this group at bootup.
  */
-struct task_group root_task_group;
+struct task_group root_task_group = {
+#ifdef CONFIG_SCHED_SLI
+	.lat_stat_cpu	= &root_lat_stat_cpu,
+#endif
+};
 LIST_HEAD(task_groups);
 
 /* Cacheline aligned slab cache for task_group */
@@ -9326,6 +9334,12 @@ static void sched_free_group(struct task_group *tg)
 	free_fair_sched_group(tg);
 	free_rt_sched_group(tg);
 	autogroup_free(tg);
+
+#ifdef CONFIG_SCHED_SLI
+	if (tg->lat_stat_cpu)
+		free_percpu(tg->lat_stat_cpu);
+#endif
+
 	kmem_cache_free(task_group_cache, tg);
 }
 
@@ -9359,6 +9373,12 @@ struct task_group *sched_create_group(struct task_group *parent)
 
 	if (!alloc_rt_sched_group(tg, parent))
 		goto err;
+
+#ifdef CONFIG_SCHED_SLI
+	tg->lat_stat_cpu = alloc_percpu(struct sched_cgroup_lat_stat_cpu);
+	if (!tg->lat_stat_cpu)
+		goto err;
+#endif
 
 	scx_tg_init(tg);
 	alloc_uclamp_sched_group(tg, parent);
@@ -10490,6 +10510,264 @@ static ssize_t cpu_max_write(struct kernfs_open_file *of,
 #endif /* CONFIG_CFS_BANDWIDTH */
 
 #ifdef CONFIG_SCHED_SLI
+static DEFINE_STATIC_KEY_TRUE(cpu_no_sched_lat);
+static int cpu_sched_lat_enabled_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "%d\n", !static_key_enabled(&cpu_no_sched_lat));
+	return 0;
+}
+
+static int cpu_sched_lat_enabled_open(struct inode *inode,
+						struct file *file)
+{
+	return single_open(file, cpu_sched_lat_enabled_show, NULL);
+}
+
+static ssize_t cpu_sched_lat_enabled_write(struct file *file,
+						const char __user *ubuf,
+						size_t count, loff_t *ppos)
+{
+	char val = -1;
+	int ret = count;
+
+	if (count < 1 || *ppos) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	if (copy_from_user(&val, ubuf, 1)) {
+		ret = -EFAULT;
+		goto out;
+	}
+
+	switch (val) {
+	case '0':
+		static_branch_enable(&cpu_no_sched_lat);
+		break;
+	case '1':
+		static_branch_disable(&cpu_no_sched_lat);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+
+out:
+	return ret;
+}
+
+static const struct proc_ops cpu_sched_lat_enabled_fops = {
+	.proc_open	= cpu_sched_lat_enabled_open,
+	.proc_read	= seq_read,
+	.proc_write	= cpu_sched_lat_enabled_write,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+};
+
+static int __init init_cpu_sched_lat_enabled(void)
+{
+	struct proc_dir_entry *ca_dir, *sched_lat_enabled_file;
+
+	ca_dir = proc_mkdir("cpusli", NULL);
+	if (!ca_dir)
+		return -ENOMEM;
+
+	sched_lat_enabled_file = proc_create("sched_lat_enabled", 0600,
+			ca_dir, &cpu_sched_lat_enabled_fops);
+	if (!sched_lat_enabled_file) {
+		remove_proc_entry("cpusli", NULL);
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+device_initcall(init_cpu_sched_lat_enabled);
+
+static inline enum sched_lat_count_t get_sched_lat_count_idx(u64 msecs)
+{
+	if (msecs < 1)
+		return SCHED_LAT_0_1;
+	if (msecs < 10)
+		return SCHED_LAT_0_1 + (msecs + 2) / 3;
+	if (msecs < 50)
+		return SCHED_LAT_7_10 + msecs / 10;
+	if (msecs < 100)
+		return SCHED_LAT_50_100;
+	if (msecs < 1000)
+		return SCHED_LAT_100_500 + (msecs / 500);
+	if (msecs < 10000)
+		return SCHED_LAT_1000_5000 + (msecs / 5000);
+
+	return SCHED_LAT_10000_INF;
+}
+
+struct task_group *cgroup_tg(struct cgroup *cgrp)
+{
+	return container_of(global_cgroup_css(cgrp, cpu_cgrp_id),
+				struct task_group, css);
+}
+
+void task_cpu_update_block(struct task_struct *tsk, u64 runtime)
+{
+	int idx;
+	enum sched_lat_stat_item s;
+	struct task_group *tg;
+	unsigned int msecs;
+
+	if (static_branch_likely(&cpu_no_sched_lat))
+		return;
+
+	rcu_read_lock();
+	tg = css_tg(task_css(tsk, cpu_cgrp_id));
+	if (!tg) {
+		rcu_read_unlock();
+		return;
+	}
+	if (tsk->in_iowait)
+		s = SCHED_LAT_IOBLOCK;
+	else
+		s = SCHED_LAT_BLOCK;
+
+	msecs = runtime >> 20; /* Proximately to speed up */
+	idx = get_sched_lat_count_idx(msecs);
+	this_cpu_inc(tg->lat_stat_cpu->item[s][idx]);
+	this_cpu_inc(tg->lat_stat_cpu->item[s][SCHED_LAT_NR]);
+	this_cpu_add(tg->lat_stat_cpu->item[s][SCHED_LAT_TOTAL], runtime);
+	rcu_read_unlock();
+}
+
+void cpu_update_latency(struct sched_entity *se, u64 delta)
+{
+	int idx;
+	enum sched_lat_stat_item s;
+	unsigned int msecs;
+	struct task_group *tg;
+
+	if (static_branch_likely(&cpu_no_sched_lat))
+		return;
+
+	rcu_read_lock();
+	tg = se->cfs_rq->tg;
+	if (!tg) {
+		rcu_read_unlock();
+		return;
+	}
+	if (entity_is_task(se))
+		s = SCHED_LAT_WAIT;
+	else
+		s = SCHED_LAT_CGROUP_WAIT;
+
+	msecs = delta >> 20; /* Proximately to speed up */
+	idx = get_sched_lat_count_idx(msecs);
+	this_cpu_inc(tg->lat_stat_cpu->item[s][idx]);
+	this_cpu_inc(tg->lat_stat_cpu->item[s][SCHED_LAT_NR]);
+	this_cpu_add(tg->lat_stat_cpu->item[s][SCHED_LAT_TOTAL], delta);
+	rcu_read_unlock();
+}
+
+#define SCHED_LAT_STAT_SMP_WRITE(name, sidx)				\
+static void smp_write_##name(void *info)				\
+{									\
+	struct task_group *tg = (struct task_group *)info;		\
+	int i;								\
+									\
+	for (i = SCHED_LAT_0_1; i < SCHED_LAT_NR_COUNT; i++)		\
+		this_cpu_write(tg->lat_stat_cpu->item[sidx][i], 0);	\
+}									\
+
+SCHED_LAT_STAT_SMP_WRITE(sched_wait_latency, SCHED_LAT_WAIT);
+SCHED_LAT_STAT_SMP_WRITE(sched_wait_cgroup_latency, SCHED_LAT_CGROUP_WAIT);
+SCHED_LAT_STAT_SMP_WRITE(sched_block_latency, SCHED_LAT_BLOCK);
+SCHED_LAT_STAT_SMP_WRITE(sched_ioblock_latency, SCHED_LAT_IOBLOCK);
+
+smp_call_func_t smp_sched_lat_write_funcs[] = {
+	smp_write_sched_wait_latency,
+	smp_write_sched_block_latency,
+	smp_write_sched_ioblock_latency,
+	smp_write_sched_wait_cgroup_latency
+};
+
+int sched_lat_stat_write(struct cgroup_subsys_state *css,
+				struct cftype *cft, u64 val)
+{
+	struct cgroup *cgrp = css->cgroup;
+	struct task_group *tg = cgroup_tg(cgrp);
+	enum sched_lat_stat_item idx = cft->private;
+	smp_call_func_t func = smp_sched_lat_write_funcs[idx];
+
+	if (unlikely(!tg)) {
+		WARN_ONCE(1, "cgroup \"cpu,cpuacct\" are not bound together");
+		return -EOPNOTSUPP;
+	}
+
+	if (val != 0)
+		return -EINVAL;
+
+	func((void *)tg);
+	smp_call_function(func, (void *)tg, 1);
+
+	return 0;
+}
+
+static u64 sched_lat_stat_gather(struct task_group *tg,
+				 enum sched_lat_stat_item sidx,
+				 enum sched_lat_count_t cidx)
+{
+	u64 sum = 0;
+	int cpu;
+
+	for_each_possible_cpu(cpu)
+		sum += per_cpu_ptr(tg->lat_stat_cpu, cpu)->item[sidx][cidx];
+
+	return sum;
+}
+
+int sched_lat_stat_show(struct seq_file *sf, void *v)
+{
+	struct task_group *tg = cgroup_tg(seq_css(sf)->cgroup);
+	enum sched_lat_stat_item s = seq_cft(sf)->private;
+
+	if (unlikely(!tg)) {
+		WARN_ONCE(1, "cgroup \"cpu,cpuacct\" are not bound together");
+		return -EOPNOTSUPP;
+	}
+
+	/* CFS scheduling latency cgroup and task histgrams */
+	seq_printf(sf, "0-1ms: \t%llu\n",
+		sched_lat_stat_gather(tg, s, SCHED_LAT_0_1));
+	seq_printf(sf, "1-4ms: \t%llu\n",
+		sched_lat_stat_gather(tg, s, SCHED_LAT_1_4));
+	seq_printf(sf, "4-7ms: \t%llu\n",
+		sched_lat_stat_gather(tg, s, SCHED_LAT_4_7));
+	seq_printf(sf, "7-10ms: \t%llu\n",
+		sched_lat_stat_gather(tg, s, SCHED_LAT_7_10));
+	seq_printf(sf, "10-20ms: \t%llu\n",
+		sched_lat_stat_gather(tg, s, SCHED_LAT_10_20));
+	seq_printf(sf, "20-30ms: \t%llu\n",
+		sched_lat_stat_gather(tg, s, SCHED_LAT_20_30));
+	seq_printf(sf, "30-40ms: \t%llu\n",
+		sched_lat_stat_gather(tg, s, SCHED_LAT_30_40));
+	seq_printf(sf, "40-50ms: \t%llu\n",
+		sched_lat_stat_gather(tg, s, SCHED_LAT_40_50));
+	seq_printf(sf, "50-100ms: \t%llu\n",
+		sched_lat_stat_gather(tg, s, SCHED_LAT_50_100));
+	seq_printf(sf, "100-500ms: \t%llu\n",
+		sched_lat_stat_gather(tg, s, SCHED_LAT_100_500));
+	seq_printf(sf, "500-1000ms: \t%llu\n",
+		sched_lat_stat_gather(tg, s, SCHED_LAT_500_1000));
+	seq_printf(sf, "1000-5000ms: \t%llu\n",
+		sched_lat_stat_gather(tg, s, SCHED_LAT_1000_5000));
+	seq_printf(sf, "5000-10000ms: \t%llu\n",
+		sched_lat_stat_gather(tg, s, SCHED_LAT_5000_10000));
+	seq_printf(sf, ">=10000ms: \t%llu\n",
+		sched_lat_stat_gather(tg, s, SCHED_LAT_10000_INF));
+	seq_printf(sf, "total(ms): \t%llu\n",
+		sched_lat_stat_gather(tg, s, SCHED_LAT_TOTAL) / 1000000);
+	seq_printf(sf, "nr: \t%llu\n",
+		sched_lat_stat_gather(tg, s, SCHED_LAT_NR));
+
+	return 0;
+}
+
 static int cpu_sched_cfs_show(struct seq_file *sf, void *v)
 {
 	struct task_group *tg = css_tg(seq_css(sf));
