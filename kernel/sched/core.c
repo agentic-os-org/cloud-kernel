@@ -10856,6 +10856,30 @@ static struct cftype cpu_files[] = {
 		.name = "sched_cfs_statistics",
 		.seq_show = cpu_sched_cfs_show,
 	},
+	{
+		.name = "wait_latency",
+		.private = SCHED_LAT_WAIT,
+		.write_u64 = sched_lat_stat_write,
+		.seq_show = sched_lat_stat_show
+	},
+	{
+		.name = "cgroup_wait_latency",
+		.private = SCHED_LAT_CGROUP_WAIT,
+		.write_u64 = sched_lat_stat_write,
+		.seq_show = sched_lat_stat_show
+	},
+	{
+		.name = "block_latency",
+		.private = SCHED_LAT_BLOCK,
+		.write_u64 = sched_lat_stat_write,
+		.seq_show = sched_lat_stat_show
+	},
+	{
+		.name = "ioblock_latency",
+		.private = SCHED_LAT_IOBLOCK,
+		.write_u64 = sched_lat_stat_write,
+		.seq_show = sched_lat_stat_show
+	},
 #endif
 	{ }	/* terminate */
 };
