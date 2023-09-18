@@ -554,6 +554,9 @@ static void cgroup_base_stat_add(struct cgroup_base_stat *dst_bstat,
 #ifdef CONFIG_SCHED_CORE
 	dst_bstat->forceidle_sum += src_bstat->forceidle_sum;
 #endif
+#if defined(CONFIG_SCHED_ACPU) || defined(CONFIG_SCHED_CORE)
+	dst_bstat->sibidle_sum += src_bstat->sibidle_sum;
+#endif
 	dst_bstat->ntime += src_bstat->ntime;
 }
 
@@ -565,6 +568,9 @@ static void cgroup_base_stat_sub(struct cgroup_base_stat *dst_bstat,
 	dst_bstat->cputime.sum_exec_runtime -= src_bstat->cputime.sum_exec_runtime;
 #ifdef CONFIG_SCHED_CORE
 	dst_bstat->forceidle_sum -= src_bstat->forceidle_sum;
+#endif
+#if defined(CONFIG_SCHED_ACPU) || defined(CONFIG_SCHED_CORE)
+	dst_bstat->sibidle_sum -= src_bstat->sibidle_sum;
 #endif
 	dst_bstat->ntime -= src_bstat->ntime;
 }
@@ -662,6 +668,11 @@ void __cgroup_account_cputime_field(struct cgroup *cgrp,
 		rstatbc->bstat.forceidle_sum += delta_exec;
 		break;
 #endif
+#if defined(CONFIG_SCHED_ACPU) || defined(CONFIG_SCHED_CORE)
+	case CPUTIME_SIBIDLE:
+		rstatbc->bstat.sibidle_sum += delta_exec;
+		break;
+#endif
 	default:
 		break;
 	}
@@ -704,6 +715,9 @@ static void root_cgroup_cputime(struct cgroup_base_stat *bstat)
 #ifdef CONFIG_SCHED_CORE
 		bstat->forceidle_sum += cpustat[CPUTIME_FORCEIDLE];
 #endif
+#if defined(CONFIG_SCHED_ACPU) || defined(CONFIG_SCHED_CORE)
+		bstat->sibidle_sum += cpustat[CPUTIME_SIBIDLE];
+#endif
 		bstat->ntime += cpustat[CPUTIME_NICE];
 	}
 }
@@ -716,6 +730,16 @@ static void cgroup_force_idle_show(struct seq_file *seq, struct cgroup_base_stat
 
 	do_div(forceidle_time, NSEC_PER_USEC);
 	seq_printf(seq, "core_sched.force_idle_usec %llu\n", forceidle_time);
+#endif
+}
+
+static void cgroup_sibidle_show(struct seq_file *seq, struct cgroup_base_stat *bstat)
+{
+#if defined(CONFIG_SCHED_ACPU) || defined(CONFIG_SCHED_CORE)
+	u64 sibidle_time = bstat->sibidle_sum;
+
+	do_div(sibidle_time, NSEC_PER_USEC);
+	seq_printf(seq, "sibidle_usec %llu\n", sibidle_time);
 #endif
 }
 
@@ -750,6 +774,7 @@ void cgroup_base_stat_cputime_show(struct seq_file *seq)
 			bstat.ntime);
 
 	cgroup_force_idle_show(seq, &bstat);
+	cgroup_sibidle_show(seq, &bstat);
 }
 
 /* Add bpf kfuncs for css_rstat_updated() and css_rstat_flush() */
