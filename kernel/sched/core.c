@@ -193,6 +193,7 @@ DEFINE_STATIC_KEY_FALSE(__sched_core_enabled);
 
 #ifdef CONFIG_SCHED_ACPU
 DEFINE_STATIC_KEY_FALSE(acpu_enabled);
+static unsigned int sysctl_sched_acpu_enabled;
 #endif
 
 /* kernel prio, less is more */
@@ -4575,6 +4576,12 @@ static int sysctl_schedstats(const struct ctl_table *table, int write, void *buf
 #endif /* CONFIG_PROC_SYSCTL */
 #endif /* CONFIG_SCHEDSTATS */
 
+#ifdef CONFIG_SCHED_ACPU
+static int sched_acpu_enable_handler(const struct ctl_table *table, int write,
+				     void *buffer, size_t *lenp,
+				     loff_t *ppos);
+#endif
+
 #ifdef CONFIG_SYSCTL
 static const struct ctl_table sched_core_sysctls[] = {
 #ifdef CONFIG_SCHEDSTATS
@@ -4588,6 +4595,17 @@ static const struct ctl_table sched_core_sysctls[] = {
 		.extra2         = SYSCTL_ONE,
 	},
 #endif /* CONFIG_SCHEDSTATS */
+#ifdef CONFIG_SCHED_ACPU
+	{
+		.procname	= "sched_acpu",
+		.data		= &sysctl_sched_acpu_enabled,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= sched_acpu_enable_handler,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
+#endif /* CONFIG_SCHED_ACPU */
 #ifdef CONFIG_UCLAMP_TASK
 	{
 		.procname       = "sched_util_clamp_min",
@@ -4896,7 +4914,7 @@ fire_sched_out_preempt_notifiers(struct task_struct *curr,
 #endif /* !CONFIG_PREEMPT_NOTIFIERS */
 
 #ifdef CONFIG_SCHED_ACPU
-void acpu_enable(void)
+static void acpu_enable(void)
 {
 	int i;
 
@@ -4907,6 +4925,36 @@ void acpu_enable(void)
 		rq->last_acpu_update_time = rq->clock;
 	}
 	static_branch_enable(&acpu_enabled);
+}
+
+static void acpu_disable(void)
+{
+	static_branch_disable(&acpu_enabled);
+}
+
+static int sched_acpu_enable_handler(const struct ctl_table *table, int write,
+				     void *buffer, size_t *lenp,
+				     loff_t *ppos)
+{
+	int ret;
+	unsigned int old, new;
+
+	if (!write) {
+		ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
+		return ret;
+	}
+
+	old = sysctl_sched_acpu_enabled;
+	ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
+	new = sysctl_sched_acpu_enabled;
+	if (!ret && write && (old != new)) {
+		if (new)
+			acpu_enable();
+		else
+			acpu_disable();
+	}
+
+	return ret;
 }
 
 static void update_acpu(struct rq *rq, struct task_struct *prev, struct task_struct *next)

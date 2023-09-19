@@ -71,7 +71,6 @@ void __init idle_threads_init(void)
 		if (cpu != boot_cpu)
 			idle_init(cpu);
 	}
-	acpu_enable();
 }
 #endif
 
