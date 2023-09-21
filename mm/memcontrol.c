@@ -4350,6 +4350,10 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 		/* Default gap is 0.5% max limit */
 		memcg->wmark_scale_factor = parent->wmark_scale_factor ?
 					    : 50;
+#ifdef CONFIG_PAGECACHE_LIMIT
+		memcg->allow_pgcache_limit = parent->allow_pgcache_limit;
+		memcg->pgcache_limit_sync = parent->pgcache_limit_sync;
+#endif
 	} else {
 		init_memcg_stats();
 		init_memcg_events();
