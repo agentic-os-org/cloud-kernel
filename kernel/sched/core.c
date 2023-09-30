@@ -446,7 +446,7 @@ static void __sched_core_flip(bool enabled)
 		for_each_cpu(t, smt_mask)
 			cpu_rq(t)->core_enabled = enabled;
 
-		cpu_rq(cpu)->core->core_forceidle_start = 0;
+		cpu_rq(cpu)->core->core_sibidle_start = 0;
 
 		sched_core_unlock(cpu, &flags);
 
@@ -4969,6 +4969,15 @@ static void update_acpu(struct rq *rq, struct task_struct *prev, struct task_str
 	if (!static_branch_likely(&acpu_enabled) || !schedstat_enabled())
 		return;
 
+	/*
+	 * If core sched is enabled and core_sibidle_count is not zero, we update sibidle
+	 * time in function __sched_core_account_sibidle().
+	 */
+#ifdef CONFIG_SCHED_CORE
+	if (rq->core->core_sibidle_count)
+		goto out;
+#endif
+
 	/* Update idle sum and busy sum for current rq. */
 	delta = now - rq->last_acpu_update_time;
 	if (prev == rq->idle)
@@ -5007,7 +5016,7 @@ static void update_acpu(struct rq *rq, struct task_struct *prev, struct task_str
 	if (prev != rq->idle) {
 		delta = sibidle_sum - rq->sibidle_sum;
 		delta = delta > 0 ? delta : 0;
-		__account_sibidle_time(prev, delta);
+		__account_sibidle_time(prev, delta, false);
 	}
 
 	rq->sibidle_sum = sibidle_sum;
@@ -6201,18 +6210,21 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 
 	/* reset state */
 	rq->core->core_cookie = 0UL;
-	if (rq->core->core_forceidle_count) {
+	if (rq->core->core_sibidle_count) {
 		if (!core_clock_updated) {
 			update_rq_clock(rq->core);
 			core_clock_updated = true;
 		}
-		sched_core_account_forceidle(rq);
+		sched_core_account_sibidle(rq);
 		/* reset after accounting force idle */
-		rq->core->core_forceidle_start = 0;
-		rq->core->core_forceidle_count = 0;
-		rq->core->core_forceidle_occupation = 0;
-		need_sync = true;
-		fi_before = true;
+		rq->core->core_sibidle_start = 0;
+		rq->core->core_sibidle_count = 0;
+		rq->core->core_sibidle_occupation = 0;
+		if (rq->core->core_forceidle_count) {
+			rq->core->core_forceidle_count = 0;
+			need_sync = true;
+			fi_before = true;
+		}
 	}
 
 	/*
@@ -6301,6 +6313,7 @@ restart_multi:
 		rq_i->core_dl_server = NULL;
 
 		if (p == rq_i->idle) {
+			rq->core->core_sibidle_count++;
 			if (rq_i->nr_running) {
 				rq->core->core_forceidle_count++;
 				if (!fi_before)
@@ -6311,9 +6324,9 @@ restart_multi:
 		}
 	}
 
-	if (schedstat_enabled() && rq->core->core_forceidle_count) {
-		rq->core->core_forceidle_start = rq_clock(rq->core);
-		rq->core->core_forceidle_occupation = occ;
+	if (schedstat_enabled() && rq->core->core_sibidle_count) {
+		rq->core->core_sibidle_start = rq_clock(rq->core);
+		rq->core->core_sibidle_occupation = occ;
 	}
 
 	rq->core->core_pick_seq = rq->core->core_task_seq;
@@ -6355,7 +6368,8 @@ restart_multi:
 		if (!(fi_before && rq->core->core_forceidle_count))
 			task_vruntime_update(rq_i, rq_i->core_pick, !!rq->core->core_forceidle_count);
 
-		rq_i->core_pick->core_occupation = occ;
+		if (rq->core->core_forceidle_count)
+			rq_i->core_pick->core_occupation = occ;
 
 		if (i == cpu) {
 			rq_i->core_pick = NULL;
@@ -6568,14 +6582,15 @@ static void sched_core_cpu_deactivate(unsigned int cpu)
 	core_rq->core_cookie               = rq->core_cookie;
 	core_rq->core_forceidle_count      = rq->core_forceidle_count;
 	core_rq->core_forceidle_seq        = rq->core_forceidle_seq;
-	core_rq->core_forceidle_occupation = rq->core_forceidle_occupation;
+	core_rq->core_sibidle_occupation   = rq->core_sibidle_occupation;
+	core_rq->core_sibidle_count        = rq->core_sibidle_count;
 
 	/*
 	 * Accounting edge for forced idle is handled in pick_next_task().
 	 * Don't need another one here, since the hotplug thread shouldn't
 	 * have a cookie.
 	 */
-	core_rq->core_forceidle_start = 0;
+	core_rq->core_sibidle_start = 0;
 
 	/* install new leader */
 	for_each_cpu(t, smt_mask) {
@@ -8885,8 +8900,9 @@ void __init sched_init(void)
 		rq->core_enabled = 0;
 		rq->core_tree = RB_ROOT;
 		rq->core_forceidle_count = 0;
-		rq->core_forceidle_occupation = 0;
-		rq->core_forceidle_start = 0;
+		rq->core_sibidle_count = 0;
+		rq->core_sibidle_occupation = 0;
+		rq->core_sibidle_start = 0;
 
 		rq->core_cookie = 0UL;
 #endif
