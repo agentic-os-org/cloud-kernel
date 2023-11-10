@@ -239,12 +239,16 @@ void account_idle_time(u64 cputime)
  */
 void __account_sibidle_time(struct task_struct *p, u64 delta, bool fi)
 {
+	unsigned int cpu = task_cpu(p);
+
 	__schedstat_add(p->stats.core_sibidle_sum, delta);
-	task_group_account_field(p, CPUTIME_SIBIDLE, delta);
+	kcpustat_cpu(cpu).cpustat[CPUTIME_SIBIDLE] += delta;
+	cgroup_account_cputime_field(p, CPUTIME_SIBIDLE, delta);
 #ifdef CONFIG_SCHED_CORE
 	if (fi) {
 		__schedstat_add(p->stats.core_forceidle_sum, delta);
-		task_group_account_field(p, CPUTIME_FORCEIDLE, delta);
+		kcpustat_cpu(cpu).cpustat[CPUTIME_FORCEIDLE] += delta;
+		cgroup_account_cputime_field(p, CPUTIME_FORCEIDLE, delta);
 	}
 #endif
 }
