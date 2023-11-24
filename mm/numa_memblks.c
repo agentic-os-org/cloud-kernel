@@ -102,7 +102,7 @@ static int __init numa_alloc_distance(void)
  * is ignored.
  * This is to allow simplification of specific NUMA config implementations.
  */
-void __init numa_set_distance(int from, int to, int distance)
+void __ref numa_set_distance(int from, int to, int distance)
 {
 	if (!numa_distance && numa_alloc_distance() < 0)
 		return;
