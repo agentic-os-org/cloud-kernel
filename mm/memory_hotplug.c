@@ -35,6 +35,7 @@
 #include <linux/compaction.h>
 #include <linux/rmap.h>
 #include <linux/module.h>
+#include <linux/numa_remote.h>
 
 #include <asm/tlbflush.h>
 
@@ -1320,7 +1321,17 @@ static int check_hotplug_memory_range(u64 start, u64 size)
 
 static int online_memory_block(struct memory_block *mem, void *arg)
 {
+#ifdef CONFIG_ZONE_EXTMEM
+	int nid = *(int *)arg;
+
+	if (numa_is_remote_node(nid))
+		mem->online_type = MMOP_ONLINE_EXTMEM;
+	else
+		mem->online_type = mhp_default_online_type;
+#else
 	mem->online_type = mhp_default_online_type;
+#endif
+
 	return device_online(&mem->dev);
 }
 
@@ -1503,8 +1514,9 @@ int __ref add_memory_resource(int nid, struct resource *res, mhp_t mhp_flags)
 		merge_system_ram_resource(res);
 
 	/* online pages if requested */
-	if (mhp_default_online_type != MMOP_OFFLINE)
-		walk_memory_blocks(start, size, NULL, online_memory_block);
+	if (mhp_default_online_type != MMOP_OFFLINE ||
+	    numa_is_remote_node(nid))
+		walk_memory_blocks(start, size, &nid, online_memory_block);
 
 	return ret;
 error_free:
@@ -1521,9 +1533,15 @@ error_mem_hotplug_end:
 int __ref __add_memory(int nid, u64 start, u64 size, mhp_t mhp_flags)
 {
 	struct resource *res;
+	char *resource_name;
 	int ret;
 
-	res = register_memory_resource(start, size, "System RAM");
+	if (numa_is_remote_node(nid))
+		resource_name = "System RAM (Remote)";
+	else
+		resource_name = "System RAM";
+
+	res = register_memory_resource(start, size, resource_name);
 	if (IS_ERR(res))
 		return PTR_ERR(res);
 
