@@ -200,7 +200,7 @@ static const char *const compat_hwcap2_str[] = {
 static int c_show(struct seq_file *m, void *v)
 {
 	int i, j;
-	bool compat = personality(current->personality) == PER_LINUX32;
+	bool aarch32 = personality(current->personality) == PER_LINUX32;
 	unsigned int cpu, index, total, freq;
 	bool rich_container = false;
 
@@ -231,7 +231,7 @@ static int c_show(struct seq_file *m, void *v)
 		 * "processor".  Give glibc what it expects.
 		 */
 		seq_printf(m, "processor\t: %d\n", index);
-		if (compat)
+		if (aarch32)
 			seq_printf(m, "model name\t: ARMv8 Processor rev %d (%s)\n",
 				   MIDR_REVISION(midr), COMPAT_ELF_PLATFORM);
 
@@ -246,10 +246,10 @@ static int c_show(struct seq_file *m, void *v)
 		 * software which does already (at least for 32-bit).
 		 */
 		seq_puts(m, "Features\t:");
-		if (compat) {
+		if (aarch32) {
 #ifdef CONFIG_AARCH32_EL0
 			for (j = 0; j < ARRAY_SIZE(compat_hwcap_str); j++) {
-				if (compat_elf_hwcap & (1 << j)) {
+				if (a32_elf_hwcap & (1 << j)) {
 					/*
 					 * Warn once if any feature should not
 					 * have been present on arm64 platform.
@@ -262,7 +262,7 @@ static int c_show(struct seq_file *m, void *v)
 			}
 
 			for (j = 0; j < ARRAY_SIZE(compat_hwcap2_str); j++)
-				if (compat_elf_hwcap2 & (1 << j))
+				if (a32_elf_hwcap2 & (1 << j))
 					seq_printf(m, " %s", compat_hwcap2_str[j]);
 #endif /* CONFIG_AARCH32_EL0 */
 		} else {
