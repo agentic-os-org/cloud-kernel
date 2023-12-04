@@ -728,7 +728,7 @@ bool dcn30_apply_idle_power_optimizations(struct dc *dc, bool enable)
 				cmd.mall.header.sub_type = DMUB_CMD__MALL_ACTION_NO_DF_REQ;
 				cmd.mall.header.payload_bytes = sizeof(cmd.mall) - sizeof(cmd.mall.header);
 
-				dm_execute_dmub_cmd(dc->ctx, &cmd, DM_DMUB_WAIT_TYPE_NO_WAIT);
+				dc_wake_and_execute_dmub_cmd(dc->ctx, &cmd, DM_DMUB_WAIT_TYPE_NO_WAIT);
 
 				return true;
 			}
@@ -853,7 +853,7 @@ bool dcn30_apply_idle_power_optimizations(struct dc *dc, bool enable)
 					cmd.mall.cursor_height = cursor_attr.height;
 					cmd.mall.cursor_pitch = cursor_attr.pitch;
 
-					dm_execute_dmub_cmd(dc->ctx, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
+					dc_wake_and_execute_dmub_cmd(dc->ctx, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
 
 					/* Use copied cursor, and it's okay to not switch back */
 					cursor_attr.address.quad_part = cmd.mall.cursor_copy_dst.quad_part;
@@ -869,7 +869,7 @@ bool dcn30_apply_idle_power_optimizations(struct dc *dc, bool enable)
 				cmd.mall.tmr_scale = tmr_scale;
 				cmd.mall.debug_bits = dc->debug.mall_error_as_fatal;
 
-				dm_execute_dmub_cmd(dc->ctx, &cmd, DM_DMUB_WAIT_TYPE_NO_WAIT);
+				dc_wake_and_execute_dmub_cmd(dc->ctx, &cmd, DM_DMUB_WAIT_TYPE_NO_WAIT);
 
 				return true;
 			}
@@ -886,7 +886,7 @@ bool dcn30_apply_idle_power_optimizations(struct dc *dc, bool enable)
 	cmd.mall.header.payload_bytes =
 		sizeof(cmd.mall) - sizeof(cmd.mall.header);
 
-	dm_execute_dmub_cmd(dc->ctx, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
+	dc_wake_and_execute_dmub_cmd(dc->ctx, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
 
 	return true;
 }
