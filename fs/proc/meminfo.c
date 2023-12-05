@@ -44,9 +44,8 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 
 #ifdef CONFIG_MEMCG
 	rcu_read_lock();
-	if (in_rich_container(current)) {
+	if (in_rich_container(current, RC_MEMINFO))
 		memcg = rich_container_get_memcg();
-	}
 	rcu_read_unlock();
 #endif
 

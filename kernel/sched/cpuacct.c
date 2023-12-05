@@ -132,7 +132,7 @@ void create_rich_container_reaper(struct task_struct *tsk)
 		rcu_read_lock();
 		css = task_css(tsk, cpuacct_cgrp_id);
 		ca = css_ca(css);
-		if (!ca || !in_rich_container(tsk)) {
+		if (!ca || !in_rich_container(tsk, RC_LOADAVG)) {
 			rcu_read_unlock();
 			return;
 		}
@@ -1305,7 +1305,7 @@ bool check_rich_container(unsigned int cpu, unsigned int *index,
 	int i, id = 0;
 
 	rcu_read_lock();
-	in_rich = in_rich_container(current);
+	in_rich = in_rich_container(current, RC_CPUINFO);
 	rcu_read_unlock();
 	if (!in_rich)
 		return false;
