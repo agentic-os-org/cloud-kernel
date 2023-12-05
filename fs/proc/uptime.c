@@ -25,7 +25,7 @@ static int uptime_proc_show(struct seq_file *m, void *v)
 	idle_nsec = 0;
 
 	rcu_read_lock();
-	if (in_rich_container(current)) {
+	if (in_rich_container(current, RC_UPTIME)) {
 		enum rich_container_source from;
 		struct task_struct *init_tsk;
 		struct cpuacct_usage_result res;

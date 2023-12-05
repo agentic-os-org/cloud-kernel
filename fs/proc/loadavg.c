@@ -20,7 +20,7 @@ static int loadavg_proc_show(struct seq_file *m, void *v)
 	int i;
 
 	rcu_read_lock();
-	if (in_rich_container(current)) {
+	if (in_rich_container(current, RC_LOADAVG)) {
 		struct task_struct *init_tsk;
 		enum rich_container_source from;
 

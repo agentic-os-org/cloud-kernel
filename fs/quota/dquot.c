@@ -1311,7 +1311,7 @@ static int ignore_hardlimit(struct dquot *dquot)
 	bool rich_container;
 
 	rcu_read_lock();
-	rich_container = in_rich_container(current);
+	rich_container = in_rich_container(current, RC_DISKQUOTA);
 	rcu_read_unlock();
 	if (rich_container)
 		return 0;
