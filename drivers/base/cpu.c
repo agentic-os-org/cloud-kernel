@@ -224,7 +224,7 @@ static ssize_t show_cpus_attr(struct device *dev,
 	bool rich_container;
 
 	rcu_read_lock();
-	rich_container = in_rich_container(current);
+	rich_container = in_rich_container(current, RC_CPUINFO);
 	rcu_read_unlock();
 
 	if (rich_container && !strcmp(attr->attr.name, "online")) {

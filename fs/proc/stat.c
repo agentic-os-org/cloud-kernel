@@ -105,7 +105,7 @@ static int show_stat(struct seq_file *p, void *v)
 	timens_sub_boottime(&boottime);
 
 	rcu_read_lock();
-	rich_container = in_rich_container(current);
+	rich_container = in_rich_container(current, RC_CPUUSAGE);
 	if (rich_container) {
 		/* fix btime in containers */
 		read_lock(&tasklist_lock);
