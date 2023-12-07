@@ -321,6 +321,13 @@ static const struct midr_range cavium_erratum_30115_cpus[] = {
 };
 #endif
 
+#ifdef CONFIG_HISILICON_ERRATUM_162100125
+static const struct midr_range hisilicon_erratum_162100125_cpus[] = {
+	MIDR_REV(MIDR_HISI_LINXICORE9100, 0, 0),
+	{},
+};
+#endif
+
 #ifdef CONFIG_QCOM_FALKOR_ERRATUM_1003
 static const struct arm64_cpu_capabilities qcom_erratum_1003_list[] = {
 	{
