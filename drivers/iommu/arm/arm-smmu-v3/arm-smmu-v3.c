@@ -2687,6 +2687,9 @@ static int arm_smmu_domain_finalise(struct arm_smmu_domain *smmu_domain,
 		return -EINVAL;
 	}
 
+	if (smmu->features & ARM_SMMU_FEAT_HD)
+		pgtbl_cfg.quirks |= IO_PGTABLE_QUIRK_ARM_HD;
+
 	pgtbl_ops = alloc_io_pgtable_ops(fmt, &pgtbl_cfg, smmu_domain);
 	if (!pgtbl_ops)
 		return -ENOMEM;
