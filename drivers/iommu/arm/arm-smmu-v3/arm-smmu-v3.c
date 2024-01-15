@@ -3768,6 +3768,7 @@ static struct iommu_group *arm_smmu_device_group(struct device *dev)
 	return group;
 }
 
+#ifdef CONFIG_ARM_SMMU_V3_HTTU
 static int arm_smmu_split_block(struct iommu_domain *domain,
 				unsigned long iova, size_t size)
 {
@@ -3968,6 +3969,7 @@ static int arm_smmu_clear_dirty_log(struct iommu_domain *domain,
 	return ops->clear_dirty_log(ops, iova, size, bitmap, base_iova,
 				    bitmap_pgshift);
 }
+#endif
 
 static int arm_smmu_of_xlate(struct device *dev,
 			     const struct of_phandle_args *args)
@@ -4049,10 +4051,12 @@ static struct iommu_ops arm_smmu_ops = {
 #endif
 		.iova_to_phys		= arm_smmu_iova_to_phys,
 		.free			= arm_smmu_domain_free_paging,
+#ifdef CONFIG_ARM_SMMU_V3_HTTU
 		.support_dirty_log	= arm_smmu_support_dirty_log,
 		.switch_dirty_log	= arm_smmu_switch_dirty_log,
 		.sync_dirty_log		= arm_smmu_sync_dirty_log,
 		.clear_dirty_log	= arm_smmu_clear_dirty_log,
+#endif
 	}
 };
 
