@@ -358,4 +358,7 @@ struct prctl_mm_map {
 # define PR_CFI_DISABLE		_BITUL(1)
 # define PR_CFI_LOCK		_BITUL(2)
 
+#define PR_SET_MEMORY_CONSISTENCY_MODEL		0x4d434d53 /* "MCMS" */
+#define PR_GET_MEMORY_CONSISTENCY_MODEL		0x4d434d47 /* "MCMG" */
+
 #endif /* _LINUX_PRCTL_H */
