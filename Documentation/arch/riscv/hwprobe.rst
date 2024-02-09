@@ -383,3 +383,5 @@ The following keys are defined:
 * :c:macro:`RISCV_HWPROBE_KEY_IMA_EXT_1`: A bitmask containing additional
   extensions that are compatible with the
   :c:macro:`RISCV_HWPROBE_BASE_BEHAVIOR_IMA`: base system behavior.
+  * :c:macro:`RISCV_HWPROBE_EXT_SSDTSO`: The Ssdtso extension is supported, as
+       in version v1.0-draft3 of the corresponding extension.
