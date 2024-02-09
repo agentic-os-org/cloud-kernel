@@ -219,6 +219,12 @@
 #define ENVCFG_PMM_PMLEN_0		(_AC(0x0, ULL) << 32)
 #define ENVCFG_PMM_PMLEN_7		(_AC(0x2, ULL) << 32)
 #define ENVCFG_PMM_PMLEN_16		(_AC(0x3, ULL) << 32)
+/*
+ * DTSO is defined by the draft Ssdtso extension (not yet frozen or
+ * ratified) to switch the user-mode memory consistency model to TSO;
+ * the bit position follows the XuanTie implementation.
+ */
+#define ENVCFG_DTSO			(_AC(1, UL) << 8)
 #define ENVCFG_CBZE			(_AC(1, UL) << 7)
 #define ENVCFG_CBCFE			(_AC(1, UL) << 6)
 #define ENVCFG_LPE			(_AC(1, UL) << 2)

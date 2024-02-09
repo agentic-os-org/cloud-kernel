@@ -47,6 +47,8 @@ at run-time:
 * Only switching from a weaker to a stronger model is safe.
 * The stronger memory model affects all threads of a process, when running in user mode.
 * Forked processes derive their active memory model from their parents.
+* Executing a new program (execve) resets the memory consistency model
+  of the process back to the architecture default (RVWMO on RISC-V).
 
 User API via prctl
 ==================
