@@ -49,6 +49,11 @@ at run-time:
 * Forked processes derive their active memory model from their parents.
 * Executing a new program (execve) resets the memory consistency model
   of the process back to the architecture default (RVWMO on RISC-V).
+* The switch is process-wide but not instantaneous: until the
+  prctl(PR_SET_MEMORY_CONSISTENCY_MODEL) call returns, other threads of
+  the process may still execute under the previous model. A caller that
+  needs the stronger model to be in effect for the whole process must
+  synchronize with the other threads itself.
 
 User API via prctl
 ==================
@@ -75,4 +80,19 @@ Supported memory consistency models
 This section defines the memory consistency models which are supported
 by the prctl interface.
 
-<none>
+RISC-V
+------
+
+RISC-V uses RVWMO (RISC-V weak memory ordering) as default memory consistency
+model. TSO (total store ordering) is another specified model and provides
+additional ordering guarantees. Switching user-mode processes from RVWMO to TSO
+is possible when the Ssdtso extension is available.
+
+* :c:macro:`PR_MEMORY_CONSISTENCY_MODEL_RISCV_WMO`: RISC-V weak memory ordering (default).
+
+* :c:macro:`PR_MEMORY_CONSISTENCY_MODEL_RISCV_TSO`: RISC-V total store ordering.
+
+On a RISC-V system without the Ssdtso extension the active model is always
+RVWMO. Requesting PR_MEMORY_CONSISTENCY_MODEL_RISCV_WMO there is a no-op that
+succeeds (returns 0), because the requested model already matches the active
+one; requesting PR_MEMORY_CONSISTENCY_MODEL_RISCV_TSO fails with EINVAL.
