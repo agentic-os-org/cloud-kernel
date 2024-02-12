@@ -1904,8 +1904,9 @@ static bool has_nv1(const struct arm64_cpu_capabilities *entry, int scope)
 		{}
 	};
 
-	return !(has_cpuid_feature(entry, scope) ||
-		 is_midr_in_range_list(read_cpuid_id(), nv1_ni_list));
+	return (this_cpu_has_cap(ARM64_HAS_NESTED_VIRT) &&
+		!(has_cpuid_feature(entry, scope) ||
+		  is_midr_in_range_list(read_cpuid_id(), nv1_ni_list)));
 }
 
 #ifdef CONFIG_UNMAP_KERNEL_AT_EL0
