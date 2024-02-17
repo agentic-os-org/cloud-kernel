@@ -664,6 +664,9 @@ struct arm_smmu_cmdq {
 	atomic_t			owner_prod;
 	atomic_t			lock;
 	bool				(*supports_cmd)(struct arm_smmu_cmdq_ent *ent);
+#ifdef CONFIG_ARM_SMMU_V3_ECMDQ
+	int				shared;
+#endif
 };
 
 static inline bool arm_smmu_cmdq_supports_cmd(struct arm_smmu_cmdq *cmdq,
