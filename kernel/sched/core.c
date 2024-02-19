@@ -447,6 +447,7 @@ static void __sched_core_flip(bool enabled)
 			cpu_rq(t)->core_enabled = enabled;
 
 		cpu_rq(cpu)->core->core_sibidle_start = 0;
+		cpu_rq(cpu)->core->core_sibidle_start_task = 0;
 
 		sched_core_unlock(cpu, &flags);
 
@@ -4962,8 +4963,9 @@ static void update_acpu(struct rq *rq, struct task_struct *prev, struct task_str
 	const int cpu = cpu_of(rq);
 	const struct cpumask *smt_mask = cpu_smt_mask(cpu);
 	u64 now = rq_clock(rq);
-	u64 sibidle_sum, last_update_time;
-	s64 delta, last;
+	u64 now_task = rq_clock_task(rq);
+	u64 sibidle_sum, sibidle_task_sum, last_update_time, last_update_time_task;
+	s64 delta, delta_task, last, last_task;
 	int i;
 
 	if (!static_branch_likely(&acpu_enabled) || !schedstat_enabled())
@@ -4999,29 +5001,44 @@ static void update_acpu(struct rq *rq, struct task_struct *prev, struct task_str
 				     rq_i->last_acpu_update_time);
 			last_update_time = last >= 0 ? rq->last_acpu_update_time :
 						       rq_i->last_acpu_update_time;
+			last_task = (s64)(rq->last_acpu_update_time_task -
+				     rq_i->last_acpu_update_time_task);
+			last_update_time_task = last_task >= 0 ?
+						rq->last_acpu_update_time_task :
+						rq_i->last_acpu_update_time_task;
 			/*
 			 * Sibling may update acpu at the same time, and it's
 			 * timestamp may be newer than this rq.
 			 */
 			delta = now - last_update_time;
 			delta = delta > 0 ? delta : 0;
+			delta_task = now_task - last_update_time_task;
+			delta_task = delta_task > 0 ? delta_task : 0;
 
 			/* Add the delta to improve accuracy. */
 			sibidle_sum = last >= 0 ? rq->sibidle_sum : rq_i->acpu_idle_sum;
-			if (curr_i == rq_i->idle)
+			sibidle_task_sum = last_task >= 0 ? rq->sibidle_task_sum :
+							    rq_i->acpu_idle_sum;
+			if (curr_i == rq_i->idle) {
 				sibidle_sum += delta;
+				sibidle_task_sum += delta_task;
+			}
 		}
 	}
 
 	if (prev != rq->idle) {
 		delta = sibidle_sum - rq->sibidle_sum;
 		delta = delta > 0 ? delta : 0;
-		__account_sibidle_time(prev, delta, false);
+		delta_task = sibidle_task_sum - rq->sibidle_task_sum;
+		delta_task = delta_task > 0 ? delta_task : 0;
+		__account_sibidle_time(prev, delta, delta_task, false);
 	}
 
 	rq->sibidle_sum = sibidle_sum;
+	rq->sibidle_task_sum = sibidle_task_sum;
 out:
 	rq->last_acpu_update_time = now;
+	rq->last_acpu_update_time_task = now_task;
 }
 #else
 static inline void update_acpu(struct rq *rq, struct task_struct *prev, struct task_struct *next)
@@ -6218,6 +6235,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 		sched_core_account_sibidle(rq);
 		/* reset after accounting force idle */
 		rq->core->core_sibidle_start = 0;
+		rq->core->core_sibidle_start_task = 0;
 		rq->core->core_sibidle_count = 0;
 		rq->core->core_sibidle_occupation = 0;
 		if (rq->core->core_forceidle_count) {
@@ -6326,6 +6344,7 @@ restart_multi:
 
 	if (schedstat_enabled() && rq->core->core_sibidle_count) {
 		rq->core->core_sibidle_start = rq_clock(rq->core);
+		rq->core->core_sibidle_start_task = rq_clock_task(rq->core);
 		rq->core->core_sibidle_occupation = occ;
 	}
 
@@ -6591,6 +6610,7 @@ static void sched_core_cpu_deactivate(unsigned int cpu)
 	 * have a cookie.
 	 */
 	core_rq->core_sibidle_start = 0;
+	core_rq->core_sibidle_start_task = 0;
 
 	/* install new leader */
 	for_each_cpu(t, smt_mask) {
@@ -8903,6 +8923,7 @@ void __init sched_init(void)
 		rq->core_sibidle_count = 0;
 		rq->core_sibidle_occupation = 0;
 		rq->core_sibidle_start = 0;
+		rq->core_sibidle_start_task = 0;
 
 		rq->core_cookie = 0UL;
 #endif

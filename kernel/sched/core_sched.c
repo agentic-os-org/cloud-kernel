@@ -243,6 +243,7 @@ void __sched_core_account_sibidle(struct rq *rq)
 {
 	const struct cpumask *smt_mask = cpu_smt_mask(cpu_of(rq));
 	u64 delta, now = rq_clock(rq->core);
+	u64 delta_task, now_task = rq_clock_task(rq->core);
 	struct rq *rq_i;
 	struct task_struct *p;
 	int i;
@@ -260,10 +261,12 @@ void __sched_core_account_sibidle(struct rq *rq)
 		goto out;
 
 	delta = now - rq->core->core_sibidle_start;
+	delta_task = now_task - rq->core->core_sibidle_start_task;
 	if (unlikely((s64)delta <= 0))
 		goto out;
 
 	rq->core->core_sibidle_start = now;
+	rq->core->core_sibidle_start_task = now_task;
 
 	if (rq->core->core_sibidle_count > 1 ||
 	    rq->core->core_sibidle_occupation > 1) {
@@ -274,6 +277,8 @@ void __sched_core_account_sibidle(struct rq *rq)
 		 */
 		delta *= rq->core->core_sibidle_count;
 		delta = div_u64(delta, rq->core->core_sibidle_occupation);
+		delta_task *= rq->core->core_sibidle_count;
+		delta_task = div_u64(delta_task, rq->core->core_sibidle_occupation);
 	}
 
 	for_each_cpu(i, smt_mask) {
@@ -287,7 +292,8 @@ void __sched_core_account_sibidle(struct rq *rq)
 		 * Note: this will account sibidle to the current cpu, even
 		 * if it comes from our SMT sibling.
 		 */
-		__account_sibidle_time(p, delta, !!rq->core->core_forceidle_count);
+		__account_sibidle_time(p, delta, delta_task,
+				       !!rq->core->core_forceidle_count);
 	}
 
 out:

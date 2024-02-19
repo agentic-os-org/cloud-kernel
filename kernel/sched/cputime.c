@@ -237,18 +237,24 @@ void account_idle_time(u64 cputime)
  *
  * REQUIRES: schedstat is enabled.
  */
-void __account_sibidle_time(struct task_struct *p, u64 delta, bool fi)
+void __account_sibidle_time(struct task_struct *p, u64 delta, u64 delta_task, bool fi)
 {
 	unsigned int cpu = task_cpu(p);
 
 	__schedstat_add(p->stats.core_sibidle_sum, delta);
+	__schedstat_add(p->stats.core_sibidle_task_sum, delta_task);
 	kcpustat_cpu(cpu).cpustat[CPUTIME_SIBIDLE] += delta;
+	kcpustat_cpu(cpu).cpustat[CPUTIME_SIBIDLE_TASK] += delta_task;
 	cgroup_account_cputime_field(p, CPUTIME_SIBIDLE, delta);
+	cgroup_account_cputime_field(p, CPUTIME_SIBIDLE_TASK, delta_task);
 #ifdef CONFIG_SCHED_CORE
 	if (fi) {
 		__schedstat_add(p->stats.core_forceidle_sum, delta);
+		__schedstat_add(p->stats.core_forceidle_task_sum, delta_task);
 		kcpustat_cpu(cpu).cpustat[CPUTIME_FORCEIDLE] += delta;
+		kcpustat_cpu(cpu).cpustat[CPUTIME_FORCEIDLE_TASK] += delta_task;
 		cgroup_account_cputime_field(p, CPUTIME_FORCEIDLE, delta);
+		cgroup_account_cputime_field(p, CPUTIME_FORCEIDLE_TASK, delta_task);
 	}
 #endif
 }

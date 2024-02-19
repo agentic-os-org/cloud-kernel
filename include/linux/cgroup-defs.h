@@ -381,10 +381,12 @@ struct cgroup_base_stat {
 
 #ifdef CONFIG_SCHED_CORE
 	u64 forceidle_sum;
+	u64 forceidle_task_sum;
 #endif
 	u64 ntime;
 #if defined(CONFIG_SCHED_ACPU) || defined(CONFIG_SCHED_CORE)
 	u64 sibidle_sum;
+	u64 sibidle_task_sum;
 #endif
 };
 
