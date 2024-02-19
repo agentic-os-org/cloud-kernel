@@ -29,9 +29,11 @@ enum cpu_usage_stat {
 	CPUTIME_GUEST_NICE,
 #ifdef CONFIG_SCHED_CORE
 	CPUTIME_FORCEIDLE,
+	CPUTIME_FORCEIDLE_TASK,
 #endif
 #if defined(CONFIG_SCHED_ACPU) || defined(CONFIG_SCHED_CORE)
 	CPUTIME_SIBIDLE,
+	CPUTIME_SIBIDLE_TASK,
 #endif
 	NR_STATS,
 };
@@ -142,7 +144,7 @@ extern void account_process_tick(struct task_struct *, int user);
 extern void account_idle_ticks(unsigned long ticks);
 
 #if defined(CONFIG_SCHED_ACPU) || defined(CONFIG_SCHED_CORE)
-extern void __account_sibidle_time(struct task_struct *tsk, u64 delta, bool fi);
+extern void __account_sibidle_time(struct task_struct *tsk, u64 delta, u64 delta_task, bool fi);
 #endif
 
 #endif /* _LINUX_KERNEL_STAT_H */

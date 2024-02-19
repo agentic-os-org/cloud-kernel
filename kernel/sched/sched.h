@@ -1475,6 +1475,7 @@ struct rq {
 	unsigned int		core_forceidle_seq;
 	unsigned int		core_sibidle_occupation;
 	u64			core_sibidle_start;
+	u64			core_sibidle_start_task;
 	unsigned int		core_sibidle_count;
 #endif
 
@@ -1491,7 +1492,9 @@ struct rq {
 #ifdef CONFIG_SCHED_ACPU
 	u64			acpu_idle_sum;
 	u64			sibidle_sum;
+	u64			sibidle_task_sum;
 	u64			last_acpu_update_time;
+	u64			last_acpu_update_time_task;
 #endif
 
 	CK_KABI_RESERVE(1)
