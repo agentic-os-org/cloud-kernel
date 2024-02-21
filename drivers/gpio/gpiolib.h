@@ -61,7 +61,7 @@ struct gpio_device {
 	struct module		*owner;
 	struct gpio_chip	*chip;
 	struct gpio_desc	*descs;
-	int			base;
+	unsigned int		base;
 	u16			ngpio;
 	const char		*label;
 	void			*data;
