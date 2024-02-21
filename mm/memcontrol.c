@@ -5320,6 +5320,23 @@ int memcg_pre_oom_write(struct cgroup_subsys_state *css,
 #endif /* CONFIG_PRE_OOM */
 
 static struct cftype memory_files[] = {
+#ifdef CONFIG_PAGECACHE_LIMIT
+	{
+		.name = "pagecache_limit.enable",
+		.read_u64 = mem_cgroup_allow_pgcache_limit_read,
+		.write_u64 = mem_cgroup_allow_pgcache_limit_write,
+	},
+	{
+		.name = "pagecache_limit.size",
+		.read_u64 = mem_cgroup_pgcache_limit_size_read,
+		.write = mem_cgroup_pgcache_limit_size_write,
+	},
+	{
+		.name = "pagecache_limit.sync",
+		.read_u64 = mem_cgroup_allow_pgcache_sync_read,
+		.write_u64 = mem_cgroup_allow_pgcache_sync_write,
+	},
+#endif
 	{
 		.name = "current",
 		.flags = CFTYPE_NOT_ON_ROOT,
