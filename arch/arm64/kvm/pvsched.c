@@ -12,6 +12,30 @@
 
 #include <kvm/arm_hypercalls.h>
 
+long kvm_pvsched_kick_vcpu(struct kvm_vcpu *vcpu)
+{
+	unsigned int vcpu_idx;
+	long val = SMCCC_RET_NOT_SUPPORTED;
+	struct kvm *kvm = vcpu->kvm;
+	struct kvm_vcpu *target = NULL;
+
+	vcpu_idx = smccc_get_arg1(vcpu);
+	target = kvm_get_vcpu(kvm, vcpu_idx);
+	if (!target)
+		goto out;
+
+	target->arch.pvsched.pv_unhalted = true;
+	kvm_make_request(KVM_REQ_IRQ_PENDING, target);
+	kvm_vcpu_kick(target);
+	if (READ_ONCE(target->ready))
+		kvm_vcpu_yield_to(target);
+
+	val = SMCCC_RET_SUCCESS;
+
+out:
+	return val;
+}
+
 void kvm_update_pvsched_preempted(struct kvm_vcpu *vcpu, u32 preempted)
 {
 	struct kvm *kvm = vcpu->kvm;
