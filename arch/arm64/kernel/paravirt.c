@@ -24,6 +24,7 @@
 #include <asm/paravirt.h>
 #include <asm/pvclock-abi.h>
 #include <asm/pvsched-abi.h>
+#include <asm/qspinlock_paravirt.h>
 #include <asm/smp_plat.h>
 
 struct pv_time_stolen_time_region {
@@ -257,6 +258,96 @@ static __init int parse_pvpreempted(char *arg)
 }
 early_param("pvpreempted", parse_pvpreempted);
 
+#ifdef CONFIG_PARAVIRT_SPINLOCKS
+static bool pvqspinlock;
+static bool has_kvm_qspinlock(void)
+{
+	struct arm_smccc_res res;
+
+	/* To detect the presence of PV lock support we require SMCCC 1.1+ */
+	if (arm_smccc_1_1_get_conduit() == SMCCC_CONDUIT_NONE)
+		return false;
+
+	arm_smccc_1_1_invoke(ARM_SMCCC_ARCH_FEATURES_FUNC_ID,
+			ARM_SMCCC_HV_PV_QSPINLOCK_FEATURES, &res);
+	if (res.a0 != SMCCC_RET_SUCCESS)
+		return false;
+
+	return true;
+}
+
+/* Kick a cpu by its cpuid. Used to wake up a halted vcpu */
+static void kvm_kick_cpu(int cpu)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_1_1_invoke(ARM_SMCCC_HV_PV_QSPINLOCK_KICK_CPU, cpu, &res);
+}
+
+static void kvm_wait(u8 *ptr, u8 val)
+{
+	unsigned long flags;
+
+	if (in_nmi())
+		return;
+
+	local_irq_save(flags);
+
+	if (READ_ONCE(*ptr) != val)
+		goto out;
+
+	dsb(sy);
+	wfi();
+
+out:
+	local_irq_restore(flags);
+}
+
+DEFINE_STATIC_CALL(pv_qspinlock_queued_spin_lock_slowpath,
+		   native_queued_spin_lock_slowpath);
+DEFINE_STATIC_CALL(pv_qspinlock_queued_spin_unlock, native_queued_spin_unlock);
+DEFINE_STATIC_CALL(pv_qspinlock_wait, kvm_wait);
+DEFINE_STATIC_CALL(pv_qspinlock_kick, kvm_kick_cpu);
+
+EXPORT_STATIC_CALL(pv_qspinlock_queued_spin_lock_slowpath);
+EXPORT_STATIC_CALL(pv_qspinlock_queued_spin_unlock);
+EXPORT_STATIC_CALL(pv_qspinlock_wait);
+EXPORT_STATIC_CALL(pv_qspinlock_kick);
+
+void __init pv_qspinlock_init(void)
+{
+	/* Don't use the PV qspinlock code if there is only 1 vCPU. */
+	if (num_possible_cpus() == 1)
+		pvqspinlock = false;
+
+	if (!pvqspinlock) {
+		pr_info("PV qspinlocks disabled\n");
+		return;
+	}
+
+	if (!has_kvm_qspinlock())
+		return;
+
+	pr_info("PV qspinlocks enabled\n");
+
+	__pv_init_lock_hash();
+
+	static_call_update(pv_qspinlock_queued_spin_lock_slowpath,
+			   __pv_queued_spin_lock_slowpath);
+	static_call_update(pv_qspinlock_queued_spin_unlock,
+			   __pv_queued_spin_unlock);
+	static_call_update(pv_qspinlock_wait, kvm_wait);
+	static_call_update(pv_qspinlock_kick, kvm_kick_cpu);
+}
+
+static __init int arm_parse_pvspin(char *arg)
+{
+	pvqspinlock = true;
+	return 0;
+}
+early_param("pvqspinlock", arm_parse_pvspin);
+#endif  /* CONFIG_PARAVIRT_SPINLOCKS */
+
 int __init pv_sched_init(void)
 {
 	int ret;
@@ -283,5 +374,4 @@ int __init pv_sched_init(void)
 
 	return 0;
 }
-early_initcall(pv_sched_init);
 #endif /* CONFIG_PARAVIRT_SCHED */

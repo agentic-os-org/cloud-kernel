@@ -375,6 +375,13 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 			"This indicates a broken bootloader or old kernel\n",
 			boot_args[1], boot_args[2], boot_args[3]);
 	}
+
+#ifdef CONFIG_PARAVIRT_SCHED
+	pv_sched_init();
+#endif
+#ifdef CONFIG_PARAVIRT_SPINLOCKS
+	pv_qspinlock_init();
+#endif
 }
 
 static inline bool cpu_can_disable(unsigned int cpu)
