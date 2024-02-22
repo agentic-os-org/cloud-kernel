@@ -12,7 +12,6 @@ generic-y += fprobe.h
 generic-y += mcs_spinlock.h
 generic-y += mmzone.h
 generic-y += qrwlock.h
-generic-y += qspinlock.h
 generic-y += parport.h
 generic-y += user.h
 
