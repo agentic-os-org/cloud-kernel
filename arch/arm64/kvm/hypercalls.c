@@ -350,6 +350,11 @@ int kvm_smccc_call_handler(struct kvm_vcpu *vcpu)
 			val[0] = SMCCC_RET_SUCCESS;
 			break;
 #endif /* CONFIG_PARAVIRT_SCHED */
+#ifdef CONFIG_PARAVIRT_SPINLOCKS
+		case ARM_SMCCC_HV_PV_QSPINLOCK_FEATURES:
+			val[0] = SMCCC_RET_SUCCESS;
+			break;
+#endif /* CONFIG_PARAVIRT_SPINLOCKS */
 		}
 		break;
 	case ARM_SMCCC_HV_PV_TIME_FEATURES:
