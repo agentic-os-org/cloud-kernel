@@ -1347,6 +1347,15 @@ static inline bool kvm_arm_is_pvtime_enabled(struct kvm_vcpu_arch *vcpu_arch)
 	return (vcpu_arch->steal.base != INVALID_GPA);
 }
 
+#ifdef CONFIG_PARAVIRT_SCHED
+long kvm_hypercall_pvsched_features(struct kvm_vcpu *vcpu);
+#else
+static inline long kvm_hypercall_pvsched_features(struct kvm_vcpu *vcpu)
+{
+	return 0;
+}
+#endif
+
 struct kvm_vcpu *kvm_mpidr_to_vcpu(struct kvm *kvm, unsigned long mpidr);
 
 #ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
