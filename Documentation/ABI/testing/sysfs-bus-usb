@@ -299,3 +299,13 @@ Description:
 		USB 3.2 adds Dual-lane support, 2 rx and 2 tx -lanes over Type-C.
 		Inter-Chip SSIC devices support asymmetric lanes up to 4 lanes per
 		direction. Devices before USB 3.2 are single lane (tx_lanes = 1)
+
+What:		/sys/bus/usb/devices/usbX/bos_descriptors
+Date:		March 2024
+Contact:	Elbert Mai <code@elbertmai.com>
+Description:
+		Binary file containing the cached binary device object store (BOS)
+		of the device. This consists of the BOS descriptor followed by the
+		set of device capability descriptors. All descriptors read from
+		this file are in bus-endian format. Note that the kernel will not
+		request the BOS from a device if its bcdUSB is less than 0x0201.
