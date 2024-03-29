@@ -216,6 +216,7 @@ enum mapping_flags {
 				   folio contents */
 	AS_UNMOVABLE = 8,	/* The mapping cannot be moved, ever */
 	AS_WRITEBACK_MAY_DEADLOCK_ON_RECLAIM = 9,
+	AS_INACCESSIBLE,	/* Do not attempt direct R/W access to the mapping */
 	AS_NO_DATA_INTEGRITY = 11, /* no data integrity guarantees */
 	/* Bits 16-25 are used for FOLIO_ORDER */
 	AS_FOLIO_ORDER_BITS = 5,
