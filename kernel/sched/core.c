@@ -187,14 +187,14 @@ __read_mostly unsigned int sysctl_sched_nr_migrate = SCHED_NR_MIGRATE_BREAK;
 
 __read_mostly int scheduler_running;
 
-#ifdef CONFIG_SCHED_CORE
-
-DEFINE_STATIC_KEY_FALSE(__sched_core_enabled);
-
 #ifdef CONFIG_SCHED_ACPU
 DEFINE_STATIC_KEY_FALSE(acpu_enabled);
 static unsigned int sysctl_sched_acpu_enabled;
 #endif
+
+#ifdef CONFIG_SCHED_CORE
+
+DEFINE_STATIC_KEY_FALSE(__sched_core_enabled);
 
 /* kernel prio, less is more */
 static inline int __task_prio(const struct task_struct *p)
