@@ -2485,6 +2485,7 @@ struct cpuacct_usage_result {
 enum rich_container_source {
 	RICH_CONTAINER_REAPER,
 	RICH_CONTAINER_CURRENT,
+	RICH_CONTAINER_PARENT_CGROUP,
 };
 
 #ifdef CONFIG_RICH_CONTAINER

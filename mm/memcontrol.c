@@ -6845,8 +6845,10 @@ struct mem_cgroup *rich_container_get_memcg(void)
 
 	if (sysctl_rich_container_source == 1)
 		css = NULL;
-	else
+	else if (sysctl_rich_container_source == 0)
 		css = task_css(current, memory_cgrp_id);
+	else
+		css = task_css(current, memory_cgrp_id)->parent;
 
 	if (css) {
 		memcg_src = css_memcg(css);
