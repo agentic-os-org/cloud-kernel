@@ -1241,6 +1241,8 @@ void rich_container_get_cpus(struct task_struct *tsk, struct cpumask *pmask)
 
 		rcu_read_lock();
 		tg = task_tg(tsk);
+		if (sysctl_rich_container_source == 2 && tg->parent)
+			tg = tg->parent;
 		quota = tg_get_cfs_quota(tg);
 		period = tg_get_cfs_period(tg);
 		rcu_read_unlock();
@@ -1266,6 +1268,8 @@ void rich_container_get_cpus(struct task_struct *tsk, struct cpumask *pmask)
 
 		rcu_read_lock();
 		tg = task_tg(tsk);
+		if (sysctl_rich_container_source == 2 && tg->parent)
+			tg = tg->parent;
 		shares = scale_load_down(tg->shares);
 		rcu_read_unlock();
 
@@ -1282,7 +1286,7 @@ void rich_container_get_cpus(struct task_struct *tsk, struct cpumask *pmask)
 
 cpuset_source:
 	/* cpuset.cpus source */
-	cpuset_cpus_allowed(tsk, pmask);
+	rich_container_get_cpuset_cpus(pmask);
 }
 
 bool child_cpuacct(struct task_struct *tsk)
@@ -1338,8 +1342,10 @@ void rich_container_source(enum rich_container_source *from)
 {
 	if (sysctl_rich_container_source == 1)
 		*from = RICH_CONTAINER_REAPER;
-	else
+	else if (sysctl_rich_container_source == 0)
 		*from = RICH_CONTAINER_CURRENT;
+	else
+		*from = RICH_CONTAINER_PARENT_CGROUP;
 }
 
 void rich_container_get_usage(enum rich_container_source from,
@@ -1347,14 +1353,22 @@ void rich_container_get_usage(enum rich_container_source from,
 		struct cpuacct_usage_result *res)
 {
 	struct cpuacct *ca_src;
+	struct cgroup_subsys_state *css;
 	struct task_group *tg;
 
 	rcu_read_lock();
 	/* To avoid iterating css for every cpu */
-	if (likely(from == RICH_CONTAINER_REAPER))
+	if (likely(from == RICH_CONTAINER_REAPER)) {
 		ca_src = task_ca(reaper);
-	else
+	} else if (from == RICH_CONTAINER_CURRENT) {
 		ca_src = task_ca(current);
+	} else if (from == RICH_CONTAINER_PARENT_CGROUP) {
+		css = task_css(current, cpuacct_cgrp_id)->parent;
+		if (!css)
+			ca_src = task_ca(current);
+		else
+			ca_src = css_ca(css);
+	}
 
 	tg = cgroup_tg(ca_src->css.cgroup);
 	__cpuacct_get_usage_result(ca_src, cpu, tg, res);
@@ -1365,14 +1379,22 @@ unsigned long rich_container_get_running(enum rich_container_source from,
 		struct task_struct *reaper, int cpu)
 {
 	struct cpuacct *ca_src;
+	struct cgroup_subsys_state *css;
 	unsigned long nr;
 
 	rcu_read_lock();
 	/* To avoid iterating css for every cpu */
-	if (likely(from == RICH_CONTAINER_REAPER))
+	if (likely(from == RICH_CONTAINER_REAPER)) {
 		ca_src = task_ca(reaper);
-	else
+	} else if (from == RICH_CONTAINER_CURRENT) {
 		ca_src = task_ca(current);
+	} else if (from == RICH_CONTAINER_PARENT_CGROUP) {
+		css = task_css(current, cpuacct_cgrp_id)->parent;
+		if (!css)
+			ca_src = task_ca(current);
+		else
+			ca_src = css_ca(css);
+	}
 
 	nr = ca_running(ca_src, cpu);
 	rcu_read_unlock();
@@ -1385,13 +1407,21 @@ void rich_container_get_avenrun(enum rich_container_source from,
 		unsigned long offset, int shift, bool running)
 {
 	struct cpuacct *ca_src;
+	struct cgroup_subsys_state *css;
 
 	rcu_read_lock();
 	/* To avoid iterating css for every cpu */
-	if (likely(from == RICH_CONTAINER_REAPER))
+	if (likely(from == RICH_CONTAINER_REAPER)) {
 		ca_src = task_ca(reaper);
-	else
+	} else if (from == RICH_CONTAINER_CURRENT) {
 		ca_src = task_ca(current);
+	} else if (from == RICH_CONTAINER_PARENT_CGROUP) {
+		css = task_css(current, cpuacct_cgrp_id)->parent;
+		if (!css)
+			ca_src = task_ca(current);
+		else
+			ca_src = css_ca(css);
+	}
 
 	__get_cgroup_avenrun(ca_src, loads, offset, shift, running);
 	rcu_read_unlock();
