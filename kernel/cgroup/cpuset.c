@@ -4085,19 +4085,26 @@ void rich_container_get_cpuset_cpus(struct cpumask *pmask)
 {
 	unsigned long flags;
 	struct task_struct *p;
+	struct cpuset *cs;
 
 	rcu_read_lock();
 	if (sysctl_rich_container_source == 1) {
 		read_lock(&tasklist_lock);
 		p = task_active_pid_ns(current)->child_reaper;
 		read_unlock(&tasklist_lock);
+		cs = task_cs(p);
 
+	} else if (sysctl_rich_container_source == 0) {
+		cs = task_cs(current);
 	} else {
-		p = current;
+		cs = task_cs(current);
+		if (parent_cs(cs))
+			cs = parent_cs(cs);
 	}
 
 	spin_lock_irqsave(&callback_lock, flags);
-	guarantee_active_cpus(p, pmask);
+	cpumask_copy(pmask, cpu_active_mask);
+	cpumask_and(pmask, pmask, cs->effective_cpus);
 	spin_unlock_irqrestore(&callback_lock, flags);
 	rcu_read_unlock();
 }

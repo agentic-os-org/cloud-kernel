@@ -29,7 +29,8 @@
 
 #ifdef CONFIG_RICH_CONTAINER
 int sysctl_rich_container_enable;
-int sysctl_rich_container_source; /* 0 - current; 1 - child_reaper */
+/* 0 - current; 1 - child_reaper; 2 - current's parent cgroup */
+int sysctl_rich_container_source;
 #endif
 
 #ifdef CONFIG_RICH_CONTAINER
@@ -637,7 +638,7 @@ static const struct ctl_table rich_container_ctl_table[] = {
 		.mode		= 0600,
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= SYSCTL_ZERO,
-		.extra2		= SYSCTL_ONE,
+		.extra2		= SYSCTL_TWO,
 	},
 	{
 		.procname	= "rich_container_cpuinfo_source",
