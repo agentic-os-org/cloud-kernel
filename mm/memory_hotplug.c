@@ -2298,8 +2298,15 @@ static int try_offline_memory_block(struct memory_block *mem, void *arg)
 	 * Default is MMOP_OFFLINE - change it only if offlining succeeded,
 	 * so try_reonline_memory_block() can do the right thing.
 	 */
-	if (!rc)
+	if (!rc) {
 		**online_types = online_type;
+		/*
+		 * altmap range has been offline succeeded and altmap vmemmap
+		 * has replaced with allocated memory from buddy.
+		 */
+		if (mem->altmap)
+			mem->altmap->alloc = 0;
+	}
 
 	(*online_types)++;
 	/* Ignore if already offline. */

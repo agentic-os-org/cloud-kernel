@@ -2604,6 +2604,44 @@ extern int mlock_fixup(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		struct vm_area_struct **prev, unsigned long start,
 		unsigned long end, vm_flags_t newflags);
 
+/*
+ * virtio use the following special value to remapping memmap.
+ */
+#define VIRTIO_MEMMAP_RESTORE	(-1UL)
+#define VIRTIO_MEMMAP_COPY	(-2UL)
+
+#ifdef CONFIG_VIRTIO_MEM
+static inline bool virtio_is_use_memmap(unsigned long addr)
+{
+	return addr == VIRTIO_MEMMAP_RESTORE || addr == VIRTIO_MEMMAP_COPY;
+}
+
+static inline bool virtio_memmap_restore(unsigned long addr)
+{
+	return addr == VIRTIO_MEMMAP_RESTORE;
+}
+
+static inline bool virtio_memmap_copy(unsigned long addr)
+{
+	return addr == VIRTIO_MEMMAP_COPY;
+}
+#else
+static inline bool virtio_is_use_memmap(unsigned long addr)
+{
+	return false;
+}
+
+static inline bool virtio_memmap_restore(unsigned long addr)
+{
+	return false;
+}
+
+static inline bool virtio_memmap_copy(unsigned long addr)
+{
+	return false;
+}
+#endif
+
 struct folio *vm_normal_folio(struct vm_area_struct *vma, unsigned long addr,
 			     pte_t pte);
 struct page *vm_normal_page(struct vm_area_struct *vma, unsigned long addr,
@@ -4167,6 +4205,7 @@ void *sparse_buffer_alloc(unsigned long size);
 struct page * __populate_section_memmap(unsigned long pfn,
 		unsigned long nr_pages, int nid, struct vmem_altmap *altmap,
 		struct dev_pagemap *pgmap);
+unsigned long sparse_encode_mem_map(struct page *mem_map, unsigned long pnum);
 void pud_init(void *addr);
 void pmd_init(void *addr);
 void kernel_pte_init(void *addr);
@@ -4195,6 +4234,16 @@ void vmemmap_populate_print_last(void);
 #ifdef CONFIG_MEMORY_HOTPLUG
 void vmemmap_free(unsigned long start, unsigned long end,
 		struct vmem_altmap *altmap);
+#endif
+#ifdef CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
+int virtio_vmemmap_remap_alloc(unsigned long start, unsigned long end,
+			       unsigned long reuse, struct list_head *altmap_pages);
+#else
+static inline int virtio_vmemmap_remap_alloc(unsigned long start, unsigned long end,
+			       unsigned long reuse, struct list_head *altmap_pages)
+{
+	return 0;
+}
 #endif
 
 #define VMEMMAP_RESERVE_NR	2

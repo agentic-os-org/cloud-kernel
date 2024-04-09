@@ -631,6 +631,7 @@ static int virtio_mem_add_memory(struct virtio_mem *vm, uint64_t addr,
 				 uint64_t size)
 {
 	int rc;
+	mhp_t mhp_flags = MHP_MERGE_RESOURCE | MHP_NID_IS_MGID;
 
 	/*
 	 * When force-unloading the driver and we still have memory added to
@@ -647,8 +648,10 @@ static int virtio_mem_add_memory(struct virtio_mem *vm, uint64_t addr,
 		addr + size - 1);
 	/* Memory might get onlined immediately. */
 	atomic64_add(size, &vm->offline_size);
-	rc = add_memory_driver_managed(vm->mgid, addr, size, vm->resource_name,
-				       MHP_MERGE_RESOURCE | MHP_NID_IS_MGID);
+	/* only support memmap_on_memory on sbm scenario */
+	if (vm->in_sbm)
+		mhp_flags |= MHP_MEMMAP_ON_MEMORY;
+	rc = add_memory_driver_managed(vm->mgid, addr, size, vm->resource_name, mhp_flags);
 	if (rc) {
 		atomic64_sub(size, &vm->offline_size);
 		dev_warn(&vm->vdev->dev, "adding memory failed: %d\n", rc);
@@ -919,13 +922,13 @@ static void virtio_mem_sbm_notify_online(struct virtio_mem *vm,
 }
 
 static void virtio_mem_sbm_notify_going_offline(struct virtio_mem *vm,
-						unsigned long mb_id)
+						unsigned long mb_id, unsigned long nr_sb)
 {
 	const unsigned long nr_pages = PFN_DOWN(vm->sbm.sb_size);
 	unsigned long pfn;
 	int sb_id;
 
-	for (sb_id = 0; sb_id < vm->sbm.sbs_per_mb; sb_id++) {
+	for (sb_id = nr_sb; sb_id < vm->sbm.sbs_per_mb; sb_id++) {
 		if (virtio_mem_sbm_test_sb_plugged(vm, mb_id, sb_id, 1))
 			continue;
 		pfn = PFN_DOWN(virtio_mem_mb_id_to_phys(mb_id) +
@@ -991,19 +994,21 @@ static int virtio_mem_memory_notifier_cb(struct notifier_block *nb,
 	const unsigned long size = PFN_PHYS(mhp->nr_pages);
 	int rc = NOTIFY_OK;
 	unsigned long id;
+	unsigned long nr_vmemmap_size = 0;
 
 	if (!virtio_mem_overlaps_range(vm, start, size))
 		return NOTIFY_DONE;
 
 	if (vm->in_sbm) {
 		id = virtio_mem_phys_to_mb_id(start);
+		nr_vmemmap_size = get_memory_block_vmemmap_size(id);
+
 		/*
-		 * In SBM, we add memory in separate memory blocks - we expect
-		 * it to be onlined/offlined in the same granularity. Bail out
-		 * if this ever changes.
+		 * In SBM, we add memory in separate memory blocks, but vmemmap page
+		 * can be added to the start of memory block, we still expect to
+		 * online/offline the whole memory blocks in that case.
 		 */
-		if (WARN_ON_ONCE(size != memory_block_size_bytes() ||
-				 !IS_ALIGNED(start, memory_block_size_bytes())))
+		if (WARN_ON_ONCE(!IS_ALIGNED(start, vm->sbm.sb_size)))
 			return NOTIFY_BAD;
 	} else {
 		id = virtio_mem_phys_to_bb_id(vm, start);
@@ -1035,7 +1040,8 @@ static int virtio_mem_memory_notifier_cb(struct notifier_block *nb,
 		}
 		vm->hotplug_active = true;
 		if (vm->in_sbm)
-			virtio_mem_sbm_notify_going_offline(vm, id);
+			virtio_mem_sbm_notify_going_offline(
+				vm, id, nr_vmemmap_size / vm->sbm.sb_size);
 		else
 			virtio_mem_bbm_notify_going_offline(vm, id,
 							    mhp->start_pfn,
@@ -1056,7 +1062,7 @@ static int virtio_mem_memory_notifier_cb(struct notifier_block *nb,
 		if (vm->in_sbm)
 			virtio_mem_sbm_notify_offline(vm, id);
 
-		atomic64_add(size, &vm->offline_size);
+		atomic64_add(size + nr_vmemmap_size, &vm->offline_size);
 		/*
 		 * Trigger the workqueue. Now that we have some offline memory,
 		 * maybe we can handle pending unplug requests.
@@ -1071,7 +1077,7 @@ static int virtio_mem_memory_notifier_cb(struct notifier_block *nb,
 		if (vm->in_sbm)
 			virtio_mem_sbm_notify_online(vm, id, mhp->start_pfn);
 
-		atomic64_sub(size, &vm->offline_size);
+		atomic64_sub(size + nr_vmemmap_size, &vm->offline_size);
 		/*
 		 * Start adding more memory once we onlined half of our
 		 * threshold. Don't trigger if it's possibly due to our actipn
@@ -1191,10 +1197,18 @@ static void virtio_mem_fake_online(unsigned long pfn, unsigned long nr_pages)
  * fake-offlining them.
  */
 static int virtio_mem_fake_offline(struct virtio_mem *vm, unsigned long pfn,
-				   unsigned long nr_pages)
+				   unsigned long nr_pages, bool map)
 {
 	const bool is_movable = is_zone_movable_page(pfn_to_page(pfn));
 	int rc, retry_count;
+
+	/*
+	 * map means the subblock represent the struct page of movable zone.
+	 * the range of vmemmap pages will remap to new page to keep the
+	 * page information for offline_pages.
+	 */
+	if (is_movable && map)
+		return 0;
 
 	/*
 	 * TODO: We want an alloc_contig_range() mode that tries to allocate
@@ -1944,6 +1958,17 @@ static int virtio_mem_sbm_unplug_any_sb_offline(struct virtio_mem *vm,
 	return 0;
 }
 
+static void virtio_mem_init_section(unsigned long start_pfn, unsigned long nr_pages)
+{
+	struct mem_section *ms;
+	unsigned long section_nr = pfn_to_section_nr(start_pfn);
+	struct page *memmap = pfn_to_page(start_pfn);
+
+	ms = __nr_to_section(section_nr);
+	ms->section_mem_map = sparse_encode_mem_map(memmap, section_nr)
+			| SECTION_MARKED_PRESENT | SECTION_IS_ONLINE | SECTION_HAS_MEM_MAP;
+}
+
 /*
  * Unplug the given plugged subblocks of an online memory block.
  *
@@ -1951,19 +1976,33 @@ static int virtio_mem_sbm_unplug_any_sb_offline(struct virtio_mem *vm,
  */
 static int virtio_mem_sbm_unplug_sb_online(struct virtio_mem *vm,
 					   unsigned long mb_id, int sb_id,
-					   int count)
+					   int count, bool map)
 {
 	const unsigned long nr_pages = PFN_DOWN(vm->sbm.sb_size) * count;
 	const int old_state = virtio_mem_sbm_get_mb_state(vm, mb_id);
 	unsigned long start_pfn;
+	unsigned long block_addr = virtio_mem_mb_id_to_phys(mb_id);
+	unsigned long block_nr_pages = PFN_DOWN(memory_block_size_bytes());
+	unsigned long block_start_pfn = PFN_DOWN(block_addr);
+	unsigned long block_start = (unsigned long)pfn_to_page(block_start_pfn);
+	unsigned long block_end = block_start + block_nr_pages * sizeof(struct page);
+	unsigned long altmap_pfn;
+	LIST_HEAD(vmemmap_pages);
 	int rc;
 
-	start_pfn = PFN_DOWN(virtio_mem_mb_id_to_phys(mb_id) +
-			     sb_id * vm->sbm.sb_size);
+	start_pfn = PFN_DOWN(block_addr + sb_id * vm->sbm.sb_size);
 
-	rc = virtio_mem_fake_offline(vm, start_pfn, nr_pages);
+	rc = virtio_mem_fake_offline(vm, start_pfn, nr_pages, map);
 	if (rc)
 		return rc;
+
+	if (map) {
+		/* Make sure that memblock will record the page mapping */
+		if (virtio_vmemmap_remap_alloc(block_start, block_end,
+					       VIRTIO_MEMMAP_COPY,
+					       &vmemmap_pages))
+			return -ENOMEM;
+	}
 
 	/* Try to unplug the allocated memory */
 	rc = virtio_mem_sbm_unplug_sb(vm, mb_id, sb_id, count);
@@ -1971,6 +2010,19 @@ static int virtio_mem_sbm_unplug_sb_online(struct virtio_mem *vm,
 		/* Return the memory to the buddy. */
 		virtio_mem_fake_online(start_pfn, nr_pages);
 		return rc;
+	}
+
+	if (map) {
+		/* Make sure that memblock has rebuild the page mapping */
+		if (virtio_vmemmap_remap_alloc(block_start, block_end,
+					       VIRTIO_MEMMAP_RESTORE,
+					       &vmemmap_pages))
+			return -ENOMEM;
+
+		for (altmap_pfn = block_start_pfn;
+		     altmap_pfn < block_start_pfn + nr_pages;
+		     altmap_pfn += PAGES_PER_SECTION)
+			virtio_mem_init_section(altmap_pfn, PAGES_PER_SECTION);
 	}
 
 	switch (old_state) {
@@ -2002,12 +2054,16 @@ static int virtio_mem_sbm_unplug_any_sb_online(struct virtio_mem *vm,
 					       uint64_t *nb_sb)
 {
 	int rc, sb_id;
+	bool map = false;
+	unsigned long nr_vmemmap_size = get_memory_block_vmemmap_size(mb_id);
+	unsigned long nr_vmemmap_sbs = nr_vmemmap_size / vm->sbm.sb_size;
+	int count_vmemmap = 0;
 
 	/* If possible, try to unplug the complete block in one shot. */
 	if (*nb_sb >= vm->sbm.sbs_per_mb &&
 	    virtio_mem_sbm_test_sb_plugged(vm, mb_id, 0, vm->sbm.sbs_per_mb)) {
 		rc = virtio_mem_sbm_unplug_sb_online(vm, mb_id, 0,
-						     vm->sbm.sbs_per_mb);
+						     vm->sbm.sbs_per_mb, map);
 		if (!rc) {
 			*nb_sb -= vm->sbm.sbs_per_mb;
 			goto unplugged;
@@ -2024,13 +2080,27 @@ static int virtio_mem_sbm_unplug_any_sb_online(struct virtio_mem *vm,
 		if (sb_id < 0)
 			break;
 
-		rc = virtio_mem_sbm_unplug_sb_online(vm, mb_id, sb_id, 1);
+		if (nr_vmemmap_size && sb_id < nr_vmemmap_sbs &&
+		    virtio_mem_sbm_test_sb_unplugged(vm, mb_id, nr_vmemmap_sbs,
+						     vm->sbm.sbs_per_mb -
+							     nr_vmemmap_sbs)) {
+			map = true;
+			count_vmemmap++;
+			continue;
+		}
+
+		rc = virtio_mem_sbm_unplug_sb_online(vm, mb_id, sb_id, 1, map);
 		if (rc == -EBUSY)
 			continue;
 		else if (rc)
 			return rc;
 		*nb_sb -= 1;
 	}
+
+	/* unplug the vmemmap of the whole memblock if it exists. */
+	if (map)
+		virtio_mem_sbm_unplug_sb_online(vm, mb_id, sb_id + 1,
+						count_vmemmap, map);
 
 unplugged:
 	rc = virtio_mem_sbm_try_remove_unplugged_mb(vm, mb_id);
@@ -2159,7 +2229,7 @@ static int virtio_mem_bbm_offline_remove_and_unplug_bb(struct virtio_mem *vm,
 		if (!page)
 			continue;
 
-		rc = virtio_mem_fake_offline(vm, pfn, PAGES_PER_SECTION);
+		rc = virtio_mem_fake_offline(vm, pfn, PAGES_PER_SECTION, false);
 		if (rc) {
 			end_pfn = pfn;
 			goto rollback;

@@ -98,7 +98,7 @@ static void vmemmap_pte_range(pmd_t *pmd, unsigned long addr,
 	 * The reuse_page is found 'first' in table walk before we start
 	 * remapping (which is calling @walk->remap_pte).
 	 */
-	if (!walk->reuse_page) {
+	if (!virtio_is_use_memmap(walk->reuse_addr) && !walk->reuse_page) {
 		walk->reuse_page = pte_page(ptep_get(pte));
 		/*
 		 * Because the reuse address is part of the range that we are
@@ -296,6 +296,42 @@ static void vmemmap_restore_pte(pte_t *pte, unsigned long addr,
 	set_pte_at(&init_mm, addr, pte, mk_pte(page, pgprot));
 }
 
+static void virtio_vmemmap_restore_pte(pte_t *pte, unsigned long addr,
+				       struct vmemmap_remap_walk *walk)
+{
+	pgprot_t pgprot = PAGE_KERNEL;
+	struct page *page;
+	void *to, *src;
+	unsigned long pfn;
+	pte_t entry;
+
+	page = list_first_entry(walk->vmemmap_pages, struct page, lru);
+	list_del(&page->lru);
+	to = page_to_virt(page);
+	entry = mk_pte(page, pgprot);
+	if (virtio_memmap_restore(walk->reuse_addr)) {
+		pfn = __pa(to) >> PAGE_SHIFT;
+		entry = pfn_pte(pfn, pgprot);
+	} else {
+		if (virtio_memmap_copy(walk->reuse_addr)) {
+			pfn = pte_pfn(*pte);
+			src = __va(__pfn_to_phys(pfn));
+			copy_page(to, src);
+			list_add_tail(&page->lru, walk->vmemmap_pages);
+			return;
+		}
+		/* trigger an warning when walk in here now */
+		WARN_ON(1);
+	}
+
+	/*
+	 * Makes sure that preceding stores to the page contents become visible
+	 * before the set_pte_at() write.
+	 */
+	smp_wmb();
+	set_pte_at(&init_mm, addr, pte, entry);
+}
+
 /**
  * vmemmap_remap_free - remap the vmemmap virtual address range [@start, @end)
  *			to the page which @reuse is mapped to, then free vmemmap
@@ -433,6 +469,27 @@ static int vmemmap_remap_alloc(unsigned long start, unsigned long end,
 
 	return 0;
 }
+
+int virtio_vmemmap_remap_alloc(unsigned long start, unsigned long end,
+			unsigned long reuse, struct list_head *altmap_pages)
+{
+	struct vmemmap_remap_walk walk = {
+		.remap_pte	= virtio_vmemmap_restore_pte,
+		.reuse_addr	= reuse,
+		.vmemmap_pages	= altmap_pages,
+	};
+
+	if (list_empty(altmap_pages) &&
+	    alloc_vmemmap_page_list(start, end, altmap_pages))
+		return -ENOMEM;
+
+	mmap_read_lock(&init_mm);
+	vmemmap_remap_range(start, end, &walk);
+	mmap_read_unlock(&init_mm);
+
+	return 0;
+}
+EXPORT_SYMBOL(virtio_vmemmap_remap_alloc);
 
 DEFINE_STATIC_KEY_FALSE(hugetlb_optimize_vmemmap_key);
 EXPORT_SYMBOL(hugetlb_optimize_vmemmap_key);
