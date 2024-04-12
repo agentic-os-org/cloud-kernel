@@ -1626,10 +1626,13 @@ static int cpufreq_offline(unsigned int cpu)
 	 */
 	if (cpufreq_driver->offline) {
 		cpufreq_driver->offline(policy);
-	} else if (cpufreq_driver->exit) {
-		cpufreq_driver->exit(policy);
-		policy->freq_table = NULL;
+		goto unlock;
 	}
+
+	if (cpufreq_driver->exit)
+		cpufreq_driver->exit(policy);
+
+	policy->freq_table = NULL;
 
 unlock:
 	up_write(&policy->rwsem);
@@ -1657,7 +1660,7 @@ static void cpufreq_remove_dev(struct device *dev, struct subsys_interface *sif)
 
 	if (cpumask_empty(policy->real_cpus)) {
 		/* We did light-weight exit earlier, do full tear down now */
-		if (cpufreq_driver->offline)
+		if (cpufreq_driver->offline && cpufreq_driver->exit)
 			cpufreq_driver->exit(policy);
 
 		cpufreq_policy_free(policy);
