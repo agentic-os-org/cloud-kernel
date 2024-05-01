@@ -5289,6 +5289,8 @@ static struct kvm_x86_ops svm_x86_ops __initdata = {
 	.alloc_apic_backing_page = svm_alloc_apic_backing_page,
 
 	.arch_hypercall = kvm_hygon_arch_hypercall,
+
+	.gmem_prepare = sev_gmem_prepare,
 };
 
 /*
