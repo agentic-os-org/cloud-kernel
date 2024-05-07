@@ -94,6 +94,7 @@ iomap_adjust_read_range(struct inode *inode, struct iomap_page *iop,
 	unsigned block_size = (1 << block_bits);
 	unsigned poff = offset_in_page(*pos);
 	unsigned plen = min_t(loff_t, PAGE_SIZE - poff, length);
+	unsigned orig_plen = plen;
 	unsigned first = poff >> block_bits;
 	unsigned last = (poff + plen - 1) >> block_bits;
 
@@ -137,7 +138,7 @@ iomap_adjust_read_range(struct inode *inode, struct iomap_page *iop,
 	 * handle both halves separately so that we properly zero data in the
 	 * page cache for blocks that are entirely outside of i_size.
 	 */
-	if (orig_pos <= isize && orig_pos + length > isize) {
+	if (orig_pos <= isize && orig_pos + orig_plen > isize) {
 		unsigned end = offset_in_page(isize - 1) >> block_bits;
 
 		if (first <= end && last > end)
