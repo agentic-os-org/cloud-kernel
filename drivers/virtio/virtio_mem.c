@@ -648,9 +648,11 @@ static int virtio_mem_add_memory(struct virtio_mem *vm, uint64_t addr,
 		addr + size - 1);
 	/* Memory might get onlined immediately. */
 	atomic64_add(size, &vm->offline_size);
+#ifdef CONFIG_X86_64
 	/* only support memmap_on_memory on sbm scenario */
 	if (vm->in_sbm)
 		mhp_flags |= MHP_MEMMAP_ON_MEMORY;
+#endif
 	rc = add_memory_driver_managed(vm->mgid, addr, size, vm->resource_name, mhp_flags);
 	if (rc) {
 		atomic64_sub(size, &vm->offline_size);
