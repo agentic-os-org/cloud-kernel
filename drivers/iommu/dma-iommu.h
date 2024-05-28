@@ -24,6 +24,8 @@ int iommu_dma_sw_msi(struct iommu_domain *domain, struct msi_desc *desc,
 
 extern bool iommu_dma_forcedac;
 
+int iova_reserve_domain_addr(struct iommu_domain *domain, dma_addr_t start, dma_addr_t end);
+
 #else /* CONFIG_IOMMU_DMA */
 
 static inline void iommu_setup_dma_ops(struct device *dev,
@@ -57,6 +59,12 @@ static inline int iommu_dma_sw_msi(struct iommu_domain *domain,
 				   struct msi_desc *desc, phys_addr_t msi_addr)
 {
 	return -ENODEV;
+}
+
+static inline int iova_reserve_domain_addr(struct iommu_domain *domain, dma_addr_t start,
+					   dma_addr_t end)
+{
+	return -EINVAL;
 }
 
 #endif	/* CONFIG_IOMMU_DMA */
