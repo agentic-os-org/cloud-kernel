@@ -9,9 +9,13 @@
 #include <linux/mm.h>
 #include <linux/numa_memblks.h>
 
+#define MEMORY_KEEP_ISOLATED	1
+#define MEMORY_DIRECT_ONLINE 2
+
 #ifdef CONFIG_NUMA_REMOTE
 bool numa_is_remote_node(int nid);
 bool numa_remote_nofallback(int nid);
+bool numa_remote_preonline(int nid);
 void numa_register_remote_nodes(void);
 int add_memory_remote(int nid, u64 start, u64 size, int flags);
 int remove_memory_remote(int nid, u64 start, u64 size);
@@ -24,6 +28,11 @@ static inline bool numa_is_remote_node(int nid)
 }
 
 static inline bool numa_remote_nofallback(int nid)
+{
+	return false;
+}
+
+static inline bool numa_remote_preonline(int nid)
 {
 	return false;
 }
