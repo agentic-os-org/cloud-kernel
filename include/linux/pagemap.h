@@ -214,9 +214,9 @@ enum mapping_flags {
 	AS_RELEASE_ALWAYS = 6,	/* Call ->release_folio(), even if no private data */
 	AS_STABLE_WRITES = 7,	/* must wait for writeback before modifying
 				   folio contents */
-	AS_UNMOVABLE = 8,	/* The mapping cannot be moved, ever */
+	AS_INACCESSIBLE = 8,	/* Do not attempt direct R/W access to the mapping,
+				   including to move the mapping */
 	AS_WRITEBACK_MAY_DEADLOCK_ON_RECLAIM = 9,
-	AS_INACCESSIBLE,	/* Do not attempt direct R/W access to the mapping */
 	AS_NO_DATA_INTEGRITY = 11, /* no data integrity guarantees */
 	/* Bits 16-25 are used for FOLIO_ORDER */
 	AS_FOLIO_ORDER_BITS = 5,
@@ -330,20 +330,20 @@ static inline void mapping_clear_stable_writes(struct address_space *mapping)
 	clear_bit(AS_STABLE_WRITES, &mapping->flags);
 }
 
-static inline void mapping_set_unmovable(struct address_space *mapping)
+static inline void mapping_set_inaccessible(struct address_space *mapping)
 {
 	/*
-	 * It's expected unmovable mappings are also unevictable. Compaction
+	 * It's expected inaccessible mappings are also unevictable. Compaction
 	 * migrate scanner (isolate_migratepages_block()) relies on this to
 	 * reduce page locking.
 	 */
 	set_bit(AS_UNEVICTABLE, &mapping->flags);
-	set_bit(AS_UNMOVABLE, &mapping->flags);
+	set_bit(AS_INACCESSIBLE, &mapping->flags);
 }
 
-static inline bool mapping_unmovable(struct address_space *mapping)
+static inline bool mapping_inaccessible(struct address_space *mapping)
 {
-	return test_bit(AS_UNMOVABLE, &mapping->flags);
+	return test_bit(AS_INACCESSIBLE, &mapping->flags);
 }
 
 static inline void mapping_set_writeback_may_deadlock_on_reclaim(struct address_space *mapping)
