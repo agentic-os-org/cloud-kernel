@@ -146,6 +146,8 @@ struct arm_vsmmu;
 #define ARM_SMMU_GERROR_IRQ_CFG1	0x70
 #define ARM_SMMU_GERROR_IRQ_CFG2	0x74
 
+#define ARM_SMMU_USER_CFG1		0xe04
+
 #define ARM_SMMU_IDR6			0x190
 #define IDR6_LOG2NUMP			GENMASK(27, 24)
 #define IDR6_LOG2NUMQ			GENMASK(19, 16)
@@ -818,6 +820,7 @@ struct arm_smmu_device {
 #define ARM_SMMU_OPT_CMDQ_FORCE_SYNC	(1 << 3)
 #define ARM_SMMU_OPT_TEGRA241_CMDQV	(1 << 4)
 #define ARM_SMMU_OPT_SYNC_MAP		(1 << 5)
+#define ARM_SMMU_OPT_SYNC_BATCH		(1 << 6)
 	u32				options;
 
 #ifdef CONFIG_ARM_SMMU_V3_ECMDQ
