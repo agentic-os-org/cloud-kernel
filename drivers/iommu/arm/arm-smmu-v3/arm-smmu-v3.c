@@ -5464,7 +5464,7 @@ static void tegra_cmdqv_dt_probe(struct device_node *smmu_node,
 #endif
 
 #ifdef CONFIG_ACPI
-static struct acpi_platform_list arm_smmu_v3_plat_info[] __initdata = {
+static struct acpi_platform_list arm_smmu_v3_plat_info[] = {
 	/* HiSilicon Hip09 Platform */
 	{"HISI  ", "HIP09   ", 0, ACPI_SIG_IORT, greater_than_or_equal,
 	 "Erratum #162100602", 0},
