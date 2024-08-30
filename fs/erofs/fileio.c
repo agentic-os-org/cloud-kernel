@@ -26,7 +26,6 @@ static void erofs_fileio_ki_complete(struct kiocb *iocb, long ret, long res2)
 	struct bio_vec *bvec;
 	struct bvec_iter_all iter_all;
 
-	DBG_BUGON(rq->bio.bi_end_io);
 	if (ret > 0) {
 		if (ret != rq->bio.bi_iter.bi_size) {
 			bio_advance(&rq->bio, ret);
@@ -34,11 +33,15 @@ static void erofs_fileio_ki_complete(struct kiocb *iocb, long ret, long res2)
 		}
 		ret = 0;
 	}
-	bio_for_each_segment_all(bvec, &rq->bio, iter_all) {
-		struct page *page = bvec->bv_page;
+	if (rq->bio.bi_end_io) {
+		rq->bio.bi_end_io(&rq->bio);
+	} else {
+		bio_for_each_segment_all(bvec, &rq->bio, iter_all) {
+			struct page *page = bvec->bv_page;
 
-		DBG_BUGON(PageUptodate(page));
-		erofs_onlinepage_end(page, ret);
+			DBG_BUGON(PageUptodate(page));
+			erofs_onlinepage_end(page, ret);
+		}
 	}
 	bio_uninit(&rq->bio);
 	kfree(rq);
@@ -78,6 +81,18 @@ static struct erofs_fileio_rq *erofs_fileio_rq_alloc(struct super_block *sb,
 	rq->iocb.ki_filp = mdev->m_fp;
 	rq->sb = sb;
 	return rq;
+}
+
+struct bio *erofs_fileio_bio_alloc(struct super_block *sb,
+				   struct erofs_map_dev *mdev)
+{
+	return &erofs_fileio_rq_alloc(sb, mdev)->bio;
+}
+
+void erofs_fileio_submit_bio(struct bio *bio)
+{
+	return erofs_fileio_rq_submit(container_of(bio, struct erofs_fileio_rq,
+						   bio));
 }
 
 static int erofs_fileio_scan_folio(struct erofs_fileio *io,
