@@ -110,11 +110,15 @@ void *erofs_bread(struct erofs_buf *buf, erofs_blk_t blkaddr,
 
 void erofs_init_metabuf(struct erofs_buf *buf, struct super_block *sb)
 {
-	if (erofs_is_fscache_mode(sb))
-		buf->inode = EROFS_SB(sb)->s_fscache->inode;
+	struct erofs_sb_info *sbi = EROFS_SB(sb);
+
+	if (erofs_is_fileio_mode(sbi))
+		buf->inode = file_inode(sbi->fdev);
+	else if (erofs_is_fscache_mode(sb))
+		buf->inode = sbi->s_fscache->inode;
 #ifdef CONFIG_EROFS_FS_RAFS_V6
 	else if (erofs_is_rafsv6_mode(sb))
-		buf->inode = EROFS_SB(sb)->bootstrap->f_inode;
+		buf->inode = sbi->bootstrap->f_inode;
 #endif
 	else
 		buf->inode = sb->s_bdev->bd_inode;
@@ -224,10 +228,23 @@ out:
 	return err;
 }
 
+static void erofs_fill_from_devinfo(struct erofs_map_dev *map,
+				    struct erofs_device_info *dif)
+{
+	map->m_bdev = NULL;
+	map->m_bdev = dif->bdev;
+#ifdef CONFIG_EROFS_FS_RAFS_V6
+	map->m_fp = dif->blobfile;
+#endif
+	map->m_daxdev = dif->dax_dev;
+	map->m_fscache = dif->fscache;
+}
+
 int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *map)
 {
 	struct erofs_dev_context *devs = EROFS_SB(sb)->devs;
 	struct erofs_device_info *dif;
+	erofs_off_t startoff, length;
 	int id;
 
 	map->m_bdev = sb->s_bdev;
@@ -249,32 +266,19 @@ int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *map)
 			up_read(&devs->rwsem);
 			return 0;
 		}
-		map->m_bdev = dif->bdev;
-		map->m_daxdev = dif->dax_dev;
-#ifdef CONFIG_EROFS_FS_RAFS_V6
-		map->m_fp = dif->blobfile;
-#endif
-		map->m_fscache = dif->fscache;
+		erofs_fill_from_devinfo(map, dif);
 		up_read(&devs->rwsem);
 	} else if (devs->extra_devices && !devs->flatdev) {
 		down_read(&devs->rwsem);
 		idr_for_each_entry(&devs->tree, dif, id) {
-			erofs_off_t startoff, length;
-
 			if (!dif->uniaddr)
 				continue;
 			startoff = erofs_pos(sb, dif->uniaddr);
 			length = erofs_pos(sb, dif->blocks);
-
 			if (map->m_pa >= startoff &&
 			    map->m_pa < startoff + erofs_pos(sb, dif->blocks)) {
 				map->m_pa -= startoff;
-				map->m_bdev = dif->bdev;
-				map->m_daxdev = dif->dax_dev;
-#ifdef CONFIG_EROFS_FS_RAFS_V6
-				map->m_fp = dif->blobfile;
-#endif
-				map->m_fscache = dif->fscache;
+				erofs_fill_from_devinfo(map, dif);
 				break;
 			}
 		}

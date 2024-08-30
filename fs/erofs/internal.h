@@ -49,6 +49,7 @@ struct erofs_device_info {
 	char *path;
 	struct erofs_fscache *fscache;
 	struct block_device *bdev;
+	struct file *file;
 	struct dax_device *dax_dev;
 #ifdef CONFIG_EROFS_FS_RAFS_V6
 	struct file *blobfile;
@@ -115,6 +116,7 @@ struct erofs_sb_info {
 	struct erofs_sb_lz4_info lz4;
 	struct inode *packed_inode;
 #endif	/* CONFIG_EROFS_FS_ZIP */
+	struct file *fdev;
 #ifdef CONFIG_EROFS_FS_RAFS_V6
 	struct path blob_dir;
 	struct file *bootstrap;
@@ -178,6 +180,11 @@ static inline bool erofs_is_rafsv6_mode(struct super_block *sb)
 #else
 	return false;
 #endif
+}
+
+static inline bool erofs_is_fileio_mode(struct erofs_sb_info *sbi)
+{
+	return IS_ENABLED(CONFIG_EROFS_FS_BACKED_BY_FILE) && sbi->fdev;
 }
 
 static inline bool erofs_is_fscache_mode(struct super_block *sb)

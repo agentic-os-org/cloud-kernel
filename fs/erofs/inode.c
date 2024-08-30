@@ -236,7 +236,10 @@ static int erofs_fill_inode(struct inode *inode)
 		return 0;
 	}
 
-	if (erofs_inode_is_data_compressed(vi->datalayout)) {
+	if (erofs_is_fileio_mode(EROFS_SB(inode->i_sb))) {
+		/* XXX: data I/Os will be implemented in the following patches */
+		err = -EOPNOTSUPP;
+	} else if (erofs_inode_is_data_compressed(vi->datalayout)) {
 		err = -EOPNOTSUPP;
 #ifdef CONFIG_EROFS_FS_ZIP
 		if (!erofs_is_fscache_mode(inode->i_sb)) {

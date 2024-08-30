@@ -16,6 +16,7 @@
 #include <linux/blkdev.h>
 #include <linux/exportfs.h>
 #include <linux/dax.h>
+#include <linux/backing-dev.h>
 #include "xattr.h"
 
 #define CREATE_TRACE_POINTS
@@ -132,6 +133,7 @@ static int erofs_init_device(struct erofs_buf *buf, struct super_block *sb,
 	struct erofs_deviceslot *dis;
 	struct block_device *bdev;
 	void *ptr;
+	struct file *file;
 
 	ptr = erofs_read_metabuf(buf, sb, erofs_blknr(sb, *pos), EROFS_KMAP);
 	if (IS_ERR(ptr))
@@ -166,11 +168,19 @@ static int erofs_init_device(struct erofs_buf *buf, struct super_block *sb,
 		dif->blobfile = f;
 #endif
 	} else if (!sbi->devs->flatdev) {
-		bdev = blkdev_get_by_path(dif->path, FMODE_READ | FMODE_EXCL,
-					  sb->s_type);
-		if (IS_ERR(bdev))
-			return PTR_ERR(bdev);
-		dif->bdev = bdev;
+		if (erofs_is_fileio_mode(sbi)) {
+			file = filp_open(dif->path, O_RDONLY | O_LARGEFILE, 0);
+			if (IS_ERR(file))
+				return PTR_ERR(file);
+			dif->file = file;
+		} else {
+			bdev = blkdev_get_by_path(dif->path,
+						  FMODE_READ | FMODE_EXCL,
+						  sb->s_type);
+			if (IS_ERR(bdev))
+				return PTR_ERR(bdev);
+			dif->bdev = bdev;
+		}
 	}
 
 	dif->blocks = le32_to_cpu(dis->blocks_lo);
@@ -725,25 +735,24 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 
 	sbi->blkszbits = PAGE_SHIFT;
 	if (!sb->s_bdev) {
-		/* fscache or rafsv6 mode */
 		sb->s_blocksize = PAGE_SIZE;
 		sb->s_blocksize_bits = PAGE_SHIFT;
+
+		if (erofs_is_fscache_mode(sb)) {
+			err = erofs_fscache_register_fs(sb);
+			if (err)
+				return err;
+		}
+
+		err = super_setup_bdi(sb);
+		if (err)
+			return err;
 	} else {
 		if (!sb_set_blocksize(sb, PAGE_SIZE)) {
 			errorfc(fc, "failed to set initial blksize");
 			return -EINVAL;
 		}
 		sbi->dax_dev = fs_dax_get_by_bdev(sb->s_bdev, NULL, NULL);
-	}
-
-	if (erofs_is_fscache_mode(sb)) {
-		err = erofs_fscache_register_fs(sb);
-		if (err)
-			return err;
-
-		err = super_setup_bdi(sb);
-		if (err)
-			return err;
 	}
 
 	err = rafs_v6_fill_super(sb);
@@ -824,6 +833,7 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 static int erofs_fc_get_tree(struct fs_context *fc)
 {
 	struct erofs_sb_info *sbi = fc->s_fs_info;
+	int ret;
 
 #ifdef CONFIG_EROFS_FS_RAFS_V6
 	if (ctx->blob_dir_path && !ctx->bootstrap_path) {
@@ -844,7 +854,19 @@ static int erofs_fc_get_tree(struct fs_context *fc)
 	if (ctx->bootstrap_path && ctx->blob_dir_path)
 		return get_tree_nodev(fc, erofs_fc_fill_super);
 #endif
-	return get_tree_bdev(fc, erofs_fc_fill_super);
+	ret = get_tree_bdev(fc, erofs_fc_fill_super);
+#ifdef CONFIG_EROFS_FS_BACKED_BY_FILE
+	if (ret == -ENOTBLK) {
+		if (!fc->source)
+			return invalf(fc, "No source specified");
+		sbi->fdev = filp_open(fc->source, O_RDONLY | O_LARGEFILE, 0);
+		if (IS_ERR(sbi->fdev))
+			return PTR_ERR(sbi->fdev);
+
+		return get_tree_nodev(fc, erofs_fc_fill_super);
+	}
+#endif
+	return ret;
 }
 
 static int erofs_fc_reconfigure(struct fs_context *fc)
@@ -893,6 +915,8 @@ static int erofs_release_device_info(int id, void *ptr, void *data)
 	if (dif->blobfile)
 		filp_close(dif->blobfile, NULL);
 #endif
+	if (dif->file)
+		fput(dif->file);
 	erofs_fscache_unregister_cookie(dif->fscache);
 	dif->fscache = NULL;
 	kfree(dif->path);
@@ -955,8 +979,6 @@ static void erofs_kill_sb(struct super_block *sb)
 {
 	struct erofs_sb_info *sbi;
 
-	WARN_ON(sb->s_magic != EROFS_SUPER_MAGIC);
-
 	/* pseudo mount for anon inodes */
 	if (sb->s_flags & SB_KERNMOUNT) {
 		kill_anon_super(sb);
@@ -984,6 +1006,8 @@ static void erofs_kill_sb(struct super_block *sb)
 	erofs_fscache_unregister_fs(sb);
 	kfree(sbi->fsid);
 	kfree(sbi->domain_id);
+	if (sbi->fdev)
+		fput(sbi->fdev);
 	kfree(sbi);
 	sb->s_fs_info = NULL;
 }
@@ -1099,7 +1123,7 @@ static int erofs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_namelen = EROFS_NAME_LEN;
 
 	if (uuid_is_null(&sb->s_uuid))
-		buf->f_fsid = u64_to_fsid(erofs_is_fscache_mode(sb) ? 0 :
+		buf->f_fsid = u64_to_fsid(!sb->s_bdev ? 0 :
 				huge_encode_dev(sb->s_bdev->bd_dev));
 	else
 		buf->f_fsid = uuid_to_fsid(sb->s_uuid.b);
