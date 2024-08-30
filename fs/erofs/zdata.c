@@ -1387,7 +1387,10 @@ static void z_erofs_submit_queue(struct z_erofs_decompress_frontend *f,
 			if (bio && (cur != last_pa ||
 				    last_bdev != mdev.m_bdev)) {
 drain_io:
-				submit_bio(bio);
+				if (erofs_is_fileio_mode(EROFS_SB(sb)))
+					erofs_fileio_submit_bio(bio);
+				else
+					submit_bio(bio);
 				bio = NULL;
 			}
 
@@ -1401,13 +1404,16 @@ drain_io:
 			}
 
 			if (!bio) {
-				bio = bio_alloc(GFP_NOIO, BIO_MAX_PAGES);
-				bio->bi_end_io = z_erofs_submissionqueue_endio;
-
-				bio_set_dev(bio, mdev.m_bdev);
+				if (erofs_is_fileio_mode(EROFS_SB(sb))) {
+					bio = erofs_fileio_bio_alloc(sb, &mdev);
+				} else {
+					bio = bio_alloc(GFP_NOIO, BIO_MAX_PAGES);
+					bio->bi_end_io = z_erofs_submissionqueue_endio;
+					bio_set_dev(bio, mdev.m_bdev);
+					bio->bi_opf = REQ_OP_READ;
+				}
 				bio->bi_iter.bi_sector = cur >> 9;
 				bio->bi_private = q[JQ_SUBMIT];
-				bio->bi_opf = REQ_OP_READ;
 				if (readahead)
 					bio->bi_opf |= REQ_RAHEAD;
 				++nr_bios;
@@ -1427,8 +1433,12 @@ drain_io:
 			move_to_bypass_jobqueue(pcl, qtail, owned_head);
 	} while (owned_head != Z_EROFS_PCLUSTER_TAIL);
 
-	if (bio)
-		submit_bio(bio);
+	if (bio) {
+		if (erofs_is_fileio_mode(EROFS_SB(sb)))
+			erofs_fileio_submit_bio(bio);
+		else
+			submit_bio(bio);
+	}
 
 	/*
 	 * although background is preferred, no one is pending for submission.
