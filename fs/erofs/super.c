@@ -836,12 +836,12 @@ static int erofs_fc_get_tree(struct fs_context *fc)
 	int ret;
 
 #ifdef CONFIG_EROFS_FS_RAFS_V6
-	if (ctx->blob_dir_path && !ctx->bootstrap_path) {
+	if (sbi->blob_dir_path && !sbi->bootstrap_path) {
 		errorfc(fc, "bootstrap_path required in RAFS mode");
 		return -EINVAL;
 	}
 
-	if (ctx->bootstrap_path && ctx->fsid) {
+	if (sbi->bootstrap_path && sbi->fsid) {
 		errorfc(fc, "fscache/RAFS modes are mutually exclusive");
 		return -EINVAL;
 	}
@@ -851,7 +851,7 @@ static int erofs_fc_get_tree(struct fs_context *fc)
 		return get_tree_nodev(fc, erofs_fc_fill_super);
 
 #ifdef CONFIG_EROFS_FS_RAFS_V6
-	if (ctx->bootstrap_path && ctx->blob_dir_path)
+	if (sbi->bootstrap_path && sbi->blob_dir_path)
 		return get_tree_nodev(fc, erofs_fc_fill_super);
 #endif
 	ret = get_tree_bdev(fc, erofs_fc_fill_super);

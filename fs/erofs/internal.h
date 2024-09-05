@@ -330,7 +330,8 @@ struct page *erofs_grab_cache_page_nowait(struct address_space *mapping,
 
 extern const struct super_operations erofs_sops;
 
-extern const struct address_space_operations erofs_raw_access_aops;
+extern const struct address_space_operations erofs_aops;
+extern const struct address_space_operations erofs_fileio_aops;
 extern const struct address_space_operations z_erofs_aops;
 
 enum {
@@ -398,9 +399,7 @@ struct erofs_map_dev {
 	struct erofs_fscache *m_fscache;
 	struct block_device *m_bdev;
 	struct dax_device *m_daxdev;
-#ifdef CONFIG_EROFS_FS_RAFS_V6
 	struct file *m_fp;
-#endif
 	erofs_off_t m_pa;
 	unsigned int m_deviceid;
 };
@@ -433,6 +432,9 @@ extern const struct inode_operations erofs_generic_iops;
 extern const struct inode_operations erofs_symlink_iops;
 extern const struct inode_operations erofs_fast_symlink_iops;
 
+void erofs_onlinepage_init(struct page *page);
+void erofs_onlinepage_split(struct page *page);
+void erofs_onlinepage_end(struct page *page, int err);
 struct inode *erofs_iget(struct super_block *sb, erofs_nid_t nid);
 int erofs_getattr(const struct path *path, struct kstat *stat,
 		  u32 request_mask, unsigned int query_flags);
