@@ -40,4 +40,9 @@ find . -name '*.usyms' | xargs rm -f
 
 rm -f binkernel.spec
 
+# moved to security/selinux/genheaders
+rm -f scripts/selinux/genheaders/genheaders
+
+rm -f *.spec
+
 rm -f lib/test_fortify.log
