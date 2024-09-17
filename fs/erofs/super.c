@@ -173,6 +173,10 @@ static int erofs_init_device(struct erofs_buf *buf, struct super_block *sb,
 			file = filp_open(dif->path, O_RDONLY | O_LARGEFILE, 0);
 			if (IS_ERR(file))
 				return PTR_ERR(file);
+			if (!S_ISREG(file_inode(file)->i_mode)) {
+				fput(file);
+				return -EINVAL;
+			}
 			dif->file = file;
 		} else {
 			bdev = blkdev_get_by_path(dif->path,
@@ -910,7 +914,11 @@ static int erofs_fc_get_tree(struct fs_context *fc)
 		if (IS_ERR(sbi->fdev))
 			return PTR_ERR(sbi->fdev);
 
-		return get_tree_nodev(fc, erofs_fc_fill_super);
+		if (S_ISREG(file_inode(sbi->fdev)->i_mode) &&
+		    sbi->fdev->f_mapping->a_ops->readpage)
+			return get_tree_nodev(fc, erofs_fc_fill_super);
+		fput(sbi->fdev);
+		sbi->fdev = NULL;
 	}
 #endif
 	return ret;
