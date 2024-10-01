@@ -23,3 +23,8 @@ $(vdso_c_objects): $(obj)/%.c: $(src)/%.c
 # Include the main VDSO Makefile which contains all the build rules and sources
 # The VDSO_CFI_BUILD variable will be passed to it to enable CFI compilation
 include $(src)/Makefile
+
+# Provide an explicit rule for vdso-cfi.o since vdso-cfi.S lives in vdso_cfi/
+# directory but $(src) has been redirected to the vdso directory.
+$(obj)/vdso-cfi.o: $(srctree)/arch/riscv/kernel/vdso_cfi/vdso-cfi.S $(obj)/vdso-cfi.so FORCE
+	$(call if_changed_rule,as_o_S)
