@@ -1039,6 +1039,20 @@ static const struct printf_spec default_dec04_spec = {
 };
 
 static noinline_for_stack
+char *hex_range(char *buf, char *end, u64 start_val, u64 end_val,
+		struct printf_spec spec)
+{
+	buf = number(buf, end, start_val, spec);
+	if (start_val == end_val)
+		return buf;
+
+	if (buf < end)
+		*buf = '-';
+	++buf;
+	return number(buf, end, end_val, spec);
+}
+
+static noinline_for_stack
 char *resource_string(char *buf, char *end, struct resource *res,
 		      struct printf_spec spec, const char *fmt)
 {
@@ -1114,11 +1128,7 @@ char *resource_string(char *buf, char *end, struct resource *res,
 		p = string_nocheck(p, pend, "size ", str_spec);
 		p = number(p, pend, resource_size(res), *specp);
 	} else {
-		p = number(p, pend, res->start, *specp);
-		if (res->start != res->end) {
-			*p++ = '-';
-			p = number(p, pend, res->end, *specp);
-		}
+		p = hex_range(p, pend, res->start, res->end, *specp);
 	}
 	if (decode) {
 		if (res->flags & IORESOURCE_MEM_64)
@@ -1133,6 +1143,31 @@ char *resource_string(char *buf, char *end, struct resource *res,
 		p = string_nocheck(p, pend, " flags ", str_spec);
 		p = number(p, pend, res->flags, default_flag_spec);
 	}
+	*p++ = ']';
+	*p = '\0';
+
+	return string_nocheck(buf, end, sym, spec);
+}
+
+static noinline_for_stack
+char *range_string(char *buf, char *end, const struct range *range,
+		   struct printf_spec spec, const char *fmt)
+{
+	char sym[sizeof("[range 0x0123456789abcdef-0x0123456789abcdef]")];
+	char *p = sym, *pend = sym + sizeof(sym);
+
+	struct printf_spec range_spec = {
+		.field_width = 2 + 2 * sizeof(range->start), /* 0x + 2 * 8 */
+		.flags = SPECIAL | SMALL | ZEROPAD,
+		.base = 16,
+		.precision = -1,
+	};
+
+	if (check_pointer(&buf, end, range, spec))
+		return buf;
+
+	p = string_nocheck(p, pend, "[range ", default_str_spec);
+	p = hex_range(p, pend, range->start, range->end, range_spec);
 	*p++ = ']';
 	*p = '\0';
 
@@ -2249,6 +2284,15 @@ char *fwnode_string(char *buf, char *end, struct fwnode_handle *fwnode,
 	return widen_string(buf, buf - buf_start, end, spec);
 }
 
+static noinline_for_stack
+char *resource_or_range(const char *fmt, char *buf, char *end, void *ptr,
+			struct printf_spec spec)
+{
+	if (*fmt == 'r' && fmt[1] == 'a')
+		return range_string(buf, end, ptr, spec, fmt);
+	return resource_string(buf, end, ptr, spec, fmt);
+}
+
 int __init no_hash_pointers_enable(char *str)
 {
 	if (no_hash_pointers)
@@ -2297,6 +2341,7 @@ char *rust_fmt_argument(char *buf, char *end, void *ptr);
  * - 'Bb' as above with module build ID (for use in backtraces)
  * - 'R' For decoded struct resource, e.g., [mem 0x0-0x1f 64bit pref]
  * - 'r' For raw struct resource, e.g., [mem 0x0-0x1f flags 0x201]
+ * - 'ra' For struct ranges, e.g., [range 0x0000000000000000 - 0x00000000000000ff]
  * - 'b[l]' For a bitmap, the number of bits is determined by the field
  *       width which must be explicitly specified either as part of the
  *       format string '%32b[l]' or through '%*b[l]', [l] selects
@@ -2421,7 +2466,7 @@ char *pointer(const char *fmt, char *buf, char *end, void *ptr,
 		return symbol_string(buf, end, ptr, spec, fmt);
 	case 'R':
 	case 'r':
-		return resource_string(buf, end, ptr, spec, fmt);
+		return resource_or_range(fmt, buf, end, ptr, spec);
 	case 'h':
 		return hex_string(buf, end, ptr, spec, fmt);
 	case 'b':
