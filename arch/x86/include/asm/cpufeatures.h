@@ -475,7 +475,11 @@
 #define X86_FEATURE_V_TSC_AUX		(19*32+ 9) /* Virtual TSC_AUX */
 #define X86_FEATURE_SME_COHERENT	(19*32+10) /* hardware-enforced cache coherency */
 #define X86_FEATURE_DEBUG_SWAP		(19*32+14) /* "debug_swap" SEV-ES full debug state swap support */
-/* HYGON 3rd CSV */
+#define X86_FEATURE_HV_INUSE_WR_ALLOWED	(19*32+30) /* Allow Write to in-use hypervisor-owned pages */
+/*
+ * Bit 30 of CPUID 0x8000001F EAX is a shared hardware bit:
+ * HvInUseWrAllowed on AMD, 3rd-generation CSV (CSV3) on Hygon.
+ */
 #define X86_FEATURE_CSV3		(19*32 + 30) /* HYGON 3rd CSV */
 
 /* AMD-defined Extended Feature 2 EAX, CPUID level 0x80000021 (EAX), word 20 */
