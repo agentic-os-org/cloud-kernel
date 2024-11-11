@@ -3344,7 +3344,7 @@ void set_task_cpu(struct task_struct *p, unsigned int new_cpu)
 		if (p->sched_class->migrate_task_rq)
 			p->sched_class->migrate_task_rq(p, new_cpu);
 		p->se.nr_migrations++;
-		task_ca_increase_nr_migrations(p);
+		task_cpu_increase_nr_migrations(p);
 		perf_event_task_migrate(p);
 	}
 
@@ -8871,8 +8871,8 @@ int in_sched_functions(unsigned long addr)
 #ifdef CONFIG_CGROUP_SCHED
 #ifdef CONFIG_SCHED_SLI
 static DEFINE_PER_CPU(struct sched_cgroup_lat_stat_cpu, root_lat_stat_cpu);
+static DEFINE_PER_CPU(struct cpu_alistats, root_alistats);
 #endif
-
 /*
  * Default task group.
  * Every task in system belongs to this group at bootup.
@@ -8880,6 +8880,7 @@ static DEFINE_PER_CPU(struct sched_cgroup_lat_stat_cpu, root_lat_stat_cpu);
 struct task_group root_task_group = {
 #ifdef CONFIG_SCHED_SLI
 	.lat_stat_cpu	= &root_lat_stat_cpu,
+	.alistats	= &root_alistats,
 #endif
 };
 LIST_HEAD(task_groups);
@@ -9338,6 +9339,8 @@ static void sched_free_group(struct task_group *tg)
 #ifdef CONFIG_SCHED_SLI
 	if (tg->lat_stat_cpu)
 		free_percpu(tg->lat_stat_cpu);
+	if (tg->alistats)
+		free_percpu(tg->alistats);
 #endif
 
 	kmem_cache_free(task_group_cache, tg);
@@ -9375,8 +9378,16 @@ struct task_group *sched_create_group(struct task_group *parent)
 		goto err;
 
 #ifdef CONFIG_SCHED_SLI
+	INIT_LIST_HEAD(&tg->sli_list);
+	tg->avenrun[0] = tg->avenrun[1] = tg->avenrun[2] = 0;
+	tg->avenrun_r[0] = tg->avenrun_r[1] = tg->avenrun_r[2] = 0;
+
 	tg->lat_stat_cpu = alloc_percpu(struct sched_cgroup_lat_stat_cpu);
 	if (!tg->lat_stat_cpu)
+		goto err;
+
+	tg->alistats = alloc_percpu(struct cpu_alistats);
+	if (!tg->alistats)
 		goto err;
 #endif
 
