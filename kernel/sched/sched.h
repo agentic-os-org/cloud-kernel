@@ -547,6 +547,14 @@ struct cfs_bandwidth {
 	CK_KABI_RESERVE(4)
 };
 
+#ifdef CONFIG_SCHED_SLI
+/* Maintain various statistics */
+struct cpu_alistats {
+	u64		nr_migrations;
+	u64		steal_high;
+} ____cacheline_aligned;
+#endif
+
 /* Task group related information */
 struct task_group {
 	struct cgroup_subsys_state css;
@@ -603,6 +611,12 @@ struct task_group {
 
 #ifdef CONFIG_SCHED_SLI
 	struct sched_cgroup_lat_stat_cpu __percpu *lat_stat_cpu;
+	struct cpu_alistats __percpu *alistats;
+	struct list_head	sli_list;
+	bool			sli_enabled;
+	u64			load_update_version;
+	unsigned long		avenrun[3];
+	unsigned long		avenrun_r[3];
 #endif
 
 	CK_KABI_RESERVE(1)
@@ -4314,7 +4328,7 @@ DEFINE_CLASS_IS_UNCONDITIONAL(sched_change)
 #ifdef CONFIG_SCHED_SLI
 extern u64 get_idle_time(struct kernel_cpustat *kcs, int cpu);
 extern u64 get_iowait_time(struct kernel_cpustat *kcs, int cpu);
-extern void task_ca_increase_nr_migrations(struct task_struct *tsk);
+extern void task_cpu_increase_nr_migrations(struct task_struct *tsk);
 void cpu_update_latency(struct sched_entity *se, u64 delta);
 void task_cpu_update_block(struct task_struct *tsk, u64 runtime);
 void calc_cgroup_load(void);
@@ -4324,7 +4338,7 @@ int sched_lat_stat_show(struct seq_file *sf, void *v);
 int sched_lat_stat_write(struct cgroup_subsys_state *css,
 				struct cftype *cft, u64 val);
 #else
-static inline void task_ca_increase_nr_migrations(struct task_struct *tsk) { }
+static inline void task_cpu_increase_nr_migrations(struct task_struct *tsk) { }
 static inline void cpu_update_latency(struct sched_entity *se,
 		u64 delta) { }
 static inline void task_cpu_update_block(struct task_struct *tsk,
