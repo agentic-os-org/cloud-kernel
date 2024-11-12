@@ -4337,6 +4337,17 @@ struct task_group *cgroup_tg(struct cgroup *cgrp);
 int sched_lat_stat_show(struct seq_file *sf, void *v);
 int sched_lat_stat_write(struct cgroup_subsys_state *css,
 				struct cftype *cft, u64 val);
+void __get_cgroup_avenrun(struct task_group *tg, unsigned long *loads,
+		unsigned long offset, int shift, bool running);
+unsigned long tg_running(struct task_group *tg, int cpu);
+unsigned long tg_uninterruptible(struct task_group *tg, int cpu);
+int enable_sli_write(struct cgroup_subsys_state *css,
+		struct cftype *cft, u64 val);
+u64 enable_sli_read(struct cgroup_subsys_state *css, struct cftype *cft);
+void tg_enable_sli(struct task_group *tg, bool val);
+void __cgroup_get_usage_result(struct cgroup_subsys_state *css, int cpu,
+					struct cpuacct_usage_result *res);
+
 #else
 static inline void task_cpu_increase_nr_migrations(struct task_struct *tsk) { }
 static inline void cpu_update_latency(struct sched_entity *se,
@@ -4352,5 +4363,9 @@ static inline bool async_load_calc_enabled(void)
 
 u64 tg_get_cfs_quota(struct task_group *tg);
 u64 tg_get_cfs_period(struct task_group *tg);
+
+
+void __cpuacct_get_usage(struct cgroup_subsys_state *css, int cpu,
+				struct cpuacct_usage_result *res);
 
 #endif /* _KERNEL_SCHED_SCHED_H */

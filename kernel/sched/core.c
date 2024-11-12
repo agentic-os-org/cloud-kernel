@@ -9569,7 +9569,9 @@ static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
 static void cpu_cgroup_css_offline(struct cgroup_subsys_state *css)
 {
 	struct task_group *tg = css_tg(css);
-
+#ifdef CONFIG_SCHED_SLI
+	tg_enable_sli(tg, false);
+#endif
 	scx_tg_offline(tg);
 }
 
@@ -10811,6 +10813,144 @@ out_show:
 
 	return 0;
 }
+
+void __cgroup_get_usage_result(struct cgroup_subsys_state *css, int cpu,
+					struct cpuacct_usage_result *res)
+{
+	struct sched_entity *se;
+	struct cgroup *cgrp = css->cgroup;
+	struct task_group *tg = cgroup_tg(cgrp);
+
+
+	memset(res, 0, sizeof(*res));
+
+	if (unlikely(!tg))
+		return;
+
+	if (cgroup_on_dfl(cgrp))
+		__cgroup_get_usage(cgrp, cpu, res);
+	else
+		__cpuacct_get_usage(css, cpu, res);
+
+	se = tg->se[cpu];
+
+	if (se && schedstat_enabled()) {
+		unsigned int seq;
+		unsigned long flags;
+		u64 idle_start, ineff, ineff_start, elapse, complement;
+		u64 clock, iowait_start;
+
+		do {
+			seq = read_seqcount_begin(&se->idle_seqcount);
+			res->idle = schedstat_val(se->cg_idle_sum);
+			idle_start = schedstat_val(se->cg_idle_start);
+			clock = cpu_clock(cpu);
+			if (idle_start && clock > idle_start)
+				res->idle += clock - idle_start;
+		} while (read_seqcount_retry(&se->idle_seqcount, seq));
+
+		ineff = schedstat_val(se->cg_ineffective_sum);
+		ineff_start = schedstat_val(se->cg_ineffective_start);
+		if (ineff_start)
+			__schedstat_add(ineff, clock - ineff_start);
+
+		spin_lock_irqsave(&se->iowait_lock, flags);
+		res->iowait = schedstat_val(se->cg_iowait_sum);
+		iowait_start = schedstat_val(se->cg_iowait_start);
+		if (iowait_start)
+			__schedstat_add(res->iowait, clock - iowait_start);
+		spin_unlock_irqrestore(&se->iowait_lock, flags);
+
+		res->steal = 0;
+
+		elapse = clock - schedstat_val(se->cg_init_time);
+		complement = res->idle + se->sum_exec_runtime + ineff;
+		if (elapse > complement)
+			res->steal = elapse - complement;
+
+		res->idle -= res->iowait;
+	} else {
+		res->idle = res->iowait = res->steal = 0;
+	}
+}
+
+static int cpu_exstat_show(struct seq_file *sf, void *v)
+{
+	struct cgroup_subsys_state *css = seq_css(sf);
+	struct task_group *tg = css_tg(css);
+	u64 user, nice, system, idle, iowait, irq, softirq, steal, guest;
+	u64 nr_migrations = 0;
+	struct cpu_alistats *alistats;
+	unsigned long load, avnrun[3], avnrun_r[3];
+	unsigned long nr_run = 0, nr_uninter = 0;
+	int cpu;
+	struct cpuacct_usage_result res;
+
+	user = nice = system = idle = iowait =
+		irq = softirq = steal = guest = 0;
+
+	for_each_possible_cpu(cpu) {
+		if (!housekeeping_cpu(cpu, HK_TYPE_DOMAIN))
+			continue;
+
+		rcu_read_lock();
+		__cgroup_get_usage_result(css, cpu, &res);
+		rcu_read_unlock();
+
+		user += res.user;
+		nice += res.nice;
+		system += res.system;
+		irq += res.irq;
+		softirq += res.softirq;
+		steal += res.steal;
+		guest += res.guest;
+		guest += res.guest_nice;
+		iowait += res.iowait;
+		idle += res.idle;
+
+		alistats = per_cpu_ptr(tg->alistats, cpu);
+		nr_migrations += alistats->nr_migrations;
+		nr_run += tg_running(tg, cpu);
+		nr_uninter += tg_uninterruptible(tg, cpu);
+	}
+
+	__get_cgroup_avenrun(tg, avnrun, FIXED_1/200, 0, false);
+	__get_cgroup_avenrun(tg, avnrun_r, FIXED_1/200, 0, true);
+
+	seq_printf(sf, "user %lld\n", nsec_to_clock_t(user));
+	seq_printf(sf, "nice %lld\n", nsec_to_clock_t(nice));
+	seq_printf(sf, "system %lld\n", nsec_to_clock_t(system));
+	seq_printf(sf, "idle %lld\n", nsec_to_clock_t(idle));
+	seq_printf(sf, "iowait %lld\n", nsec_to_clock_t(iowait));
+	seq_printf(sf, "irq %lld\n", nsec_to_clock_t(irq));
+	seq_printf(sf, "softirq %lld\n", nsec_to_clock_t(softirq));
+	seq_printf(sf, "steal %lld\n", nsec_to_clock_t(steal));
+	seq_printf(sf, "guest %lld\n", nsec_to_clock_t(guest));
+
+	load = LOAD_INT(avnrun[0]) * 100 + LOAD_FRAC(avnrun[0]);
+	seq_printf(sf, "load average(1min) %lld\n", (u64)load);
+	load = LOAD_INT(avnrun[1]) * 100 + LOAD_FRAC(avnrun[1]);
+	seq_printf(sf, "load average(5min) %lld\n", (u64)load);
+	load = LOAD_INT(avnrun[2]) * 100 + LOAD_FRAC(avnrun[2]);
+	seq_printf(sf, "load average(15min) %lld\n", (u64)load);
+
+	seq_printf(sf, "nr_running %lld\n", (u64)nr_run);
+	if ((long) nr_uninter < 0)
+		nr_uninter = 0;
+	seq_printf(sf, "nr_uninterruptible %lld\n", (u64)nr_uninter);
+	seq_printf(sf, "nr_migrations %lld\n", (u64)nr_migrations);
+
+	load = LOAD_INT(avnrun_r[0]) * 100 + LOAD_FRAC(avnrun_r[0]);
+	seq_printf(sf, "running load average(1min) %lld\n", (u64)load);
+	load = LOAD_INT(avnrun_r[1]) * 100 + LOAD_FRAC(avnrun_r[1]);
+	seq_printf(sf, "running load average(5min) %lld\n", (u64)load);
+	load = LOAD_INT(avnrun_r[2]) * 100 + LOAD_FRAC(avnrun_r[2]);
+	seq_printf(sf, "running load average(15min) %lld\n", (u64)load);
+
+	return 0;
+}
+
+
 #endif
 
 static struct cftype cpu_files[] = {
@@ -10890,6 +11030,18 @@ static struct cftype cpu_files[] = {
 		.private = SCHED_LAT_IOBLOCK,
 		.write_u64 = sched_lat_stat_write,
 		.seq_show = sched_lat_stat_show
+	},
+	{
+		.name = "exstat",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = cpu_exstat_show,
+	},
+	{
+		.name = "enable_sli",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = enable_sli_read,
+		.write_u64 = enable_sli_write
+
 	},
 #endif
 	{ }	/* terminate */
