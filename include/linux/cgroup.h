@@ -780,6 +780,8 @@ static inline void cgroup_path_from_kernfs_id(u64 id, char *buf, size_t buflen)
  */
 void css_rstat_updated(struct cgroup_subsys_state *css, int cpu);
 void css_rstat_flush(struct cgroup_subsys_state *css);
+void __cgroup_get_usage(struct cgroup *cgrp, int cpu,
+				struct cpuacct_usage_result *res);
 
 /*
  * Basic resource stats.
