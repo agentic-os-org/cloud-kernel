@@ -2490,7 +2490,7 @@ enum rich_container_source {
 
 #ifdef CONFIG_RICH_CONTAINER
 void rich_container_source(enum rich_container_source *from);
-bool child_cpuacct(struct task_struct *tsk);
+bool child_task_group(struct task_struct *tsk);
 void rich_container_get_usage(enum rich_container_source from,
 		struct task_struct *reaper, int cpu,
 		struct cpuacct_usage_result *res);

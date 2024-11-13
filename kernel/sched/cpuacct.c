@@ -1197,11 +1197,11 @@ cpuset_source:
 	rich_container_get_cpuset_cpus(pmask);
 }
 
-bool child_cpuacct(struct task_struct *tsk)
+bool child_task_group(struct task_struct *tsk)
 {
-	struct cpuacct *ca = task_ca(tsk);
+	struct task_group *tg = task_tg(tsk);
 
-	if (ca && ca != &root_cpuacct)
+	if (tg && tg != &root_task_group)
 		return true;
 
 	return false;
