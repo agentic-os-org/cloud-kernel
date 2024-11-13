@@ -181,7 +181,8 @@ static inline bool in_rich_container(struct task_struct *tsk,
 	if (sysctl_rich_container_enable == 0)
 		return false;
 
-	return (task_active_pid_ns(tsk) != &init_pid_ns) && child_cpuacct(tsk)
+	return (task_active_pid_ns(tsk) != &init_pid_ns)
+		&& child_task_group(tsk)
 		&& !(rc_feature_disable_mask & (1 << id));
 }
 
