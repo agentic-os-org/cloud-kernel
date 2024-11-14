@@ -18,6 +18,7 @@
 #include <linux/cma.h>
 #endif
 #include <linux/zswap.h>
+#include <linux/numa_remote.h>
 #include <asm/page.h>
 #include "internal.h"
 #include <linux/pid_namespace.h>
@@ -210,6 +211,8 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	if (memcg)
 		css_put(&memcg->css);
 #endif
+
+	numa_remote_report_meminfo(m);
 
 	return 0;
 }
