@@ -8,6 +8,7 @@
 
 #include <linux/mm.h>
 #include <linux/numa_memblks.h>
+#include <linux/node.h>
 
 #define MEMORY_KEEP_ISOLATED	1
 #define MEMORY_DIRECT_ONLINE 2
@@ -23,6 +24,8 @@ int add_memory_remote(int nid, u64 start, u64 size, int flags);
 int remove_memory_remote(int nid, u64 start, u64 size);
 int numa_remote_set_distance(int target, int *node_ids, int *node_distances,
 			     int count);
+void numa_remote_register_node(struct node *node);
+void numa_remote_unregister_node(struct node *node);
 #else
 static inline bool numa_is_remote_node(int nid)
 {
@@ -67,6 +70,14 @@ static inline int numa_remote_set_distance(int target, int *node_ids,
 					   int *node_distances, int count)
 {
 	return -EINVAL;
+}
+
+static inline void numa_remote_register_node(struct node *node)
+{
+}
+
+static inline void numa_remote_unregister_node(struct node *node)
+{
 }
 #endif
 #endif /* _LINUX_REMOTE_MEMORY_H_ */
