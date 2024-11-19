@@ -14,6 +14,7 @@
 #include <asm/nospec-branch.h>
 #include <asm/cache.h>
 #include <asm/apic.h>
+#include <asm/tlb.h>
 
 #include "mm_internal.h"
 
@@ -1054,7 +1055,7 @@ STATIC_NOPV void native_flush_tlb_one_user(unsigned long addr)
 {
 	u32 loaded_mm_asid = this_cpu_read(cpu_tlbstate.loaded_mm_asid);
 
-	asm volatile("invlpg (%0)" ::"r" (addr) : "memory");
+	invlpg(addr);
 
 	if (!static_cpu_has(X86_FEATURE_PTI))
 		return;
