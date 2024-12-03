@@ -4100,6 +4100,16 @@ void __cold close_ctree(struct btrfs_fs_info *fs_info)
 	/* clear out the rbtree of defraggable inodes */
 	btrfs_cleanup_defrag_inodes(fs_info);
 
+	/*
+	 * We have to wait for delalloc workers before we proceed below and stop
+	 * the cleaner kthread, otherwise we trigger a use-after-tree on the
+	 * cleaner kthread task_struct when a delalloc worker running
+	 * submit_compressed_extents() adds a delayed iput, which does a wake up
+	 * on the cleaner kthread, which was already freed below when we call
+	 * kthread_stop().
+	 */
+	btrfs_flush_workqueue(fs_info->delalloc_workers);
+
 	cancel_work_sync(&fs_info->async_reclaim_work);
 	cancel_work_sync(&fs_info->async_data_reclaim_work);
 
