@@ -10,6 +10,7 @@ struct erofs_fileio_rq {
 	struct bio_vec bvecs[BIO_MAX_PAGES];
 	struct bio bio;
 	struct kiocb iocb;
+	struct super_block *sb;
 };
 
 struct erofs_fileio {
@@ -53,8 +54,9 @@ static void erofs_fileio_rq_submit(struct erofs_fileio_rq *rq)
 	rq->iocb.ki_pos = rq->bio.bi_iter.bi_sector << SECTOR_SHIFT;
 	rq->iocb.ki_ioprio = get_current_ioprio();
 	rq->iocb.ki_complete = erofs_fileio_ki_complete;
-	rq->iocb.ki_flags = (rq->iocb.ki_filp->f_mapping->a_ops->direct_IO) ?
-				IOCB_DIRECT : 0;
+	if (test_opt(&EROFS_SB(rq->sb)->opt, DIRECT_IO) &&
+	    rq->iocb.ki_filp->f_mapping->a_ops->direct_IO)
+		rq->iocb.ki_flags = IOCB_DIRECT;
 	iov_iter_bvec(&iter, READ, rq->bvecs, rq->bio.bi_vcnt,
 		      rq->bio.bi_iter.bi_size);
 	ret = vfs_iocb_iter_read(rq->iocb.ki_filp, &rq->iocb, &iter);
@@ -62,7 +64,8 @@ static void erofs_fileio_rq_submit(struct erofs_fileio_rq *rq)
 		erofs_fileio_ki_complete(&rq->iocb, ret, 0);
 }
 
-static struct erofs_fileio_rq *erofs_fileio_rq_alloc(struct erofs_map_dev *mdev)
+static struct erofs_fileio_rq *erofs_fileio_rq_alloc(struct super_block *sb,
+						     struct erofs_map_dev *mdev)
 {
 	struct erofs_fileio_rq *rq = kzalloc(sizeof(*rq),
 					     GFP_KERNEL | __GFP_NOFAIL);
@@ -70,6 +73,7 @@ static struct erofs_fileio_rq *erofs_fileio_rq_alloc(struct erofs_map_dev *mdev)
 	bio_init(&rq->bio, rq->bvecs, BIO_MAX_PAGES);
 	rq->bio.bi_opf = REQ_OP_READ;
 	rq->iocb.ki_filp = mdev->m_fp;
+	rq->sb = sb;
 	return rq;
 }
 
@@ -127,7 +131,7 @@ io_retry:
 				err = erofs_map_dev(inode->i_sb, &io->dev);
 				if (err)
 					break;
-				io->rq = erofs_fileio_rq_alloc(&io->dev);
+				io->rq = erofs_fileio_rq_alloc(inode->i_sb, &io->dev);
 				io->rq->bio.bi_iter.bi_sector = io->dev.m_pa >> 9;
 				attached = 0;
 			}
