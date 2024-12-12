@@ -34,8 +34,8 @@ struct mce_evt_llist {
 
 void mce_gen_pool_process(struct work_struct *__unused);
 bool mce_gen_pool_empty(void);
-int mce_gen_pool_add(struct mce *mce);
-int mce_gen_pool_init(void);
+bool mce_gen_pool_add(struct mce *mce);
+bool mce_gen_pool_init(void);
 struct llist_node *mce_gen_pool_prepare_records(void);
 
 extern int (*mce_severity)(struct mce *a, struct pt_regs *regs,

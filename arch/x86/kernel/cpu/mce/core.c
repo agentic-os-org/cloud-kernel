@@ -157,7 +157,7 @@ EXPORT_PER_CPU_SYMBOL_GPL(injectm);
 
 void mce_log(struct mce *m)
 {
-	if (!mce_gen_pool_add(m))
+	if (mce_gen_pool_add(m))
 		irq_work_queue(&mce_irq_work);
 }
 EXPORT_SYMBOL_GPL(mce_log);
@@ -1836,14 +1836,14 @@ static void quirk_sandybridge_ifu(int bank, struct mce *m, struct pt_regs *regs)
 }
 
 /* Add per CPU specific workarounds here */
-static int __mcheck_cpu_apply_quirks(struct cpuinfo_x86 *c)
+static bool __mcheck_cpu_apply_quirks(struct cpuinfo_x86 *c)
 {
 	struct mce_bank *mce_banks = this_cpu_ptr(mce_banks_array);
 	struct mca_config *cfg = &mca_cfg;
 
 	if (c->x86_vendor == X86_VENDOR_UNKNOWN) {
 		pr_info("unknown CPU type - not enabling MCE support\n");
-		return -EOPNOTSUPP;
+		return false;
 	}
 
 	/* This should be disabled by the BIOS, but isn't always */
@@ -1936,7 +1936,7 @@ static int __mcheck_cpu_apply_quirks(struct cpuinfo_x86 *c)
 	if (cfg->bootlog != 0)
 		cfg->panic_timeout = 30;
 
-	return 0;
+	return true;
 }
 
 static bool __mcheck_cpu_ancient_init(struct cpuinfo_x86 *c)
@@ -2182,12 +2182,12 @@ void mcheck_cpu_init(struct cpuinfo_x86 *c)
 
 	__mcheck_cpu_cap_init();
 
-	if (__mcheck_cpu_apply_quirks(c) < 0) {
+	if (!__mcheck_cpu_apply_quirks(c)) {
 		mca_cfg.disabled = 1;
 		return;
 	}
 
-	if (mce_gen_pool_init()) {
+	if (!mce_gen_pool_init()) {
 		mca_cfg.disabled = 1;
 		pr_emerg("Couldn't allocate MCE records pool!\n");
 		return;
