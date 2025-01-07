@@ -7,7 +7,7 @@
 #include <trace/events/erofs.h>
 
 struct erofs_fileio_rq {
-	struct bio_vec bvecs[BIO_MAX_PAGES];
+	struct bio_vec bvecs[16];
 	struct bio bio;
 	struct kiocb iocb;
 	struct super_block *sb;
@@ -70,7 +70,7 @@ static struct erofs_fileio_rq *erofs_fileio_rq_alloc(struct super_block *sb,
 	struct erofs_fileio_rq *rq = kzalloc(sizeof(*rq),
 					     GFP_KERNEL | __GFP_NOFAIL);
 
-	bio_init(&rq->bio, rq->bvecs, BIO_MAX_PAGES);
+	bio_init(&rq->bio, rq->bvecs, ARRAY_SIZE(rq->bvecs));
 	rq->bio.bi_opf = REQ_OP_READ;
 	rq->iocb.ki_filp = mdev->m_fp;
 	rq->sb = sb;
