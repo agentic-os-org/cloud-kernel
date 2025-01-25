@@ -26,6 +26,7 @@
 #include <linux/set_memory.h>
 #include <linux/kfence.h>
 #include <linux/stop_machine.h>
+#include "internal.h"
 
 #include <asm/barrier.h>
 #include <asm/cputype.h>
@@ -41,6 +42,12 @@
 #include <asm/tlbflush.h>
 #include <asm/pgalloc.h>
 #include <asm/kfence.h>
+
+#ifdef CONFIG_PFN_RANGE_ALLOC
+#define NO_PUD_BLOCK_MAPPINGS BIT(3)
+#else
+#define NO_PUD_BLOCK_MAPPINGS 0
+#endif
 
 int idmap_t0sz __ro_after_init;
 
@@ -418,7 +425,7 @@ static void alloc_init_pud(pgd_t *pgdp, unsigned long addr, unsigned long end,
 		 */
 		if (pud_sect_supported() &&
 		   ((addr | next | phys) & ~PUD_MASK) == 0 &&
-		    (flags & NO_BLOCK_MAPPINGS) == 0 &&
+		    (flags & (NO_BLOCK_MAPPINGS | NO_PUD_BLOCK_MAPPINGS)) == 0 &&
 		    !should_split_pud(p4dp, addr, phys)) {
 			pud_set_huge(pudp, phys, prot);
 
@@ -663,6 +670,8 @@ static void __init map_mem(pgd_t *pgdp)
 
 	if (!can_set_block_and_cont_map())
 		flags |= NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
+	else if (should_pmd_linear_mapping())
+		flags |= NO_PUD_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
 
 	/*
 	 * Take care not to create a writable alias for the
@@ -1221,6 +1230,20 @@ static void free_empty_tables(unsigned long addr, unsigned long end,
 }
 #endif
 
+#ifdef CONFIG_PFN_RANGE_ALLOC
+void __init pmd_mapping_reserved_remap(phys_addr_t start, phys_addr_t end)
+{
+	unsigned long vstart, vend;
+
+	vstart = __phys_to_virt(start);
+	vend = __phys_to_virt(end);
+	unmap_hotplug_range(vstart, vend, false, NULL);
+	__create_pgd_mapping(swapper_pg_dir, start, vstart, end - start,
+			pgprot_tagged(PAGE_KERNEL), early_pgtable_alloc,
+			NO_PUD_BLOCK_MAPPINGS | NO_CONT_MAPPINGS);
+}
+#endif
+
 void __meminit vmemmap_set_pmd(pmd_t *pmdp, void *p, int node,
 			       unsigned long addr, unsigned long next)
 {
@@ -1404,6 +1427,8 @@ int arch_add_memory(int nid, u64 start, u64 size,
 
 	if (!can_set_block_and_cont_map())
 		flags |= NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
+	else if (should_pmd_linear_mapping())
+		flags |= NO_PUD_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
 
 	__create_pgd_mapping(swapper_pg_dir, start, __phys_to_virt(start),
 			     size, params->pgprot, __pgd_pgtable_alloc,
