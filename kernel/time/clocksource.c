@@ -14,6 +14,7 @@
 #include <linux/sched.h> /* for spin_unlock_irq() using preempt_count() m68k */
 #include <linux/tick.h>
 #include <linux/kthread.h>
+#include <linux/cpu.h>
 
 #include "tick-internal.h"
 #include "timekeeping_internal.h"
@@ -280,6 +281,7 @@ static void clocksource_verify_percpu(struct clocksource *cs)
 
 	cpumask_clear(&cpus_ahead);
 	cpumask_clear(&cpus_behind);
+	cpus_read_lock();
 	preempt_disable();
 	testcpu = smp_processor_id();
 	pr_warn("Checking clocksource %s synchronization from CPU %d.\n", cs->name, testcpu);
@@ -303,6 +305,7 @@ static void clocksource_verify_percpu(struct clocksource *cs)
 			cs_nsec_min = cs_nsec;
 	}
 	preempt_enable();
+	cpus_read_unlock();
 	if (!cpumask_empty(&cpus_ahead))
 		pr_warn("        CPUs %*pbl ahead of CPU %d for clocksource %s.\n",
 			cpumask_pr_args(&cpus_ahead), testcpu, cs->name);
