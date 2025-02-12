@@ -12214,6 +12214,29 @@ __bpf_kfunc int bpf_dynptr_from_xdp(struct xdp_md *x, u64 flags,
 	return 0;
 }
 
+__bpf_kfunc int bpf_anolis_ipv6_addr_set(struct bpf_sock_addr_kern *ctx,
+					 struct in6_addr *addr,
+					 size_t addr_len__sz)
+{
+	struct sockaddr_in6 *sin = (struct sockaddr_in6 *)ctx->uaddr;
+
+	if (ctx->sk->sk_family != AF_INET)
+		return -EINVAL;
+
+	if (addr_len__sz == 0 || addr_len__sz > sizeof(sin->sin6_addr))
+		return -EINVAL;
+
+	/* sin->sin6_port should be set directly in bpf prog without helper */
+	sin->sin6_family = AF_INET6;
+	sin->sin6_flowinfo = 0;
+	sin->sin6_scope_id = 0;
+
+	memcpy(&sin->sin6_addr, addr, addr_len__sz);
+	ctx->uaddrlen = sizeof(struct sockaddr_in6);
+
+	return 0;
+}
+
 __bpf_kfunc int bpf_sock_addr_set_sun_path(struct bpf_sock_addr_kern *sa_kern,
 					   const u8 *sun_path, u32 sun_path__sz)
 {
@@ -12475,6 +12498,7 @@ BTF_KFUNCS_END(bpf_kfunc_check_set_xdp)
 
 BTF_KFUNCS_START(bpf_kfunc_check_set_sock_addr)
 BTF_ID_FLAGS(func, bpf_sock_addr_set_sun_path)
+BTF_ID_FLAGS(func, bpf_anolis_ipv6_addr_set)
 BTF_KFUNCS_END(bpf_kfunc_check_set_sock_addr)
 
 BTF_KFUNCS_START(bpf_kfunc_check_set_tcp_reqsk)
