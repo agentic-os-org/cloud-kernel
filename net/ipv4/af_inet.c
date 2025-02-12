@@ -837,7 +837,8 @@ int inet_getname(struct socket *sock, struct sockaddr *uaddr,
 				       CGROUP_INET4_GETSOCKNAME);
 	}
 	release_sock(sk);
-	memset(sin->sin_zero, 0, sizeof(sin->sin_zero));
+	if (likely(sin->sin_family != AF_INET6))
+		memset(sin->sin_zero, 0, sizeof(sin->sin_zero));
 	return sin_addr_len;
 }
 EXPORT_SYMBOL(inet_getname);
