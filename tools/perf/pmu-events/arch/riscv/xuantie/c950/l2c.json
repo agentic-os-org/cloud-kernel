@@ -1,0 +1,62 @@
+[
+  {
+      "EventName": "l2_cache_wb",
+      "EventCode": "0x000000a2",
+      "BriefDescription": "l2 cache wb number, dirty snpresp data included."
+  },
+  {
+    "EventName": "l2_cache_rd",
+    "EventCode": "0x000000a3",
+    "BriefDescription": "l2 cache read access."
+  },
+  {
+    "EventName": "l2_cache_wr",
+    "EventCode": "0x000000a4",
+    "BriefDescription": "l2 cache store miss req from lsu."
+  },
+  {
+    "EventName": "l2_cache_refill_rd",
+    "EventCode": "0x000000a5",
+    "BriefDescription": "l2 cache refill raised by lsu/ifu."
+  },
+  {
+    "EventName": "l2_cache_refill_wr",
+    "EventCode": "0x000000a6",
+    "BriefDescription": "l2 cache refill raised by lsu stream write."
+  },
+  {
+    "EventName": "l2_cache_wb_victim",
+    "EventCode": "0x000000a7",
+    "BriefDescription": "l2 cache write back to next-level cache raised by cache replace."
+  },
+  {
+    "EventName": "l2_cache_wb_clean",
+    "EventCode": "0x000000a8",
+    "BriefDescription": "l2 cache write back to next-level cache raised by CMO or snoop."
+  },
+  {
+    "EventName": "l2_cache_inval",
+    "EventCode": "0x000000a9",
+    "BriefDescription": "l2 cache invalidation to next-level cache raised by CMO or snoop."
+  },
+  {
+    "EventName": "l2_cache_refill_inst",
+    "EventCode": "0x000000aa",
+    "BriefDescription": "l2 cache refill raised by ifu load miss."
+  },
+  {
+    "EventName": "bus_access",
+    "EventCode": "0x000000ab",
+    "BriefDescription": "bus req count."
+  },
+  {
+    "EventName": "bus_access_rd",
+    "EventCode": "0x000000ac",
+    "BriefDescription": "bus read access count."
+  },
+  {
+    "EventName": "bus_access_wr",
+    "EventCode": "0x000000af",
+    "BriefDescription": "bus evict/write access count."
+  }
+]

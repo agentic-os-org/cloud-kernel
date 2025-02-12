@@ -1,0 +1,177 @@
+[
+  {
+    "EventName": "VFPU_EX1_REP",
+    "EventCode": "0x00000059",
+    "BriefDescription": "Number of inst replayed in VFPU EX1 stage"
+  },
+  {
+    "EventName": "VFPU_VEC_STRUCT_STALL",
+    "EventCode": "0x0000005A",
+    "BriefDescription": "Number of stall cycles caused by vfpu blocking execution instructions"
+  },
+  {
+    "EventName": "VFPU_SCA_FP_INST",
+    "EventCode": "0x0000005B",
+    "BriefDescription": "Number of executed scalar floating-point instructions"
+  },
+  {
+    "EventName": "VFPU_HALF_FP_INST",
+    "EventCode": "0x0000005C",
+    "BriefDescription": "Number of executed half-precision scalar floating-point micro-instructions"
+  },
+  {
+    "EventName": "VFPU_SINGLE_FP_INST",
+    "EventCode": "0x0000005D",
+    "BriefDescription": "Number of executed single-precision scalar floating-point micro-instructions"
+  },
+  {
+    "EventName": "VFPU_DOUBLE_FP_INST",
+    "EventCode": "0x0000005E",
+    "BriefDescription": "Number of executed double-precision scalar floating-point micro-instructions"
+  },
+  {
+    "EventName": "VFPU_VEC_INST",
+    "EventCode": "0x0000005F",
+    "BriefDescription": "Number of executed vector macro-instructions"
+  },
+  {
+    "EventName": "VFPU_VEC_UOP",
+    "EventCode": "0x00000060",
+    "BriefDescription": "Number of executed vector micro-instructions"
+  },
+  {
+    "EventName": "VFPU_VEC_FP_UOP",
+    "EventCode": "0x00000061",
+    "BriefDescription": "Number of executed vector floating-point micro-instructions"
+  },
+  {
+    "EventName": "VFPU_VEC_FP_INST",
+    "EventCode": "0x00000062",
+    "BriefDescription": "Number of executed vector floating-point macro-instructions"
+  },
+  {
+    "EventName": "VFPU_BF_UOP",
+    "EventCode": "0x00000063",
+    "BriefDescription": "Number of executed bfloat16 micro-instructions"
+  },
+  {
+    "EventName": "VFPU_VINT8_UOP",
+    "EventCode": "0x00000064",
+    "BriefDescription": "Number of vector micro-instructions executed with source operands of type int8"
+  },
+  {
+    "EventName": "VFPU_VINT16_UOP",
+    "EventCode": "0x00000065",
+    "BriefDescription": "Number of vector micro-instructions executed with source operands of type int16"
+  },
+  {
+    "EventName": "VFPU_VINT32_UOP",
+    "EventCode": "0x00000066",
+    "BriefDescription": "Number of vetor micro-instructions executed with source operands of type int32"
+  },
+  {
+    "EventName": "VFPU_VINT64_UOP",
+    "EventCode": "0x00000067",
+    "BriefDescription": "Number of vector micro-instructions executed with source operands of type int64"
+  },
+  {
+    "EventName": "VFPU_FIX_POINT_UOP",
+    "EventCode": "0x00000068",
+    "BriefDescription": "Number of executed fixed-point micro-instructions"
+  },
+  {
+    "EventName": "VFPU_FDIV_UOP",
+    "EventCode": "0x00000069",
+    "BriefDescription": "Number of executed floting-point division micro-instructions"
+  },
+  {
+    "EventName": "VFPU_IDIV_UOP",
+    "EventCode": "0x0000006A",
+    "BriefDescription": "Number of executed integer division micro-instructions"
+  },
+  {
+    "EventName": "VFPU_ZVKN_UOP",
+    "EventCode": "0x0000006B",
+    "BriefDescription": "Number of executed ZVKN-extension micro-instructions"
+  },
+  {
+    "EventName": "VFPU_ZVKS_UOP",
+    "EventCode": "0x0000006C",
+    "BriefDescription": "Number of executed ZVKS-extension micro-instructions"
+  },
+  {
+    "EventName": "VFPU_VMULU64_UOP",
+    "EventCode": "0x0000006D",
+    "BriefDescription": "Number of micro-instructions executed in vector 64-bit integer multiplication unit"
+  },
+  {
+    "EventName": "VFPU_VMULU_UOP",
+    "EventCode": "0x0000006E",
+    "BriefDescription": "Number of micro-instructions executed in vector integer multiplication unit"
+  },
+  {
+    "EventName": "VFPU_VDOT_UOP",
+    "EventCode": "0x0000006F",
+    "BriefDescription": "Number of executed RISC-V and Xuantie dot-extension micro-instructions"
+  },
+  {
+    "EventName": "VFPU_VFMUL_UOP",
+    "EventCode": "0x00000070",
+    "BriefDescription": "Number of executed floating-point multiplication micro-instructions"
+  },
+  {
+    "EventName": "VFPU_VFADD_UOP",
+    "EventCode": "0x00000071",
+    "BriefDescription": "Number of executed floating-point addition micro-instructions"
+  },
+  {
+    "EventName": "VFPU_VPERM_UOP",
+    "EventCode": "0x00000072",
+    "BriefDescription": "Number of executed permutation micro-instructions"
+  },
+  {
+    "EventName": "VFPU_REDU_UOP",
+    "EventCode": "0x00000073",
+    "BriefDescription": "Number of executed integer reduction micro-instructions"
+  },
+  {
+    "EventName": "VFPU_FRED_UOP",
+    "EventCode": "0x00000074",
+    "BriefDescription": "Number of executed floating-point reduction micro-instructions"
+  },
+  {
+    "EventName": "VFPU_MASK_UOP",
+    "EventCode": "0x00000075",
+    "BriefDescription": "Number of executed vector masked micro-instructions"
+  },
+  {
+    "EventName": "VFPU_VLMAX_UOP",
+    "EventCode": "0x00000076",
+    "BriefDescription": "Number of vector micro-instructions excuted with max number of element"
+  },
+  {
+    "EventName": "VFPU_AGNOSTIC_UOP",
+    "EventCode": "0x00000077",
+    "BriefDescription": "Number of vector micro-instructions excuted with agnostic policy"
+  },
+  {
+    "EventName": "VFPU_IDIV_DIRECT_UOP",
+    "EventCode": "0x00000078",
+    "BriefDescription": "Number of vector integer division micro-instructions producing special value types"
+  },
+  {
+    "EventName": "VFPU_VADD_UOP",
+    "EventCode": "0x000000AE",
+    "BriefDescription": "Number of executed vector integer addition micro-instructions"
+  },
+  {
+    "EventName": "VFPU_VMACC_UOP",
+    "EventCode": "0x000000AF",
+    "BriefDescription": "Number of executed vector integer multiply-add micro-instructions"
+  },
+  {
+    "EventName": "VFPU_VFMACC_UOP",
+    "EventCode": "0x000000B0",
+    "BriefDescription": "Number of executed vector floating-point multiply-add micro-instructions"
+  }
+]
