@@ -570,6 +570,7 @@ struct task_group {
 	/* runqueue "owned" by this group on each CPU */
 	struct cfs_rq		**cfs_rq;
 	unsigned long		shares;
+	u64			slice;
 	/*
 	 * load_avg can be heavily contended at clock tick time, so put
 	 * it in its own cache-line separated from the fields above which
@@ -717,6 +718,8 @@ extern void sched_move_task(struct task_struct *tsk, bool for_autogroup);
 extern int sched_group_set_shares(struct task_group *tg, unsigned long shares);
 
 extern int sched_group_set_idle(struct task_group *tg, long idle);
+
+extern int sched_group_set_slice(struct task_group *tg, u64 slice_us);
 
 extern void set_task_rq_fair(struct sched_entity *se,
 			     struct cfs_rq *prev, struct cfs_rq *next);
