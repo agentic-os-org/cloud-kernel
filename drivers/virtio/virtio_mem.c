@@ -616,6 +616,15 @@ static bool virtio_mem_could_add_memory(struct virtio_mem *vm, uint64_t size)
 	if (WARN_ON_ONCE(size > vm->offline_threshold))
 		return false;
 
+	/*
+	 * TODO: If memory online is deferred, offiine_size will exceed offline_threashold
+	 * immediately. However, even if we hotplug 400G memory on a machine with only
+	 * 256M boot memory, OOM is still not triggered. So in most cases, adding memory
+	 * is okay. We may have a better way to deal with it in the future.
+	 */
+	if (parallel_hotplug_ratio)
+		return true;
+
 	return atomic64_read(&vm->offline_size) + size <= vm->offline_threshold;
 }
 
@@ -1514,14 +1523,16 @@ static int virtio_mem_send_unplug_all_request(struct virtio_mem *vm)
  * of the memory block.
  */
 static int virtio_mem_sbm_plug_sb(struct virtio_mem *vm, unsigned long mb_id,
-				  int sb_id, int count)
+				  int sb_id, int count, bool skip_send_req)
 {
 	const uint64_t addr = virtio_mem_mb_id_to_phys(mb_id) +
 			      sb_id * vm->sbm.sb_size;
 	const uint64_t size = count * vm->sbm.sb_size;
-	int rc;
+	int rc = 0;
 
-	rc = virtio_mem_send_plug_request(vm, addr, size);
+	/* memory not onlined yet, so we also need defer the request. */
+	if (!skip_send_req)
+		rc = virtio_mem_send_plug_request(vm, addr, size);
 	if (!rc)
 		virtio_mem_sbm_set_sb_plugged(vm, mb_id, sb_id, count);
 	return rc;
@@ -1671,7 +1682,7 @@ static int virtio_mem_sbm_plug_and_add_mb(struct virtio_mem *vm,
 	 * Plug the requested number of subblocks before adding it to linux,
 	 * so that onlining will directly online all plugged subblocks.
 	 */
-	rc = virtio_mem_sbm_plug_sb(vm, mb_id, 0, count);
+	rc = virtio_mem_sbm_plug_sb(vm, mb_id, 0, count, parallel_hotplug_ratio);
 	if (rc)
 		return rc;
 
@@ -1730,7 +1741,7 @@ static int virtio_mem_sbm_plug_any_sb(struct virtio_mem *vm,
 		       !virtio_mem_sbm_test_sb_plugged(vm, mb_id, sb_id + count, 1))
 			count++;
 
-		rc = virtio_mem_sbm_plug_sb(vm, mb_id, sb_id, count);
+		rc = virtio_mem_sbm_plug_sb(vm, mb_id, sb_id, count, false);
 		if (rc)
 			return rc;
 		*nb_sb -= count;
@@ -1750,6 +1761,57 @@ static int virtio_mem_sbm_plug_any_sb(struct virtio_mem *vm,
 	return 0;
 }
 
+struct deferred_mb_range {
+	unsigned long start_id;
+	unsigned long end_id;
+};
+
+struct deferred_mb_range_list {
+	struct deferred_mb_range *ranges;
+	unsigned long size;
+	unsigned long capacity;
+	int nid;
+};
+
+#define deferred_mb_range_list_for_each(_i, _ranges, _start, _end) \
+	for (_i = 0; \
+	     _i < (_ranges).size && (_start = (_ranges).ranges[_i].start_id, \
+				_end = (_ranges).ranges[_i].end_id, true); \
+	     _i++)
+
+static int deferred_mb_range_list_add(struct deferred_mb_range_list *rs,
+				      unsigned long mb_id)
+{
+	struct deferred_mb_range *new_ranges;
+
+	if (!rs)
+		return -EINVAL;
+
+	if (rs->size && rs->ranges &&
+	    rs->ranges[rs->size - 1].end_id + 1 == mb_id) {
+		rs->ranges[rs->size - 1].end_id = mb_id;
+	} else {
+		if (rs->size == rs->capacity) {
+			rs->capacity++;
+			new_ranges = kmalloc_array_node(rs->capacity,
+						 sizeof(*rs->ranges), GFP_KERNEL, rs->nid);
+			if (!new_ranges)
+				return -ENOMEM;
+			if (rs->ranges) {
+				memcpy(new_ranges, rs->ranges,
+				       rs->size * sizeof(*rs->ranges));
+				kfree(rs->ranges);
+			}
+			rs->ranges = new_ranges;
+		}
+		rs->ranges[rs->size++] = (struct deferred_mb_range){
+			.start_id = mb_id,
+			.end_id = mb_id,
+		};
+	}
+	return 0;
+}
+
 static int virtio_mem_sbm_plug_request(struct virtio_mem *vm, uint64_t diff)
 {
 	const int mb_states[] = {
@@ -1759,6 +1821,17 @@ static int virtio_mem_sbm_plug_request(struct virtio_mem *vm, uint64_t diff)
 	};
 	uint64_t nb_sb = diff / vm->sbm.sb_size;
 	unsigned long mb_id;
+	struct deferred_mb_range_list rs = {
+		.ranges = NULL,
+		.size = 0,
+		.capacity = 0,
+		.nid = vm->nid,
+	};
+	unsigned long sid, eid;
+	uint64_t addr, size;
+	/* Last deferred memory block may not plug all subblocks */
+	uint64_t part_nb_sb = 0;
+	unsigned long timestamp;
 	int rc, i;
 
 	if (!nb_sb)
@@ -1784,32 +1857,87 @@ static int virtio_mem_sbm_plug_request(struct virtio_mem *vm, uint64_t diff)
 
 	/* Try to plug and add unused blocks */
 	virtio_mem_sbm_for_each_mb(vm, mb_id, VIRTIO_MEM_SBM_MB_UNUSED) {
-		if (!virtio_mem_could_add_memory(vm, memory_block_size_bytes()))
-			return -ENOSPC;
+		if (!virtio_mem_could_add_memory(vm, memory_block_size_bytes())) {
+			rc = -ENOSPC;
+			goto out_free;
+		}
 
+		if (!nb_sb)
+			break;
+		if (parallel_hotplug_ratio) {
+			if (nb_sb < vm->sbm.sbs_per_mb)
+				part_nb_sb = nb_sb;
+			rc = deferred_mb_range_list_add(&rs, mb_id);
+			if (rc)
+				goto out_free;
+		}
 		rc = virtio_mem_sbm_plug_and_add_mb(vm, mb_id, &nb_sb);
-		if (rc || !nb_sb)
-			return rc;
+		if (rc)
+			goto out_free;
 		cond_resched();
 	}
 
 	/* Try to prepare, plug and add new blocks */
 	while (nb_sb) {
-		if (!virtio_mem_could_add_memory(vm, memory_block_size_bytes()))
-			return -ENOSPC;
+		if (!virtio_mem_could_add_memory(vm, memory_block_size_bytes())) {
+			rc = -ENOSPC;
+			goto out_free;
+		}
 
 		rc = virtio_mem_sbm_prepare_next_mb(vm, &mb_id);
 		if (rc)
-			return rc;
+			goto out_free;
+		if (parallel_hotplug_ratio) {
+			if (nb_sb < vm->sbm.sbs_per_mb)
+				part_nb_sb = nb_sb;
+			rc = deferred_mb_range_list_add(&rs, mb_id);
+			if (rc)
+				goto out_free;
+		}
 		rc = virtio_mem_sbm_plug_and_add_mb(vm, mb_id, &nb_sb);
 		if (rc)
-			return rc;
+			goto out_free;
 		cond_resched();
 	}
 
-	return 0;
+	if (parallel_hotplug_ratio) {
+		timestamp = jiffies;
+		deferred_mb_range_list_for_each(i, rs, sid, eid) {
+			addr = virtio_mem_mb_id_to_phys(sid);
+			/* Always add complete memory block to Linux */
+			size = (eid - sid + 1) * memory_block_size_bytes();
+			/*
+			 * Deferred struct pages initialization and
+			 * Deferred free pages to buddy allocator.
+			 */
+			rc = deferred_online_memory(vm->nid, addr, size);
+			if (rc)
+				goto out_free;
+
+			/* Deferred send plug requests */
+			for (mb_id = sid; mb_id <= eid; mb_id++) {
+				addr = virtio_mem_mb_id_to_phys(mb_id);
+				if (part_nb_sb && i == rs.size - 1 &&
+				    mb_id == eid)
+					size = part_nb_sb * vm->sbm.sb_size;
+				else
+					size = memory_block_size_bytes();
+
+				rc = virtio_mem_send_plug_request(vm, addr, size);
+				if (rc)
+					goto out_free;
+			}
+		}
+		dev_info(&vm->vdev->dev, "deferred time: %ums",
+			 jiffies_to_msecs(jiffies - timestamp));
+	}
+	goto out_free;
+
 out_unlock:
 	mutex_unlock(&vm->hotplug_mutex);
+out_free:
+	if (parallel_hotplug_ratio)
+		kfree(rs.ranges);
 	return rc;
 }
 
@@ -2788,6 +2916,8 @@ static int virtio_mem_init_kdump(struct virtio_mem *vm)
 static int virtio_mem_init(struct virtio_mem *vm)
 {
 	uint16_t node_id;
+	struct pglist_data *pgdat;
+	char deferred_wq_name[24];
 
 	if (!vm->vdev->config->get) {
 		dev_err(&vm->vdev->dev, "config access disabled\n");
@@ -2809,6 +2939,22 @@ static int virtio_mem_init(struct virtio_mem *vm)
 	/* Determine the nid for the device based on the lowest address. */
 	if (vm->nid == NUMA_NO_NODE)
 		vm->nid = memory_add_physaddr_to_nid(vm->addr);
+
+	if (parallel_hotplug_ratio) {
+		pgdat = NODE_DATA(vm->nid);
+		if (!pgdat->deferred_hotplug_wq) {
+			snprintf(deferred_wq_name, sizeof(deferred_wq_name),
+				 "deferred_mhp_wq_%d", vm->nid);
+			pgdat->deferred_hotplug_wq =
+				alloc_workqueue(deferred_wq_name,
+						WQ_UNBOUND | WQ_HIGHPRI, 0);
+			if (!pgdat->deferred_hotplug_wq)
+				return -ENOMEM;
+			dev_info(&vm->vdev->dev,
+				 "deferred workqueue created on node: %d\n",
+				 vm->nid);
+		}
+	}
 
 	dev_info(&vm->vdev->dev, "start address: 0x%llx", vm->addr);
 	dev_info(&vm->vdev->dev, "region size: 0x%llx", vm->region_size);
