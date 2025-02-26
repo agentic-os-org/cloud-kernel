@@ -93,6 +93,8 @@ static inline void switch_ldt(struct mm_struct *prev, struct mm_struct *next)
 
 extern void enter_lazy_tlb(struct mm_struct *mm, struct task_struct *tsk);
 
+extern void mm_free_global_asid(struct mm_struct *mm);
+
 /*
  * Init a new mm.  Used on mm copies, like at fork()
  * and on mm's that are brand-new, like at execve().
