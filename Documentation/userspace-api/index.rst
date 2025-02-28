@@ -27,6 +27,7 @@ place where this information is gathered.
    liveupdate
    ioctl/index
    iommu
+   fwctl/index
    iommufd
    media/index
    netlink/index
