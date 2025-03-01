@@ -1,162 +1,162 @@
 [
-    {
-        "EventName": "ieu_rn_barrier_csr_cnt",
-        "EventCode": "0x0000003c",
-        "BriefDescription": "cycle nums of csr barrier stall in rn"
-    },
-    {
-        "EventName": "ieu_rn_highload_stall_cnt",
-        "EventCode": "0x0000003d",
-        "BriefDescription": "cycle nums of high-load(reg pool,srt port pool,rmq full) in rn"
-    },
-    {
-        "EventName": "ieu_rn_rob_full_stall_cnt",
-        "EventCode": "0x0000003e",
-        "BriefDescription": "cycle nums of rob full in rn"
-    },
-    {
-        "EventName": "ieu_rn_flush_rebulid_stall_cnt",
-        "EventCode": "0x0000003f",
-        "BriefDescription": "cycle nums of rebuild in rn"
-    },
-    {
-        "EventName": "ieu_de_inst_cnt",
-        "EventCode": "0x00000040",
-        "BriefDescription": "instr nums in de"
-    },
-    {
-        "EventName": "ieu_rn_inst_cnt",
-        "EventCode": "0x00000041",
-        "BriefDescription": "instr nums in rn"
-    },
-    {
-        "EventName": "ieu_rtu_exception_cnt",
-        "EventCode": "0x00000042",
-        "BriefDescription": "nums of exception flush in rtu"
-    },
-    {
-        "EventName": "ieu_rtu_interrupt_cnt",
-        "EventCode": "0x00000043",
-        "BriefDescription": "nums of interrupt flush in rtu"
-    },
-    {
-        "EventName": "ieu_rtu_other_flush_cnt",
-        "EventCode": "0x00000044",
-        "BriefDescription": "nums of other flush in rtu"
-    },
-    {
-        "EventName": "ieu_iu_alu_comp_cnt",
-        "EventCode": "0x00000045",
-        "BriefDescription": "nums of complete alu instr"
-    },
-    {
-        "EventName": "ieu_iu_mul_comp_cnt",
-        "EventCode": "0x00000046",
-        "BriefDescription": "nums of complete mul instr"
-    },
-    {
-        "EventName": "ieu_iu_div_comp_cnt",
-        "EventCode": "0x00000047",
-        "BriefDescription": "nums of complete div instr"
-    },
-    {
-        "EventName": "ieu_iu_csr_comp_cnt",
-        "EventCode": "0x00000048",
-        "BriefDescription": "nums of complete csr instr"
-    },
-    {
-        "EventName": "ieu_is_siq0_stall_cnt",
-        "EventCode": "0x00000049",
-        "BriefDescription": "cycle nums of siq0 full stall in is"
-    },
-    {
-        "EventName": "ieu_is_siq1_stall_cnt",
-        "EventCode": "0x0000004a",
-        "BriefDescription": "cycle nums of siq1 full stall in is"
-    },
-    {
-        "EventName": "ieu_is_siq2_stall_cnt",
-        "EventCode": "0x0000004b",
-        "BriefDescription": "cycle nums of siq2 full stall in is"
-    },
-    {
-        "EventName": "ieu_is_siq3_stall_cnt",
-        "EventCode": "0x0000004c",
-        "BriefDescription": "cycle nums of siq3 full stall in is"
-    },
-    {
-        "EventName": "ieu_is_miq4_stall_cnt",
-        "EventCode": "0x0000004d",
-        "BriefDescription": "cycle nums of miq4 full stall in is"
-    },
-    {
-        "EventName": "ieu_is_miq5_stall_cnt",
-        "EventCode": "0x0000004e",
-        "BriefDescription": "cycle nums of miq5 full stall in is"
-    },
-    {
-        "EventName": "ieu_is_biq0_stall_cnt",
-        "EventCode": "0x0000004f",
-        "BriefDescription": "cycle nums of biq0 full stall in is"
-    },
-    {
-        "EventName": "ieu_is_biq1_stall_cnt",
-        "EventCode": "0x00000050",
-        "BriefDescription": "cycle nums of biq1 full stall in is"
-    },
-    {
-        "EventName": "ieu_is_lsiq0_stall_cnt",
-        "EventCode": "0x00000051",
-        "BriefDescription": "cycle nums of lsiq0 full stall in is"
-    },
-    {
-        "EventName": "ieu_is_ldiq1_stall_cnt",
-        "EventCode": "0x00000052",
-        "BriefDescription": "cycle nums of ldiq1 full stall in is"
-    },
-    {
-        "EventName": "ieu_is_ldiq2_stall_cnt",
-        "EventCode": "0x00000053",
-        "BriefDescription": "cycle nums of ldiq2 full stall in is"
-    },
-    {
-        "EventName": "ieu_is_stiq3_stall_cnt",
-        "EventCode": "0x00000054",
-        "BriefDescription": "cycle nums of stiq3 full stall in is"
-    },
-    {
-        "EventName": "ieu_is_vfpq0_stall_cnt",
-        "EventCode": "0x00000055",
-        "BriefDescription": "cycle nums of vfpq0 full stall in is"
-    },
-    {
-        "EventName": "ieu_is_vfpq1_stall_cnt",
-        "EventCode": "0x00000056",
-        "BriefDescription": "cycle nums of vfpq1 full stall in is"
-    },
-    {
-        "EventName": "ieu_is_fpq2_stall_cnt",
-        "EventCode": "0x00000057",
-        "BriefDescription": "cycle nums of fpq2 full stall in is"
-    },
-    {
-        "EventName": "ieu_is_fpq3_stall_cnt",
-        "EventCode": "0x00000058",
-        "BriefDescription": "cycle nums of fpq3 full stall in is"
-    },
-    {
-        "EventName": "ieu_de_stall",
-        "EventCode": "0x000000b1",
-        "BriefDescription": "cycle nums of de stall when ifu vld in de"
-    },
-    {
-        "EventName": "ieu_rn_stall",
-        "EventCode": "0x000000b2",
-        "BriefDescription": "cycle nums of rn stall when de vld in rn"
-    },
-    {
-        "EventName": "ieu_ds_stall",
-        "EventCode": "0x000000b3",
-        "BriefDescription": "cycle nums of ds stall when rn vld in ds"
-    }
+  {
+    "EventName": "ieu_rn_barrier_csr_cnt",
+    "EventCode": "0x0000003c",
+    "BriefDescription": "cycle nums of csr barrier stall in rn"
+  },
+  {
+    "EventName": "ieu_rn_highload_stall_cnt",
+    "EventCode": "0x0000003d",
+    "BriefDescription": "cycle nums of high-load(reg pool,srt port pool,rmq full) in rn"
+  },
+  {
+    "EventName": "ieu_rn_rob_full_stall_cnt",
+    "EventCode": "0x0000003e",
+    "BriefDescription": "cycle nums of rob full in rn"
+  },
+  {
+    "EventName": "ieu_rn_flush_rebulid_stall_cnt",
+    "EventCode": "0x0000003f",
+    "BriefDescription": "cycle nums of rebuild in rn"
+  },
+  {
+    "EventName": "ieu_de_inst_cnt",
+    "EventCode": "0x00000040",
+    "BriefDescription": "instr nums in de"
+  },
+  {
+    "EventName": "ieu_rn_inst_cnt",
+    "EventCode": "0x00000041",
+    "BriefDescription": "instr nums in rn"
+  },
+  {
+    "EventName": "ieu_rtu_exception_cnt",
+    "EventCode": "0x00000042",
+    "BriefDescription": "nums of exception flush in rtu"
+  },
+  {
+    "EventName": "ieu_rtu_interrupt_cnt",
+    "EventCode": "0x00000043",
+    "BriefDescription": "nums of interrupt flush in rtu"
+  },
+  {
+    "EventName": "ieu_rtu_other_flush_cnt",
+    "EventCode": "0x00000044",
+    "BriefDescription": "nums of other flush in rtu"
+  },
+  {
+    "EventName": "ieu_iu_alu_comp_cnt",
+    "EventCode": "0x00000045",
+    "BriefDescription": "nums of complete alu instr"
+  },
+  {
+    "EventName": "ieu_iu_mul_comp_cnt",
+    "EventCode": "0x00000046",
+    "BriefDescription": "nums of complete mul instr"
+  },
+  {
+    "EventName": "ieu_iu_div_comp_cnt",
+    "EventCode": "0x00000047",
+    "BriefDescription": "nums of complete div instr"
+  },
+  {
+    "EventName": "ieu_iu_csr_comp_cnt",
+    "EventCode": "0x00000048",
+    "BriefDescription": "nums of complete csr instr"
+  },
+  {
+    "EventName": "ieu_is_siq0_stall_cnt",
+    "EventCode": "0x00000049",
+    "BriefDescription": "cycle nums of siq0 full stall in is"
+  },
+  {
+    "EventName": "ieu_is_siq1_stall_cnt",
+    "EventCode": "0x0000004a",
+    "BriefDescription": "cycle nums of siq1 full stall in is"
+  },
+  {
+    "EventName": "ieu_is_siq2_stall_cnt",
+    "EventCode": "0x0000004b",
+    "BriefDescription": "cycle nums of siq2 full stall in is"
+  },
+  {
+    "EventName": "ieu_is_siq3_stall_cnt",
+    "EventCode": "0x0000004c",
+    "BriefDescription": "cycle nums of siq3 full stall in is"
+  },
+  {
+    "EventName": "ieu_is_miq4_stall_cnt",
+    "EventCode": "0x0000004d",
+    "BriefDescription": "cycle nums of miq4 full stall in is"
+  },
+  {
+    "EventName": "ieu_is_miq5_stall_cnt",
+    "EventCode": "0x0000004e",
+    "BriefDescription": "cycle nums of miq5 full stall in is"
+  },
+  {
+    "EventName": "ieu_is_biq0_stall_cnt",
+    "EventCode": "0x0000004f",
+    "BriefDescription": "cycle nums of biq0 full stall in is"
+  },
+  {
+    "EventName": "ieu_is_biq1_stall_cnt",
+    "EventCode": "0x00000050",
+    "BriefDescription": "cycle nums of biq1 full stall in is"
+  },
+  {
+    "EventName": "ieu_is_lsiq0_stall_cnt",
+    "EventCode": "0x00000051",
+    "BriefDescription": "cycle nums of lsiq0 full stall in is"
+  },
+  {
+    "EventName": "ieu_is_ldiq1_stall_cnt",
+    "EventCode": "0x00000052",
+    "BriefDescription": "cycle nums of ldiq1 full stall in is"
+  },
+  {
+    "EventName": "ieu_is_ldiq2_stall_cnt",
+    "EventCode": "0x00000053",
+    "BriefDescription": "cycle nums of ldiq2 full stall in is"
+  },
+  {
+    "EventName": "ieu_is_stiq3_stall_cnt",
+    "EventCode": "0x00000054",
+    "BriefDescription": "cycle nums of stiq3 full stall in is"
+  },
+  {
+    "EventName": "ieu_is_vfpq0_stall_cnt",
+    "EventCode": "0x00000055",
+    "BriefDescription": "cycle nums of vfpq0 full stall in is"
+  },
+  {
+    "EventName": "ieu_is_vfpq1_stall_cnt",
+    "EventCode": "0x00000056",
+    "BriefDescription": "cycle nums of vfpq1 full stall in is"
+  },
+  {
+    "EventName": "ieu_is_fpq2_stall_cnt",
+    "EventCode": "0x00000057",
+    "BriefDescription": "cycle nums of fpq2 full stall in is"
+  },
+  {
+    "EventName": "ieu_is_fpq3_stall_cnt",
+    "EventCode": "0x00000058",
+    "BriefDescription": "cycle nums of fpq3 full stall in is"
+  },
+  {
+    "EventName": "ieu_de_stall",
+    "EventCode": "0x000000b1",
+    "BriefDescription": "cycle nums of de stall when ifu vld in de"
+  },
+  {
+    "EventName": "ieu_rn_stall",
+    "EventCode": "0x000000b2",
+    "BriefDescription": "cycle nums of rn stall when de vld in rn"
+  },
+  {
+    "EventName": "ieu_ds_stall",
+    "EventCode": "0x000000b3",
+    "BriefDescription": "cycle nums of ds stall when rn vld in ds"
+  }
 ]

@@ -1,8 +1,8 @@
 [
   {
-      "EventName": "l2_cache_wb",
-      "EventCode": "0x000000a2",
-      "BriefDescription": "l2 cache wb number, dirty snpresp data included."
+    "EventName": "l2_cache_wb",
+    "EventCode": "0x000000a2",
+    "BriefDescription": "l2 cache wb number, dirty snpresp data included."
   },
   {
     "EventName": "l2_cache_rd",

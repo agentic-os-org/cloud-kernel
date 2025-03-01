@@ -1,182 +1,182 @@
 [
   {
-      "EventName": "bju_condbr_mispred",
-      "EventCode": "0x00000018",
-      "BriefDescription": "speculative cond br mispred num"
+    "EventName": "bju_condbr_mispred",
+    "EventCode": "0x00000018",
+    "BriefDescription": "speculative cond br mispred num"
   },
   {
-      "EventName": "bju_ab_mispred",
-      "EventCode": "0x00000019",
-      "BriefDescription": "speculative uncond br mispred num"
+    "EventName": "bju_ab_mispred",
+    "EventCode": "0x00000019",
+    "BriefDescription": "speculative uncond br mispred num"
   },
   {
-      "EventName": "bju_indir_mispred",
-      "EventCode": "0x0000001a",
-      "BriefDescription": "speculative indbr mispred num"
+    "EventName": "bju_indir_mispred",
+    "EventCode": "0x0000001a",
+    "BriefDescription": "speculative indbr mispred num"
   },
   {
-      "EventName": "bju_pret_mispred",
-      "EventCode": "0x0000001b",
-      "BriefDescription": "speculative pret mispred num"
+    "EventName": "bju_pret_mispred",
+    "EventCode": "0x0000001b",
+    "BriefDescription": "speculative pret mispred num"
   },
   {
-      "EventName": "bju_condbr_spec_exe",
-      "EventCode": "0x0000001c",
-      "BriefDescription": "speculative execute cond br num"
+    "EventName": "bju_condbr_spec_exe",
+    "EventCode": "0x0000001c",
+    "BriefDescription": "speculative execute cond br num"
   },
   {
-      "EventName": "bju_abbr_spec_exe",
-      "EventCode": "0x0000001d",
-      "BriefDescription": "speculative execute uncond br num"
+    "EventName": "bju_abbr_spec_exe",
+    "EventCode": "0x0000001d",
+    "BriefDescription": "speculative execute uncond br num"
   },
   {
-      "EventName": "bju_indir_spec_exe",
-      "EventCode": "0x0000001e",
-      "BriefDescription": "speculative execute indir br num"
+    "EventName": "bju_indir_spec_exe",
+    "EventCode": "0x0000001e",
+    "BriefDescription": "speculative execute indir br num"
   },
   {
-      "EventName": "bju_pret_spec_exe",
-      "EventCode": "0x0000001f",
-      "BriefDescription": "speculative execute pret num"
+    "EventName": "bju_pret_spec_exe",
+    "EventCode": "0x0000001f",
+    "BriefDescription": "speculative execute pret num"
   },
   {
-      "EventName": "bju_taken_branch",
-      "EventCode": "0x00000020",
-      "BriefDescription": "speculative br taken num"
+    "EventName": "bju_taken_branch",
+    "EventCode": "0x00000020",
+    "BriefDescription": "speculative br taken num"
   },
   {
-      "EventName": "bju_new_branch",
-      "EventCode": "0x00000021",
-      "BriefDescription": "l1btb no record br num"
+    "EventName": "bju_new_branch",
+    "EventCode": "0x00000021",
+    "BriefDescription": "l1btb no record br num"
   },
   {
-      "EventName": "bju_l1b_mispred",
-      "EventCode": "0x00000022",
-      "BriefDescription": "l1btb taken br target mispred num (exclude indbr)"
+    "EventName": "bju_l1b_mispred",
+    "EventCode": "0x00000022",
+    "BriefDescription": "l1btb taken br target mispred num (exclude indbr)"
   },
   {
-      "EventName": "bju_l1b_pt",
-      "EventCode": "0x00000023",
-      "BriefDescription": "l1btb taken br pred num (exclude indbr)"
+    "EventName": "bju_l1b_pt",
+    "EventCode": "0x00000023",
+    "BriefDescription": "l1btb taken br pred num (exclude indbr)"
   },
   {
-      "EventName": "bpu_stall_cycles",
-      "EventCode": "0x00000024",
-      "BriefDescription": "bpu stall cycle num"
+    "EventName": "bpu_stall_cycles",
+    "EventCode": "0x00000024",
+    "BriefDescription": "bpu stall cycle num"
   },
   {
-      "EventName": "bpu_req_bandwidth",
-      "EventCode": "0x00000025",
-      "BriefDescription": "bpu pipeline bandwidth"
+    "EventName": "bpu_req_bandwidth",
+    "EventCode": "0x00000025",
+    "BriefDescription": "bpu pipeline bandwidth"
   },
   {
-      "EventName": "bpu_l0_btb_hit",
-      "EventCode": "0x00000026",
-      "BriefDescription": "l0btb hit cycle num"
+    "EventName": "bpu_l0_btb_hit",
+    "EventCode": "0x00000026",
+    "BriefDescription": "l0btb hit cycle num"
   },
   {
-      "EventName": "bpu_l0_btb_mispred",
-      "EventCode": "0x00000027",
-      "BriefDescription": "l0btb mispred cycle num"
+    "EventName": "bpu_l0_btb_mispred",
+    "EventCode": "0x00000027",
+    "BriefDescription": "l0btb mispred cycle num"
   },
   {
-      "EventName": "bpu_l0_btb_miss",
-      "EventCode": "0x00000028",
-      "BriefDescription": "l0btb miss cycle num"
+    "EventName": "bpu_l0_btb_miss",
+    "EventCode": "0x00000028",
+    "BriefDescription": "l0btb miss cycle num"
   },
   {
-      "EventName": "bpu_0bubble_branch",
-      "EventCode": "0x00000029",
-      "BriefDescription": "bpu 0 bubble chgflw num"
+    "EventName": "bpu_0bubble_branch",
+    "EventCode": "0x00000029",
+    "BriefDescription": "bpu 0 bubble chgflw num"
   },
   {
-      "EventName": "bpu_1bubble_branch",
-      "EventCode": "0x0000002a",
-      "BriefDescription": "bpu 1 bubble chgflw num"
+    "EventName": "bpu_1bubble_branch",
+    "EventCode": "0x0000002a",
+    "BriefDescription": "bpu 1 bubble chgflw num"
   },
   {
-      "EventName": "bpu_2bubble_branch",
-      "EventCode": "0x0000002b",
-      "BriefDescription": "bpu 2 bubble chgflw num"
+    "EventName": "bpu_2bubble_branch",
+    "EventCode": "0x0000002b",
+    "BriefDescription": "bpu 2 bubble chgflw num"
   },
   {
-      "EventName": "bpu_3bubble_branch",
-      "EventCode": "0x0000002c",
-      "BriefDescription": "bpu 3 bubble chgflw num"
+    "EventName": "bpu_3bubble_branch",
+    "EventCode": "0x0000002c",
+    "BriefDescription": "bpu 3 bubble chgflw num"
   },
   {
-      "EventName": "bpu_4bubble_branch",
-      "EventCode": "0x0000002d",
-      "BriefDescription": "bpu 4 bubble chgflw num"
+    "EventName": "bpu_4bubble_branch",
+    "EventCode": "0x0000002d",
+    "BriefDescription": "bpu 4 bubble chgflw num"
   },
   {
-      "EventName": "bpu_5bubble_branch",
-      "EventCode": "0x0000002e",
-      "BriefDescription": "bpu 5 bubble chgflw num"
+    "EventName": "bpu_5bubble_branch",
+    "EventCode": "0x0000002e",
+    "BriefDescription": "bpu 5 bubble chgflw num"
   },
   {
-      "EventName": "bpu_l2b_hit",
-      "EventCode": "0x0000002f",
-      "BriefDescription": "l2btb hit num"
+    "EventName": "bpu_l2b_hit",
+    "EventCode": "0x0000002f",
+    "BriefDescription": "l2btb hit num"
   },
   {
-      "EventName": "bpu_l2b_acc",
-      "EventCode": "0x00000030",
-      "BriefDescription": "l2btb acc num"
+    "EventName": "bpu_l2b_acc",
+    "EventCode": "0x00000030",
+    "BriefDescription": "l2btb acc num"
   },
   {
-      "EventName": "bpu_bp3_bt",
-      "EventCode": "0x00000031",
-      "BriefDescription": "bpu indicate bp3 branch taken cycle num"
+    "EventName": "bpu_bp3_bt",
+    "EventCode": "0x00000031",
+    "BriefDescription": "bpu indicate bp3 branch taken cycle num"
   },
   {
-      "EventName": "itag_req_bandwidth",
-      "EventCode": "0x00000032",
-      "BriefDescription": "itag pipeline bandwidth"
+    "EventName": "itag_req_bandwidth",
+    "EventCode": "0x00000032",
+    "BriefDescription": "itag pipeline bandwidth"
   },
   {
-      "EventName": "fu_itag_tlb_miss_stall",
-      "EventCode": "0x00000033",
-      "BriefDescription": "itag stall by tlb miss cycle num"
+    "EventName": "fu_itag_tlb_miss_stall",
+    "EventCode": "0x00000033",
+    "BriefDescription": "itag stall by tlb miss cycle num"
   },
   {
-      "EventName": "fu_itag_cwt_hit",
-      "EventCode": "0x00000034",
-      "BriefDescription": "itag cache way tracker hit num"
+    "EventName": "fu_itag_cwt_hit",
+    "EventCode": "0x00000034",
+    "BriefDescription": "itag cache way tracker hit num"
   },
   {
-      "EventName": "fu_itag_cwt_miss",
-      "EventCode": "0x00000035",
-      "BriefDescription": "itag cache way tracker miss num"
+    "EventName": "fu_itag_cwt_miss",
+    "EventCode": "0x00000035",
+    "BriefDescription": "itag cache way tracker miss num"
   },
   {
-      "EventName": "fu_itag_cfq_full",
-      "EventCode": "0x00000036",
-      "BriefDescription": "itag cache refill queue full num"
+    "EventName": "fu_itag_cfq_full",
+    "EventCode": "0x00000036",
+    "BriefDescription": "itag cache refill queue full num"
   },
   {
-      "EventName": "fu_itag_pfq_full",
-      "EventCode": "0x00000037",
-      "BriefDescription": "itag prefetch queue full num"
+    "EventName": "fu_itag_pfq_full",
+    "EventCode": "0x00000037",
+    "BriefDescription": "itag prefetch queue full num"
   },
   {
-      "EventName": "idata_req_bandwidth",
-      "EventCode": "0x00000038",
-      "BriefDescription": "idata pipeline bandwidth"
+    "EventName": "idata_req_bandwidth",
+    "EventCode": "0x00000038",
+    "BriefDescription": "idata pipeline bandwidth"
   },
   {
-      "EventName": "fu_idata_cfq_stall",
-      "EventCode": "0x00000039",
-      "BriefDescription": "idata stall by cfq cycle num"
+    "EventName": "fu_idata_cfq_stall",
+    "EventCode": "0x00000039",
+    "BriefDescription": "idata stall by cfq cycle num"
   },
   {
-      "EventName": "id5_fusion_num",
-      "EventCode": "0x0000003a",
-      "BriefDescription": "idata fusion inst num"
+    "EventName": "id5_fusion_num",
+    "EventCode": "0x0000003a",
+    "BriefDescription": "idata fusion inst num"
   },
   {
-      "EventName": "id5_inst_num",
-      "EventCode": "0x0000003b",
-      "BriefDescription": "idata issue inst num"
+    "EventName": "id5_inst_num",
+    "EventCode": "0x0000003b",
+    "BriefDescription": "idata issue inst num"
   }
 ]

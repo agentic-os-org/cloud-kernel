@@ -1,166 +1,207 @@
 [
-  { "EventName" : "STORE_L2_MISS_BACKEN_BLOCK",
-    "EventCode" : "0x00000079",
-    "BriefDescription" : "store l2 miss and results in issue block"
+  {
+    "EventName": "store_l2_miss_backen_block",
+    "EventCode": "0x00000079",
+    "BriefDescription": "store l2 miss and results in issue block"
   },
-  { "EventName" : "STORE_L1_MISS_BACKEN_BLOCK",
-    "EventCode" : "0x0000007a",
-    "BriefDescription" : "store l1 miss and results in issue block "
+  {
+    "EventName": "store_l1_miss_backen_block",
+    "EventCode": "0x0000007a",
+    "BriefDescription": "store l1 miss and results in issue block "
   },
-  { "EventName" : "LOAD_L2_MISS_BACKEN_BLOCK",
-    "EventCode" : "0x0000007b",
-    "BriefDescription" : "load l2 miss and results in issue block"
+  {
+    "EventName": "load_l2_miss_backen_block",
+    "EventCode": "0x0000007b",
+    "BriefDescription": "load l2 miss and results in issue block"
   },
-  { "EventName" : "LOAD_L1_MISS_BACKEN_BLOCK",
-    "EventCode" : "0x0000007c",
-    "BriefDescription" : "load l1 miss and results in issue block"
+  {
+    "EventName": "load_l1_miss_backen_block",
+    "EventCode": "0x0000007c",
+    "BriefDescription": "load l1 miss and results in issue block"
   },
-  { "EventName" : "LOAD_STRUCT_HAZARD_BACKEN_BLOCK",
-    "EventCode" : "0x0000007d",
-    "BriefDescription" : "load struct hazards and results in issue block"
+  {
+    "EventName": "load_struct_hazard_backen_block",
+    "EventCode": "0x0000007d",
+    "BriefDescription": "load struct hazards and results in issue block"
   },
-  { "EventName" : "RAR_HAZARD_EARLY_FLUSH",
-    "EventCode" : "0x0000007e",
-    "BriefDescription" : "rar hazard results in early flush"
+  {
+    "EventName": "rar_hazard_early_flush",
+    "EventCode": "0x0000007e",
+    "BriefDescription": "rar hazard results in early flush"
   },
-  { "EventName" : "RAR_HAZARD_ABNR_FLUSH",
-    "EventCode" : "0x0000007f",
-    "BriefDescription" : "rar hazard results in retire flush"
+  {
+    "EventName": "rar_hazard_abnr_flush",
+    "EventCode": "0x0000007f",
+    "BriefDescription": "rar hazard results in retire flush"
   },
-  { "EventName" : "RAW_HAZARD_EARLY_FLUSH",
-    "EventCode" : "0x00000080",
-    "BriefDescription" : "raw hazard results in early flush"
+  {
+    "EventName": "raw_hazard_early_flush",
+    "EventCode": "0x00000080",
+    "BriefDescription": "raw hazard results in early flush"
   },
-  { "EventName" : "RAW_HAZARD_ABNR_FLUSH",
-    "EventCode" : "0x00000081",
-    "BriefDescription" : "raw hazard results in retire flush"
+  {
+    "EventName": "raw_hazard_abnr_flush",
+    "EventCode": "0x00000081",
+    "BriefDescription": "raw hazard results in retire flush"
   },
-  { "EventName" : "LDQ_FULL",
-    "EventCode" : "0x00000082",
-    "BriefDescription" : "LDQ is full"
+  {
+    "EventName": "ldq_full",
+    "EventCode": "0x00000082",
+    "BriefDescription": "ldq is full"
   },
-  { "EventName" : "INST_LOAD_UNALIGN",
-    "EventCode" : "0x00000083",
-    "BriefDescription" : "load unalign split"
+  {
+    "EventName": "inst_load_unalign",
+    "EventCode": "0x00000083",
+    "BriefDescription": "load unalign split"
   },
-  { "EventName" : "INST_STORE_UNALIGN",
-    "EventCode" : "0x00000084",
-    "BriefDescription" : "store unalign split"
+  {
+    "EventName": "inst_store_unalign",
+    "EventCode": "0x00000084",
+    "BriefDescription": "store unalign split"
   },
-  { "EventName" : "STQ_FULL",
-    "EventCode" : "0x00000085",
-    "BriefDescription" : "stq is full"
+  {
+    "EventName": "stq_full",
+    "EventCode": "0x00000085",
+    "BriefDescription": "stq is full"
   },
-  { "EventName" : "WDQ_HAS_FENCE",
-    "EventCode" : "0x00000086",
-    "BriefDescription" : "there is pending fence or rl"
+  {
+    "EventName": "wdq_has_fence",
+    "EventCode": "0x00000086",
+    "BriefDescription": "there is pending fence or rl"
   },
-  { "EventName" : "L1_DCACHE_ACCESS_RD",
-    "EventCode" : "0x00000007",
-    "BriefDescription" : "load access l1 dcache, not include prefetch"
+  {
+    "EventName": "l1_dcache_access_rd",
+    "EventCode": "0x00000007",
+    "BriefDescription": "load access l1 dcache, not include prefetch"
   },
-  { "EventName" : "L1_DCACHE_ACCESS_WR",
-    "EventCode" : "0x0000008a",
-    "BriefDescription" : "store access l1 dcache"
+  {
+    "EventName": "l1_dcache_access_wr",
+    "EventCode": "0x0000008a",
+    "BriefDescription": "store access l1 dcache"
   },
-  { "EventName" : "L1_DCACHE_MISS_RD",
-    "EventCode" : "0x00000008",
-    "BriefDescription" : "load l1 dcache miss"
+  {
+    "EventName": "l1_dcache_miss_rd",
+    "EventCode": "0x00000008",
+    "BriefDescription": "load l1 dcache miss"
   },
-  { "EventName" : "L1_DCACHE_MISS_WR",
-    "EventCode" : "0x0000008b",
-    "BriefDescription" : "store l1 dcache miss"
+  {
+    "EventName": "l1_dcache_miss_wr",
+    "EventCode": "0x0000008b",
+    "BriefDescription": "store l1 dcache miss"
   },
-  { "EventName" : "L1_DCACHE_REILL_INNER",
-    "EventCode" : "0x0000008c",
-    "BriefDescription" : "l1 dcache miss and l2c hit"
+  {
+    "EventName": "l1_dcache_refill_inner",
+    "EventCode": "0x0000008c",
+    "BriefDescription": "l1 dcache miss and l2c hit"
   },
-  { "EventName" : "L1_DCACHE_REFILL_OUTER",
-    "EventCode" : "0x0000008d",
-    "BriefDescription" : "l1 dcache miss and l2c miss"
+  {
+    "EventName": "l1_dcache_refill_outer",
+    "EventCode": "0x0000008d",
+    "BriefDescription": "l1 dcache miss and l2c miss"
   },
-  { "EventName" : "L1_DCACHE_WB",
-    "EventCode" : "0x0000008e",
-    "BriefDescription" : "l1 dcache dirty line eviction"
+  {
+    "EventName": "l1_dcache_wb",
+    "EventCode": "0x0000008e",
+    "BriefDescription": "l1 dcache dirty line eviction"
   },
-  { "EventName" : "L1_DCACHE_WB_VICTIM",
-    "EventCode" : "0x0000008f",
-    "BriefDescription" : "l1 dcache dirty line evicted by new cache line refill"
+  {
+    "EventName": "l1_dcache_wb_victim",
+    "EventCode": "0x0000008f",
+    "BriefDescription": "l1 dcache dirty line evicted by new cache line refill"
   },
-  { "EventName" : "L1_DCACHE_WB_CLEAN",
-    "EventCode" : "0x00000090",
-    "BriefDescription" : "l1 dcache dirty line evicted by cmo or snoop"
+  {
+    "EventName": "l1_dcache_wb_clean",
+    "EventCode": "0x00000090",
+    "BriefDescription": "l1 dcache dirty line evicted by cmo or snoop"
   },
-  { "EventName" : "L1_DCACHE_INVAL",
-    "EventCode" : "0x00000091",
-    "BriefDescription" : "l1 dcache line invalided by cmo or snoop"
+  {
+    "EventName": "l1_dcache_inval",
+    "EventCode": "0x00000091",
+    "BriefDescription": "l1 dcache line invalided by cmo or snoop"
   },
-  { "EventName" : "INST_LOAD",
-    "EventCode" : "0x00000092",
-    "BriefDescription" : "load inst, not include prefetch"
+  {
+    "EventName": "inst_load",
+    "EventCode": "0x00000092",
+    "BriefDescription": "load inst, not include prefetch"
   },
-  { "EventName" : "INST_STORE",
-    "EventCode" : "0x00000093",
-    "BriefDescription" : "store inst, not include cmo"
+  {
+    "EventName": "inst_store",
+    "EventCode": "0x00000093",
+    "BriefDescription": "store inst, not include cmo"
   },
-  { "EventName" : "INST_LR",
-    "EventCode" : "0x00000094",
-    "BriefDescription" : "lr inst"
+  {
+    "EventName": "inst_lr",
+    "EventCode": "0x00000094",
+    "BriefDescription": "lr inst"
   },
-  { "EventName" : "INST_SC",
-    "EventCode" : "0x00000095",
-    "BriefDescription" : "sc inst"
+  {
+    "EventName": "inst_sc",
+    "EventCode": "0x00000095",
+    "BriefDescription": "sc inst"
   },
-  { "EventName" : "INST_SC_PASS",
-    "EventCode" : "0x00000096",
-    "BriefDescription" : "sc pass"
+  {
+    "EventName": "inst_sc_pass",
+    "EventCode": "0x00000096",
+    "BriefDescription": "sc pass"
   },
-  { "EventName" : "INST_SC_FAIL",
-    "EventCode" : "0x00000097",
-    "BriefDescription" : "sc fail"
+  {
+    "EventName": "inst_sc_fail",
+    "EventCode": "0x00000097",
+    "BriefDescription": "sc fail"
   },
-  { "EventName" : "INST_AMO",
-    "EventCode" : "0x00000098",
-    "BriefDescription" : "amo inst"
+  {
+    "EventName": "inst_amo",
+    "EventCode": "0x00000098",
+    "BriefDescription": "amo inst"
   },
-  { "EventName" : "INST_LOAD_ACQUIRE",
-    "EventCode" : "0x00000099",
-    "BriefDescription" : "load acquire inst"
+  {
+    "EventName": "inst_load_acquire",
+    "EventCode": "0x00000099",
+    "BriefDescription": "load acquire inst"
   },
-  { "EventName" : "INST_STORE_RELEASE",
-    "EventCode" : "0x0000009a",
-    "BriefDescription" : "store release inst"
+  {
+    "EventName": "inst_store_release",
+    "EventCode": "0x0000009a",
+    "BriefDescription": "store release inst"
   },
-  { "EventName" : "INST_FENCE",
-    "EventCode" : "0x0000009b",
-    "BriefDescription" : "fence inst"
+  {
+    "EventName": "inst_fence",
+    "EventCode": "0x0000009b",
+    "BriefDescription": "fence inst"
   },
-  { "EventName" : "INST_FENCEI",
-    "EventCode" : "0x0000009c",
-    "BriefDescription" : "fencei inst"
+  {
+    "EventName": "inst_fencei",
+    "EventCode": "0x0000009c",
+    "BriefDescription": "fencei inst"
   },
-  { "EventName" : "INST_SYNC",
-    "EventCode" : "0x0000009d",
-    "BriefDescription" : "dvm sync inst"
+  {
+    "EventName": "inst_sync",
+    "EventCode": "0x0000009d",
+    "BriefDescription": "dvm sync inst"
   },
-  { "EventName" : "INST_VEC_LOAD",
-    "EventCode" : "0x0000009e",
-    "BriefDescription" : "vector load inst(each split inst counts 1)"
+  {
+    "EventName": "inst_vec_load",
+    "EventCode": "0x0000009e",
+    "BriefDescription": "vector load inst(each split inst counts 1)"
   },
-  { "EventName" : "INST_VEC_STORE",
-    "EventCode" : "0x0000009f",
-    "BriefDescription" : "vector store inst(each split inst counts 1)"
+  {
+    "EventName": "inst_vec_store",
+    "EventCode": "0x0000009f",
+    "BriefDescription": "vector store inst(each split inst counts 1)"
   },
-  { "EventName" : "INST_FP_LOAD",
-    "EventCode" : "0x000000a0",
-    "BriefDescription" : "float load inst"
+  {
+    "EventName": "inst_fp_load",
+    "EventCode": "0x000000a0",
+    "BriefDescription": "float load inst"
   },
-  { "EventName" : "INST_FP_STORE",
-    "EventCode" : "0x000000a1",
-    "BriefDescription" : "float store inst"
+  {
+    "EventName": "inst_fp_store",
+    "EventCode": "0x000000a1",
+    "BriefDescription": "float store inst"
   },
-  { "EventName" : "LSU_CMPLT_INST_NUM",
-    "EventCode" : "0x000000b3",
-    "BriefDescription" : "lsu inst cmplt num"
+  {
+    "EventName": "lsu_cmplt_inst_num",
+    "EventCode": "0x000000b3",
+    "BriefDescription": "lsu inst cmplt num"
   }
 ]
