@@ -85,6 +85,10 @@ int io_queue_rsrc_removal(struct io_rsrc_data *data, unsigned idx, void *rsrc);
 int io_import_fixed(int ddir, struct iov_iter *iter,
 			   struct io_mapped_ubuf *imu,
 			   u64 buf_addr, size_t len);
+int io_import_reg_vec(int ddir, struct iov_iter *iter,
+			struct io_kiocb *req, struct iou_vec *vec,
+			unsigned nr_iovs, unsigned iovec_off,
+			unsigned issue_flags);
 
 void __io_sqe_buffers_unregister(struct io_ring_ctx *ctx);
 int io_sqe_buffers_unregister(struct io_ring_ctx *ctx);
@@ -163,6 +167,7 @@ static inline void __io_unaccount_mem(struct user_struct *user,
 }
 
 void io_vec_free(struct iou_vec *iv);
+int io_vec_realloc(struct iou_vec *iv, unsigned nr_entries);
 
 static inline void io_alloc_cache_vec_kasan(struct iou_vec *iv)
 {
