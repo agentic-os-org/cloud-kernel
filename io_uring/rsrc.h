@@ -89,8 +89,7 @@ int io_import_fixed(int ddir, struct iov_iter *iter,
 			   u64 buf_addr, size_t len);
 int io_import_reg_vec(int ddir, struct iov_iter *iter,
 			struct io_kiocb *req, struct iou_vec *vec,
-			unsigned nr_iovs, unsigned iovec_off,
-			unsigned issue_flags);
+			unsigned nr_iovs, unsigned issue_flags);
 int io_prep_reg_iovec(struct io_kiocb *req, struct iou_vec *iv,
 			const struct iovec __user *uvec, size_t uvec_segs);
 
