@@ -91,6 +91,8 @@ int io_import_reg_vec(int ddir, struct iov_iter *iter,
 			struct io_kiocb *req, struct iou_vec *vec,
 			unsigned nr_iovs, unsigned iovec_off,
 			unsigned issue_flags);
+int io_prep_reg_iovec(struct io_kiocb *req, struct iou_vec *iv,
+			const struct iovec __user *uvec, size_t uvec_segs);
 
 void __io_sqe_buffers_unregister(struct io_ring_ctx *ctx);
 int io_sqe_buffers_unregister(struct io_ring_ctx *ctx);
