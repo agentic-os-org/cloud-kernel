@@ -965,7 +965,6 @@ int pci_msix_write_tph_tag(struct pci_dev *pdev, unsigned int index, u16 tag)
 	struct msi_desc *msi_desc;
 	struct irq_desc *irq_desc;
 	unsigned int virq;
-	int ret = 0;
 
 	if (!pdev->msix_enabled)
 		return -ENXIO;
@@ -974,7 +973,7 @@ int pci_msix_write_tph_tag(struct pci_dev *pdev, unsigned int index, u16 tag)
 	if (!virq)
 		return -ENXIO;
 
-	msi_lock_descs(&pdev->dev);
+	guard(msi_descs_lock)(&pdev->dev);
 
 	/*
 	 * This is a horrible hack, but short of implementing a PCI
@@ -984,26 +983,22 @@ int pci_msix_write_tph_tag(struct pci_dev *pdev, unsigned int index, u16 tag)
 	 * the control word cache in sync.
 	 */
 	irq_desc = irq_to_desc(virq);
-	if (!irq_desc) {
-		ret = -ENXIO;
-		goto unlock;
+	if (!irq_desc)
+		return -ENXIO;
+
+	scoped_guard(raw_spinlock_irq, &irq_desc->lock) {
+		msi_desc = irq_data_get_msi_desc(&irq_desc->irq_data);
+		if (!msi_desc || msi_desc->pci.msi_attrib.is_virtual)
+			return -ENXIO;
+
+		msi_desc->pci.msix_ctrl &= ~PCI_MSIX_ENTRY_CTRL_ST;
+		msi_desc->pci.msix_ctrl |= FIELD_PREP(PCI_MSIX_ENTRY_CTRL_ST, tag);
+		pci_msix_write_vector_ctrl(msi_desc, msi_desc->pci.msix_ctrl);
+		/* Flush the write */
+		readl(pci_msix_desc_addr(msi_desc));
 	}
 
-	guard(raw_spinlock_irq)(&irq_desc->lock);
-	msi_desc = irq_data_get_msi_desc(&irq_desc->irq_data);
-	if (!msi_desc || msi_desc->pci.msi_attrib.is_virtual) {
-		ret = -ENXIO;
-		goto unlock;
-	}
-
-	msi_desc->pci.msix_ctrl &= ~PCI_MSIX_ENTRY_CTRL_ST;
-	msi_desc->pci.msix_ctrl |= FIELD_PREP(PCI_MSIX_ENTRY_CTRL_ST, tag);
-	pci_msix_write_vector_ctrl(msi_desc, msi_desc->pci.msix_ctrl);
-	/* Flush the write */
-	readl(pci_msix_desc_addr(msi_desc));
-unlock:
-	msi_unlock_descs(&pdev->dev);
-	return ret;
+	return 0;
 }
 #endif
 

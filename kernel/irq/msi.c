@@ -342,26 +342,30 @@ int msi_setup_device_data(struct device *dev)
 }
 
 /**
- * msi_lock_descs - Lock the MSI descriptor storage of a device
+ * __msi_lock_descs - Lock the MSI descriptor storage of a device
  * @dev:	Device to operate on
+ *
+ * Internal function for guard(msi_descs_lock). Don't use in code.
  */
-void msi_lock_descs(struct device *dev)
+void __msi_lock_descs(struct device *dev)
 {
 	mutex_lock(&dev->msi.data->mutex);
 }
-EXPORT_SYMBOL_GPL(msi_lock_descs);
+EXPORT_SYMBOL_GPL(__msi_lock_descs);
 
 /**
- * msi_unlock_descs - Unlock the MSI descriptor storage of a device
+ * __msi_unlock_descs - Unlock the MSI descriptor storage of a device
  * @dev:	Device to operate on
+ *
+ * Internal function for guard(msi_descs_lock). Don't use in code.
  */
-void msi_unlock_descs(struct device *dev)
+void __msi_unlock_descs(struct device *dev)
 {
 	/* Invalidate the index which was cached by the iterator */
 	dev->msi.data->__iter_idx = MSI_XA_MAX_INDEX;
 	mutex_unlock(&dev->msi.data->mutex);
 }
-EXPORT_SYMBOL_GPL(msi_unlock_descs);
+EXPORT_SYMBOL_GPL(__msi_unlock_descs);
 
 static struct msi_desc *msi_find_desc(struct msi_device_data *md, unsigned int domid,
 				      enum msi_desc_filter filter)
@@ -1069,27 +1073,22 @@ int msi_domain_update_hwsize(struct device *dev, unsigned int domid,
 {
 	struct msi_domain_info *info;
 	struct irq_domain *domain;
-	int ret = 0;
-
 	if (hwsize_new > MSI_XA_DOMAIN_SIZE)
 		return -EINVAL;
 	if (!hwsize_new)
 		hwsize_new = MSI_XA_DOMAIN_SIZE;
 
-	msi_lock_descs(dev);
+	guard(msi_descs_lock)(dev);
 
 	domain = msi_get_device_domain(dev, domid);
-	if (!domain) {
-		ret = -ENODEV;
-		goto out;
-	}
+	if (!domain)
+		return -ENODEV;
 
 	info = domain->host_data;
 	if (hwsize_new != info->hwsize)
 		info->hwsize = hwsize_new;
-out:
-	msi_unlock_descs(dev);
-	return ret;
+
+	return 0;
 }
 
 /**

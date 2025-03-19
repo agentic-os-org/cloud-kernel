@@ -95,7 +95,7 @@ const volatile void * __must_check_fn(const volatile void *val)
  * After retain_and_null_ptr(f) the variable f is NULL and cannot be
  * dereferenced anymore.
  */
-#define retain_and_null_ptr(p)		((void)__get_and_null(p, NULL))
+#define retain_and_null_ptr(p)		((void)__get_and_null_ptr(p))
 
 /*
  * DEFINE_CLASS(name, type, exit, init, init_args...):
