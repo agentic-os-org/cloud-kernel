@@ -2025,7 +2025,7 @@ no_page:
 				alloc_gfp |= __GFP_NORETRY | __GFP_NOWARN;
 			folio = filemap_alloc_folio(alloc_gfp, order, policy);
 			if (!folio)
-				continue;
+				goto try_next;
 
 			/* Init accessed so avoid atomic mark_page_accessed later */
 			if (fgp_flags & FGP_ACCESSED)
@@ -2039,6 +2039,7 @@ no_page:
 			folio_put(folio);
 			folio = NULL;
 
+try_next:
 			if (order <= min_order)
 				break;
 			order = next_order(&orders, order);
