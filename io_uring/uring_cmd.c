@@ -23,11 +23,30 @@ static struct uring_cache *io_uring_async_get(struct io_kiocb *req)
 	if (entry) {
 		cache = container_of(entry, struct uring_cache, cache);
 		req->flags |= REQ_F_ASYNC_DATA;
+		/*
+		 * The cached object may still own an iovec. Claim it for this
+		 * req so ->cleanup frees it even if this command never calls
+		 * io_uring_cmd_import_fixed_vec(): io_clean_op() gates
+		 * ->cleanup on REQ_F_NEED_CLEANUP, and its kfree() of the
+		 * async data does not reach ->vec.iovec.
+		 */
+		if (cache->vec.iovec)
+			req->flags |= REQ_F_NEED_CLEANUP;
 		req->async_data = cache;
 		return cache;
 	}
-	if (!io_alloc_async_data(req))
-		return req->async_data;
+	if (!io_alloc_async_data(req)) {
+		cache = req->async_data;
+		/*
+		 * Upstream has the alloc cache do this, by passing the object
+		 * size as init_bytes to io_alloc_cache_init(). 6.6's
+		 * io_alloc_cache_init() has no such parameter, and the fresh
+		 * allocation happens in io_alloc_async_data(), which every
+		 * opcode shares, so clear it here instead.
+		 */
+		memset(cache, 0, sizeof(*cache));
+		return cache;
+	}
 	return NULL;
 }
 
@@ -38,11 +57,29 @@ static void io_req_uring_cleanup(struct io_kiocb *req, unsigned int issue_flags)
 
 	if (issue_flags & IO_URING_F_UNLOCKED)
 		return;
+
+	io_alloc_cache_vec_kasan(&cache->vec);
+	if (cache->vec.nr > IO_VEC_CACHE_SOFT_CAP)
+		io_vec_free(&cache->vec);
+
 	if (io_alloc_cache_put(&req->ctx->uring_cache, &cache->cache)) {
 		ioucmd->sqe = NULL;
 		req->async_data = NULL;
-		req->flags &= ~REQ_F_ASYNC_DATA;
+		req->flags &= ~(REQ_F_ASYNC_DATA|REQ_F_NEED_CLEANUP);
 	}
+}
+
+void io_uring_cmd_cleanup(struct io_kiocb *req)
+{
+	struct uring_cache *cache = req->async_data;
+
+	/*
+	 * Release only ->vec, never the object itself. io_clean_op() can run
+	 * from __io_req_complete_post() holding just ->completion_lock, while
+	 * ctx->uring_cache is uring_lock protected; the async data is
+	 * reclaimed by io_clean_op()'s own kfree().
+	 */
+	io_vec_free(&cache->vec);
 }
 
 static void io_uring_cmd_work(struct io_kiocb *req, struct io_tw_state *ts)
@@ -226,5 +263,8 @@ EXPORT_SYMBOL_GPL(io_uring_cmd_sock);
 
 void io_uring_cache_free(struct io_cache_entry *entry)
 {
-	kfree(container_of(entry, struct uring_cache, cache));
+	struct uring_cache *cache = container_of(entry, struct uring_cache, cache);
+
+	io_vec_free(&cache->vec);
+	kfree(cache);
 }

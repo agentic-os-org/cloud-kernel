@@ -629,6 +629,7 @@ const struct io_cold_def io_cold_defs[] = {
 	[IORING_OP_URING_CMD] = {
 		.name			= "URING_CMD",
 		.async_size		= sizeof(struct uring_cache),
+		.cleanup		= io_uring_cmd_cleanup,
 	},
 	[IORING_OP_SEND_ZC] = {
 		.name			= "SEND_ZC",
