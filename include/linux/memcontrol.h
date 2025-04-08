@@ -23,6 +23,8 @@
 #include <linux/writeback.h>
 #include <linux/page-flags.h>
 #include <linux/shrinker.h>
+#include <linux/timer.h>
+#include <linux/workqueue.h>
 #include <linux/ck_kabi.h>
 
 struct mem_cgroup;
@@ -405,7 +407,9 @@ struct mem_cgroup {
 	bool allow_pgcache_limit;
 	unsigned long pgcache_limit_size;
 	bool pgcache_limit_sync;
-	struct work_struct pgcache_limit_work;
+	struct delayed_work pgcache_limit_work;
+	unsigned long pgcache_limit_reclaim_interval; /* jiffies of millisecond */
+	size_t pgcache_limit_reclaim_bytes;
 #endif
 
 	CK_KABI_RESERVE(1)
