@@ -35,19 +35,4 @@ void kvm_update_pvsched_preempted(struct kvm_vcpu *vcpu, u32 preempted)
 	pagefault_enable();
 }
 
-long kvm_hypercall_pvsched_features(struct kvm_vcpu *vcpu)
-{
-	u32 feature = smccc_get_arg1(vcpu);
-	long val = SMCCC_RET_NOT_SUPPORTED;
-
-	switch (feature) {
-	case ARM_SMCCC_HV_PV_SCHED_FEATURES:
-	case ARM_SMCCC_HV_PV_SCHED_IPA_INIT:
-	case ARM_SMCCC_HV_PV_SCHED_IPA_RELEASE:
-		val = SMCCC_RET_SUCCESS;
-		break;
-	}
-
-	return val;
-}
 #endif /* CONFIG_PARAVIRT_SCHED */
