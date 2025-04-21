@@ -118,6 +118,14 @@ static bool kvm_smccc_test_fw_bmap(struct kvm_vcpu *vcpu, u32 func_id)
 	case ARM_SMCCC_VENDOR_HYP_KVM_PTP_FUNC_ID:
 		return test_bit(KVM_REG_ARM_VENDOR_HYP_BIT_PTP,
 				&smccc_feat->vendor_hyp_bmap);
+#ifdef CONFIG_PARAVIRT_SCHED
+	case ARM_SMCCC_HV_PV_LOCK_FEATURES:
+	case ARM_SMCCC_HV_PV_LOCK_PREEMPTED:
+	case ARM_SMCCC_HV_PV_QSPINLOCK_FEATURES:
+	case ARM_SMCCC_HV_PV_QSPINLOCK_KICK_CPU:
+		return test_bit(KVM_REG_ARM_VENDOR_HYP_BIT_PV_LOCK,
+				&smccc_feat->vendor_hyp_bmap);
+#endif /* CONFIG_PARAVIRT_SCHED */
 	default:
 		return false;
 	}
