@@ -135,10 +135,10 @@ io_retry:
 				io->rq->bio.bi_iter.bi_sector = io->dev.m_pa >> 9;
 				attached = 0;
 			}
-			if (!attached++)
-				erofs_onlinepage_split(page);
 			if (!bio_add_page(&io->rq->bio, page, len, cur))
 				goto io_retry;
+			if (!attached++)
+				erofs_onlinepage_split(page);
 			io->dev.m_pa += len;
 		}
 		cur += len;
