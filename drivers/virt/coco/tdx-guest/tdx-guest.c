@@ -322,7 +322,7 @@ static void *kvmemdup(const void *src, size_t len, gfp_t gfp)
 	return p;
 }
 
-static int tdx_report_new(struct tsm_report *report, void *data)
+static int tdx_report_new_locked(struct tsm_report *report, void *data)
 {
 	u8 *buf;
 	struct tdx_quote_buf *quote_buf = quote_data;
@@ -330,24 +330,16 @@ static int tdx_report_new(struct tsm_report *report, void *data)
 	int ret;
 	u64 err;
 
-	/* TODO: switch to guard(mutex_intr) */
-	if (mutex_lock_interruptible(&quote_lock))
-		return -EINTR;
-
 	/*
 	 * If the previous request is timedout or interrupted, and the
 	 * Quote buf status is still in GET_QUOTE_IN_FLIGHT (owned by
 	 * VMM), don't permit any new request.
 	 */
-	if (quote_buf->status == GET_QUOTE_IN_FLIGHT) {
-		ret = -EBUSY;
-		goto done;
-	}
+	if (quote_buf->status == GET_QUOTE_IN_FLIGHT)
+		return -EBUSY;
 
-	if (desc->inblob_len != TDX_REPORTDATA_LEN) {
-		ret = -EINVAL;
-		goto done;
-	}
+	if (desc->inblob_len != TDX_REPORTDATA_LEN)
+		return -EINVAL;
 
 	memset(quote_data, 0, GET_QUOTE_BUF_SIZE);
 
@@ -358,26 +350,23 @@ static int tdx_report_new(struct tsm_report *report, void *data)
 	ret = tdx_do_report(KERNEL_SOCKPTR(desc->inblob),
 			    KERNEL_SOCKPTR(quote_buf->data));
 	if (ret)
-		goto done;
+		return ret;
 
 	err = tdx_hcall_get_quote(quote_data, GET_QUOTE_BUF_SIZE);
 	if (err) {
 		pr_err("GetQuote hypercall failed, status:%llx\n", err);
-		ret = -EIO;
-		goto done;
+		return -EIO;
 	}
 
 	ret = wait_for_quote_completion(quote_buf, getquote_timeout);
 	if (ret) {
 		pr_err("GetQuote request timedout\n");
-		goto done;
+		return ret;
 	}
 
 	buf = kvmemdup(quote_buf->data, quote_buf->out_len, GFP_KERNEL);
-	if (!buf) {
-		ret = -ENOMEM;
-		goto done;
-	}
+	if (!buf)
+		return -ENOMEM;
 
 	report->outblob = buf;
 	report->outblob_len = quote_buf->out_len;
@@ -386,10 +375,18 @@ static int tdx_report_new(struct tsm_report *report, void *data)
 	 * TODO: parse the PEM-formatted cert chain out of the quote buffer when
 	 * provided
 	 */
-done:
-	mutex_unlock(&quote_lock);
 
 	return ret;
+}
+
+static int tdx_report_new(struct tsm_report *report, void *data)
+{
+	CLASS(mutex_intr, guard)(&quote_lock);
+
+	if (!guard)
+		return -EINTR;
+
+	return tdx_report_new_locked(report, data);
 }
 
 static long tdx_guest_ioctl(struct file *file, unsigned int cmd,
