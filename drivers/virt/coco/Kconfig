@@ -9,6 +9,11 @@ config TSM_REPORTS
 	help
 	  TSM report configfs ABI support
 
+config TSM_MEASUREMENTS
+	select CRYPTO_HASH_INFO
+	select CRYPTO
+	bool
+
 source "drivers/virt/coco/efi_secret/Kconfig"
 
 source "drivers/virt/coco/csv-guest/Kconfig"
