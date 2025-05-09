@@ -874,6 +874,7 @@ struct zone {
 
 	unsigned long reported_pages;
 	atomic_long_t deferred_pages;
+	atomic_long_t inited_pages;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
