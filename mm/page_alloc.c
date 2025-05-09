@@ -1866,6 +1866,7 @@ void __free_pages_core(struct page *page, unsigned int order)
 
 	for (loop = 0; loop < (1 << order); ++loop)
 		__SetPageInited(page + loop);
+	atomic_long_add(nr_pages, &page_zone(page)->inited_pages);
 }
 
 #ifdef CONFIG_NEED_MULTIPLE_NODES
@@ -2604,8 +2605,10 @@ inline void post_alloc_hook(struct page *page, unsigned int order,
 	set_page_owner(page, order, gfp_flags);
 
 	for (i = 0; i < (1 << order); ++i) {
-		if (unlikely(PageInited(page + i)))
+		if (unlikely(PageInited(page + i))) {
 			__ClearPageInited(page + i);
+			atomic_long_sub(1, &page_zone(page)->inited_pages);
+		}
 	}
 }
 
@@ -2667,6 +2670,11 @@ struct page *__rmqueue_smallest(struct zone *zone, unsigned int order,
 
 		if (!page)
 			continue;
+
+		if (unlikely(PageInited(page))) {
+			__ClearPageInited(page);
+			atomic_long_sub(1 << current_order, &page_zone(page)->inited_pages);
+		}
 
 		/* Stash this away before del_page_from_free_list() zaps it */
 		zeroed = PageZeroed(page);
