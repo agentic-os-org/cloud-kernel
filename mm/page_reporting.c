@@ -426,6 +426,17 @@ static unsigned long get_reported_kbytes(void)
 	return nr_reported << (PAGE_SHIFT - 10);
 }
 
+static unsigned long get_inited_kbytes(void)
+{
+	struct zone *z;
+	unsigned long nr_inited = 0;
+
+	for_each_populated_zone(z)
+		nr_inited += atomic_long_read(&z->inited_pages);
+
+	return nr_inited << (PAGE_SHIFT - 10);
+}
+
 static ssize_t reported_kbytes_show(struct kobject *kobj,
 		struct kobj_attribute *attr, char *buf)
 {
@@ -433,6 +444,14 @@ static ssize_t reported_kbytes_show(struct kobject *kobj,
 }
 
 REPORTING_ATTR_RO(reported_kbytes);
+
+static ssize_t inited_kbytes_show(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%lu\n", get_inited_kbytes());
+}
+
+REPORTING_ATTR_RO(inited_kbytes);
 
 static ssize_t reporting_factor_show(struct kobject *kobj,
 		struct kobj_attribute *attr, char *buf)
@@ -553,6 +572,7 @@ static struct attribute *reporting_attrs[] = {
 	&reporting_min_order_attr.attr,
 	&reclaim_memory_attr.attr,
 	&reclaim_level_attr.attr,
+	&inited_kbytes_attr.attr,
 	NULL,
 };
 
