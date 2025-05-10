@@ -105,6 +105,9 @@ int virtqueue_add_sgs_rpair(struct virtqueue *vq,
 		      void *data,
 		      gfp_t gfp);
 
+struct vring_desc *virtqueue_indir_get_last_desc_split(struct virtqueue *_vq,
+						dma_addr_t *dma_addr, u32 *len);
+
 struct device *virtqueue_dma_dev(struct virtqueue *vq);
 
 bool virtqueue_kick(struct virtqueue *vq);

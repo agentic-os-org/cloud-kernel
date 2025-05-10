@@ -220,7 +220,13 @@ struct virtio_blk_outhdr {
 	/* VIRTIO_BLK_T* */
 	__virtio32 type;
 	/* io priority. */
-	__virtio32 ioprio;
+	union {
+		struct {
+			__virtio16 ioprio;
+			__virtio16 tag;
+		} rpair;
+		__virtio32 ioprio;
+	};
 	/* Sector (ie. 512 byte offset) */
 	__virtio64 sector;
 };
