@@ -324,10 +324,13 @@ struct virtblk_uring_cmd {
 	__u64 data;
 	__u32 data_len;
 	__u32 flag;
+	__u32 write_iov_count;
 };
 
 #define VIRTBLK_URING_CMD_IO		1
 #define VIRTBLK_URING_CMD_IO_VEC	2
+
+#define VIRTBLK_URING_F_BIDIR	(1 << 0)
 
 /* And this is the final byte of the write scatter-gather list. */
 #define VIRTIO_BLK_S_OK		0
