@@ -734,7 +734,7 @@ enum {
 	BLK_MQ_F_MAX = 1 << 8,
 };
 
-#define BLK_MQ_MAX_DEPTH	(10240)
+#define BLK_MQ_MAX_DEPTH	(65536)
 #define BLK_MQ_NO_HCTX_IDX	(-1U)
 
 enum {
