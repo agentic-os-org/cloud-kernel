@@ -21,6 +21,7 @@
 #include <linux/io_uring/cmd.h>
 #include <linux/types.h>
 #include <linux/uio.h>
+#include <linux/debugfs.h>
 #ifdef CONFIG_VIRTIO_BLK_RING_PAIR
 #include "virtio_blk_ext.c"
 #endif
@@ -147,6 +148,11 @@ struct virtio_blk {
 	/* saved indirect desc pointer, dma_addr and dma_len for SQ */
 	struct virtblk_indir_desc **indir_desc;
 #endif
+
+#ifdef CONFIG_DEBUG_FS
+	struct dentry *dbg_dir;
+#endif
+
 };
 
 struct virtblk_req {
@@ -2617,6 +2623,105 @@ static const struct file_operations virtblk_chr_fops = {
 	.uring_cmd_iopoll = virtblk_chr_uring_cmd_iopoll,
 };
 
+#ifdef CONFIG_DEBUG_FS
+static int virtblk_dbg_virtqueues_show(struct seq_file *s, void *unused)
+{
+	struct virtio_blk *vblk = s->private;
+	unsigned long flags;
+	int i;
+
+	for (i = 0; i < vblk->num_vqs; i++) {
+		spin_lock_irqsave(&vblk->vqs[i].lock, flags);
+		virtqueue_show_split_message(vblk->vqs[i].vq, s);
+		spin_unlock_irqrestore(&vblk->vqs[i].lock, flags);
+	}
+	return 0;
+}
+
+static int virtblk_dbg_virtqueues_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, virtblk_dbg_virtqueues_show, inode->i_private);
+}
+
+static const struct file_operations virtblk_dbg_virtqueue_ops = {
+	.open = virtblk_dbg_virtqueues_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+static int virtblk_dbg_rqs_show(struct seq_file *s, void *unused)
+{
+	struct virtio_blk *vblk = s->private;
+	struct virtblk_indir_desc *indir_desc;
+	int i, j;
+
+	seq_printf(s, "ring_pair is %d\n", vblk->ring_pair);
+	if (!vblk->ring_pair)
+		return 0;
+
+	for (i = 0; i < vblk->num_vqs / VIRTBLK_RING_NUM; i++) {
+		for (j = 0; j < vblk->tag_set.queue_depth; j++) {
+			indir_desc = &vblk->indir_desc[i][j];
+			if (indir_desc->desc) {
+				seq_printf(s, "hctx %d, tag %d, desc 0x%px, ",
+					i / VIRTBLK_RING_NUM, j,
+					indir_desc->desc);
+				seq_printf(s, "dma_addr 0x%llx, len 0x%x\n",
+					indir_desc->dma_addr, indir_desc->len);
+			}
+		}
+	}
+
+	return 0;
+}
+
+static int virtblk_dbg_rqs_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, virtblk_dbg_rqs_show, inode->i_private);
+}
+
+static const struct file_operations virtblk_dbg_rqs_ops = {
+	.open = virtblk_dbg_rqs_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+#endif
+
+static int virtio_blk_dev_dbg_init(struct virtio_blk *vblk)
+{
+	struct dentry *dir, *parent_block_dir;
+
+	parent_block_dir = vblk->disk->queue->debugfs_dir;
+	if (!parent_block_dir)
+		return -EIO;
+
+	dir = debugfs_create_dir("insight", parent_block_dir);
+	if (IS_ERR(dir)) {
+		dev_err(&vblk->vdev->dev, "Failed to get debugfs dir for '%s'\n",
+			vblk->disk->disk_name);
+		return -EIO;
+	}
+
+	debugfs_create_file("virtqueues", 0444, dir, vblk, &virtblk_dbg_virtqueue_ops);
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	debugfs_create_file("rpair", 0444, dir, vblk, &virtblk_dbg_rqs_ops);
+#endif
+	vblk->dbg_dir = dir;
+	return 0;
+}
+
+static void virtblk_dev_dbg_close(struct virtio_blk *vblk)
+{
+	debugfs_remove_recursive(vblk->dbg_dir);
+}
+#else
+static int virtblk_dev_dbg_init(struct virtio_blk *vblk) { return 0; }
+static void virtblk_dev_dbg_close(struct virtio_blk *vblk) { }
+#endif
+
 static unsigned int virtblk_queue_depth;
 module_param_named(queue_depth, virtblk_queue_depth, uint, 0444);
 
@@ -2982,6 +3087,7 @@ static int virtblk_probe(struct virtio_device *vdev)
 	if (err)
 		goto out_cleanup_disk;
 
+	virtio_blk_dev_dbg_init(vblk);
 	WARN_ON(virtblk_cdev_add(vblk, &virtblk_chr_fops));
 
 	return 0;
@@ -3009,6 +3115,7 @@ static void virtblk_remove(struct virtio_device *vdev)
 {
 	struct virtio_blk *vblk = vdev->priv;
 
+	virtblk_dev_dbg_close(vblk);
 	/* Make sure no work handler is accessing the device. */
 	flush_work(&vblk->config_work);
 
