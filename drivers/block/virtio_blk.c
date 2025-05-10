@@ -91,6 +91,8 @@ struct virtio_blk_vq {
 	spinlock_t lock;
 	char name[VQ_NAME_LEN];
 #ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	/* check num for CQ */
+	u16 counter;
 	/* prealloced prefill req for CQ */
 	struct virtblk_cq_req *cq_req;
 #endif
@@ -404,10 +406,14 @@ static int virtblk_prefill_res(struct virtio_blk *vblk,
 
 	for (i = 1; i < num_vqs; i += VIRTBLK_RING_NUM) {
 		vring_size = virtqueue_get_vring_size(vqs[i]);
+		vblk->vqs[i].counter = 0;
 
 		spin_lock_irqsave(&vblk->vqs[i].lock, flags);
 		for (j = 0; j < vring_size; j++) {
 			vbr_res = &vblk->vqs[i].cq_req[j];
+			vbr_res->out_hdr.rpair.tag = cpu_to_virtio16(vblk->vdev,
+									vblk->vqs[i].counter);
+			vblk->vqs[i].counter += 1;
 			sg_init_one(&vbr_res->inline_sg[0], &vbr_res->out_hdr,
 							sizeof(struct virtio_blk_outhdr));
 			sg_init_one(&vbr_res->inline_sg[1], &vbr_res->status, sizeof(u8));
@@ -566,6 +572,8 @@ static inline void *virtblk_get_buf(struct virtio_blk *vblk, struct virtqueue *v
 		virtblk_rq_unmap(sq_vq, vbr);
 		virtblk_unmap_and_clear_desc(sq_vq, vbr);
 
+		vbr_res->out_hdr.rpair.tag = cpu_to_virtio16(vblk->vdev,
+							vblk->vqs[vq->index].counter++);
 		ret = virtqueue_add_sgs_premapped(vq, vbr_res->sgs, 1, 1, vbr_res, GFP_ATOMIC);
 		if (ret < 0)
 			pr_err("failed to refill res ring %d\n", ret);
