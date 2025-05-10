@@ -452,6 +452,7 @@ enum req_flag_bits {
 	__REQ_DRV,		/* for driver use */
 	__REQ_FS_PRIVATE,	/* for file system (submitter) use */
 	__REQ_ATOMIC,		/* for atomic write operations */
+	__REQ_BIDIR,		/* request is a bi-directional */
 	/*
 	 * Command specific flags, keep last:
 	 */
@@ -484,6 +485,7 @@ enum req_flag_bits {
 #define REQ_DRV		(__force blk_opf_t)(1ULL << __REQ_DRV)
 #define REQ_FS_PRIVATE	(__force blk_opf_t)(1ULL << __REQ_FS_PRIVATE)
 #define REQ_ATOMIC	(__force blk_opf_t)(1ULL << __REQ_ATOMIC)
+#define REQ_BIDIR	((__force blk_opf_t)(1ULL << __REQ_BIDIR))
 
 #define REQ_NOUNMAP	(__force blk_opf_t)(1ULL << __REQ_NOUNMAP)
 
@@ -510,6 +512,11 @@ static inline enum req_op bio_op(const struct bio *bio)
 static inline bool op_is_write(blk_opf_t op)
 {
 	return !!(op & (__force blk_opf_t)1);
+}
+
+static inline bool op_is_bidirectional(blk_opf_t op)
+{
+	return op & REQ_BIDIR;
 }
 
 /*
