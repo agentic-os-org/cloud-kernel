@@ -7,6 +7,7 @@
 
 /* ext feature bit definition */
 #define VIRTIO_BLK_EXT_F_RING_PAIR	(1U << 0)
+#define VIRTIO_BLK_EXT_F_RING_NO_ALIGN  (1U << 1)
 #define VIRTIO_BLK_EXT_F_INVAL		(-1)
 
 #define VIRTIO_PCI_VSF_MAGIC_NUM			0x0
