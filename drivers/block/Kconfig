@@ -312,6 +312,15 @@ config VIRTIO_BLK
 	  This is the virtual block driver for virtio.  It can be used with
           QEMU based VMMs (like KVM or Xen).  Say Y or M.
 
+config VIRTIO_BLK_RING_PAIR
+	bool "Virtio block driver ring pair support"
+	depends on VIRTIO_BLK
+	help
+	  This enables virtio-blk use two virtqueues per request queue. Must
+	  be supported by backend.
+
+	  If unsure, say N.
+
 config BLK_DEV_RBD
 	tristate "Rados block device (RBD)"
 	depends on INET && BLOCK
