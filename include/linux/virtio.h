@@ -369,4 +369,6 @@ static inline void virtio_debug_exit(void)
 }
 #endif
 
+void virtqueue_show_split_message(struct virtqueue *_vq, struct seq_file *s);
+
 #endif /* _LINUX_VIRTIO_H */
