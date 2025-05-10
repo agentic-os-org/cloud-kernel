@@ -138,6 +138,7 @@ const struct vring *virtqueue_get_vring(const struct virtqueue *vq);
 dma_addr_t virtqueue_get_desc_addr(const struct virtqueue *vq);
 dma_addr_t virtqueue_get_avail_addr(const struct virtqueue *vq);
 dma_addr_t virtqueue_get_used_addr(const struct virtqueue *vq);
+void virtqueue_set_save_indir(struct virtqueue *_vq);
 
 int virtqueue_resize(struct virtqueue *vq, u32 num,
 		     void (*recycle)(struct virtqueue *vq, void *buf),
