@@ -21,6 +21,9 @@
 #include <linux/io_uring/cmd.h>
 #include <linux/types.h>
 #include <linux/uio.h>
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+#include "virtio_blk_ext.c"
+#endif
 
 #define PART_BITS 4
 #define VQ_NAME_LEN 16
@@ -1743,6 +1746,23 @@ bool virtblk_rpair_disable;
 module_param_named(rpair_disable, virtblk_rpair_disable, bool, 0444);
 MODULE_PARM_DESC(rpair_disable, "disable vring pair detective. (0=Not [default], 1=Yes)");
 
+static int check_ext_feature(struct virtio_blk *vblk, void __iomem *ioaddr,
+						u32 *host_ext_features,
+						u32 *guest_ext_features)
+{
+	int ret = 0;
+
+	ret = virtblk_get_ext_feature(ioaddr, host_ext_features);
+	if (ret < 0)
+		return ret;
+
+	vblk->ring_pair = !!(*host_ext_features & VIRTIO_BLK_EXT_F_RING_PAIR);
+	if (vblk->ring_pair)
+		*guest_ext_features |= (VIRTIO_BLK_EXT_F_RING_PAIR);
+
+	return 0;
+}
+
 static int init_vq_rpair(struct virtio_blk *vblk)
 {
 	int err;
@@ -1752,8 +1772,27 @@ static int init_vq_rpair(struct virtio_blk *vblk)
 	unsigned short num_vqs;
 	unsigned short num_poll_vqs, num_queues, num_poll_queues;
 	unsigned int vring_size;
+	u32 ext_host_features = 0, ext_guest_features = 0, ext_bar_offset = 0;
 	struct virtio_device *vdev = vblk->vdev;
 	struct irq_affinity desc = { 0, };
+	void __iomem *ioaddr = NULL;
+
+	err = virtblk_get_ext_feature_bar(vdev, &ext_bar_offset);
+	/* if check ext feature error, fall back to orig virtqueue use. */
+	if ((err < 0) || !ext_bar_offset)
+		return 1;
+
+	ioaddr = pci_iomap_range(to_vp_device(vdev)->pci_dev, 0, ext_bar_offset, 16);
+	if (!ioaddr) {
+		err = 1;
+		goto negotiate_err;
+	}
+
+	err = check_ext_feature(vblk, ioaddr, &ext_host_features, &ext_guest_features);
+	if ((err < 0) || !vblk->ring_pair) {
+		err = 1;
+		goto negotiate_err;
+	}
 
 	err = virtio_cread_feature(vdev, VIRTIO_BLK_F_MQ,
 				   struct virtio_blk_config, num_queues,
@@ -1763,25 +1802,29 @@ static int init_vq_rpair(struct virtio_blk *vblk)
 
 	if (!err && !num_vqs) {
 		dev_err(&vdev->dev, "MQ advertised but zero queues reported\n");
-		return -EINVAL;
+		err = -EINVAL;
+		goto negotiate_err;
 	}
 
 	if (num_vqs % VIRTBLK_RING_NUM) {
 		dev_err(&vdev->dev,
 			"RING_PAIR advertised but odd queues reported\n");
-		vblk->ring_pair = false;
+		err = 1;
+		goto negotiate_err;
 	}
 
 	/* ring pair only support split virtqueue + indirect enabled */
 	if (virtio_has_feature(vdev, VIRTIO_F_RING_PACKED) ||
 		!virtio_has_feature(vdev, VIRTIO_RING_F_INDIRECT_DESC)) {
 		dev_err(&vdev->dev, "rpair only support indir+split queue\n");
-		vblk->ring_pair = false;
+		err = 1;
+		goto negotiate_err;
 	}
 
-	/* If vring pair is not enabled, fall back to orig virtqueue use. */
-	if (!vblk->ring_pair)
-		return 1;
+	virtblk_set_ext_feature(ioaddr, ext_guest_features);
+	pci_iounmap(to_vp_device(vdev)->pci_dev, ioaddr);
+	dev_info(&vdev->dev, "rpair enabled, ext_guest_feature set 0x%x\n",
+						ext_guest_features);
 
 	num_queues = num_vqs / VIRTBLK_RING_NUM;
 	num_queues = min_t(unsigned int,
@@ -1875,6 +1918,15 @@ out:
 		kfree(vblk->vqs);
 	}
 	return err;
+
+negotiate_err:
+	if (ioaddr) {
+		ext_guest_features &= ~VIRTIO_BLK_EXT_F_RING_PAIR;
+		virtblk_set_ext_feature(ioaddr, ext_guest_features);
+		pci_iounmap(to_vp_device(vdev)->pci_dev, ioaddr);
+	}
+	vblk->ring_pair = false;
+	return err;
 }
 #endif
 
@@ -1895,7 +1947,8 @@ static int init_vq(struct virtio_blk *vblk)
 	 */
 	vblk->ring_pair = false;
 
-	if (!virtblk_rpair_disable) {
+	/* ext feature only support for virtio_blk over pci device currently */
+	if (!virtblk_rpair_disable && dev_is_pci(vblk->vdev->dev.parent)) {
 		err = init_vq_rpair(vblk);
 		/* if err > 0, then vring pair fall back to original virtqueue use*/
 		if (err <= 0)
