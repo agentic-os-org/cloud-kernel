@@ -561,7 +561,10 @@ struct blk_mq_tag_set {
 
 	struct rw_semaphore	update_nr_hwq_lock;
 
-	CK_KABI_RESERVE(1)
+	 /* number of static alloc rqs if dyn_alloc flag is set */
+	unsigned int		nr_static_rqs;
+
+	CK_KABI_RESERVE(1);
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
@@ -726,7 +729,9 @@ enum {
 	 */
 	BLK_MQ_F_NO_SCHED_BY_DEFAULT	= 1 << 6,
 
-	BLK_MQ_F_MAX = 1 << 7,
+	BLK_MQ_F_DYN_ALLOC	= 1 << 7,
+
+	BLK_MQ_F_MAX = 1 << 8,
 };
 
 #define BLK_MQ_MAX_DEPTH	(10240)
