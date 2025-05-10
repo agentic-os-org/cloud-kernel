@@ -17,6 +17,10 @@
 #include <linux/vmalloc.h>
 #include <uapi/linux/virtio_ring.h>
 #include <linux/cdev.h>
+#include <linux/io_uring.h>
+#include <linux/io_uring/cmd.h>
+#include <linux/types.h>
+#include <linux/uio.h>
 
 #define PART_BITS 4
 #define VQ_NAME_LEN 16
@@ -52,6 +56,11 @@ static dev_t vd_chr_devt;
 static struct class *vd_chr_class;
 
 static struct workqueue_struct *virtblk_wq;
+
+struct virtblk_uring_cmd_pdu {
+	struct bio *bio;
+	u8 status;
+};
 
 struct virtio_blk_vq {
 	struct virtqueue *vq;
@@ -258,9 +267,6 @@ static blk_status_t virtblk_setup_cmd(struct virtio_device *vdev,
 	if (!IS_ENABLED(CONFIG_BLK_DEV_ZONED) && op_is_zone_mgmt(req_op(req)))
 		return BLK_STS_NOTSUPP;
 
-	/* Set fields for all request types */
-	vbr->out_hdr.ioprio = cpu_to_virtio32(vdev, req_get_ioprio(req));
-
 	switch (req_op(req)) {
 	case REQ_OP_READ:
 		type = VIRTIO_BLK_T_IN;
@@ -308,6 +314,7 @@ static blk_status_t virtblk_setup_cmd(struct virtio_device *vdev,
 		type = VIRTIO_BLK_T_ZONE_RESET_ALL;
 		break;
 	case REQ_OP_DRV_IN:
+	case REQ_OP_DRV_OUT:
 		/*
 		 * Out header has already been prepared by the caller (virtblk_get_id()
 		 * or virtblk_submit_zone_report()), nothing to do here.
@@ -322,6 +329,7 @@ static blk_status_t virtblk_setup_cmd(struct virtio_device *vdev,
 	vbr->in_hdr_len = in_hdr_len;
 	vbr->out_hdr.type = cpu_to_virtio32(vdev, type);
 	vbr->out_hdr.sector = cpu_to_virtio64(vdev, sector);
+	vbr->out_hdr.ioprio = cpu_to_virtio32(vdev, req_get_ioprio(req));
 
 	if (type == VIRTIO_BLK_T_DISCARD || type == VIRTIO_BLK_T_WRITE_ZEROES ||
 	    type == VIRTIO_BLK_T_SECURE_ERASE) {
@@ -827,6 +835,7 @@ static int virtblk_get_id(struct gendisk *disk, char *id_str)
 	vbr = blk_mq_rq_to_pdu(req);
 	vbr->in_hdr_len = sizeof(vbr->in_hdr.status);
 	vbr->out_hdr.type = cpu_to_virtio32(vblk->vdev, VIRTIO_BLK_T_GET_ID);
+	vbr->out_hdr.ioprio = cpu_to_virtio32(vblk->vdev, req_get_ioprio(req));
 	vbr->out_hdr.sector = 0;
 
 	err = blk_rq_map_kern(req, id_str, VIRTIO_BLK_ID_BYTES, GFP_KERNEL);
@@ -1249,6 +1258,171 @@ static const struct blk_mq_ops virtio_mq_ops = {
 	.poll		= virtblk_poll,
 };
 
+static inline struct virtblk_uring_cmd_pdu *virtblk_uring_cmd_pdu(
+		struct io_uring_cmd *ioucmd)
+{
+	return io_uring_cmd_to_pdu(ioucmd, struct virtblk_uring_cmd_pdu);
+}
+
+static void virtblk_uring_task_cb(struct io_tw_req tw_req, io_tw_token_t tw)
+{
+	struct io_uring_cmd *ioucmd = io_uring_cmd_from_tw(tw_req);
+	struct virtblk_uring_cmd_pdu *pdu = virtblk_uring_cmd_pdu(ioucmd);
+
+	if (pdu->bio)
+		blk_rq_unmap_user(pdu->bio);
+
+	/* currently result has no use, it should be zero as cqe->res */
+	io_uring_cmd_done(ioucmd, pdu->status, IO_URING_CMD_TASK_WORK_ISSUE_FLAGS);
+}
+
+static enum rq_end_io_ret virtblk_uring_cmd_end_io(struct request *req,
+						   blk_status_t err,
+						   const struct io_comp_batch *iob)
+{
+	struct io_uring_cmd *ioucmd = req->end_io_data;
+	struct virtblk_uring_cmd_pdu *pdu = virtblk_uring_cmd_pdu(ioucmd);
+	struct virtblk_req *vbr = blk_mq_rq_to_pdu(req);
+
+	req->bio = pdu->bio;
+	pdu->status = vbr->in_hdr.status;
+	if (!pdu->status)
+		pdu->status = blk_status_to_errno(err);
+
+	io_uring_cmd_do_in_task_lazy(ioucmd, virtblk_uring_task_cb);
+
+	return RQ_END_IO_FREE;
+}
+
+static int virtblk_map_user_request(struct request *req, uintptr_t ubuffer,
+		unsigned int bufflen, struct io_uring_cmd *ioucmd,
+		unsigned int issue_flags, bool vec)
+{
+	struct request_queue *q = req->q;
+	int ret;
+
+	if (ioucmd && (ioucmd->flags & IORING_URING_CMD_FIXED)) {
+		struct iov_iter iter;
+
+		/* fixedbufs is only for non-vectored io */
+		if (vec)
+			return -EINVAL;
+		ret = io_uring_cmd_import_fixed(ubuffer, bufflen,
+				rq_data_dir(req), &iter, ioucmd, issue_flags);
+		if (ret < 0)
+			goto out;
+		ret = blk_rq_map_user_iov(q, req, NULL, &iter, GFP_KERNEL);
+	} else {
+		ret = blk_rq_map_user_io(req, NULL, (void __user *)ubuffer,
+				bufflen, GFP_KERNEL, vec, 0,
+				0, rq_data_dir(req));
+	}
+
+	if (ret)
+		goto out;
+
+	return ret;
+out:
+	blk_mq_free_request(req);
+	return ret;
+}
+
+static int virtblk_uring_cmd_io(struct virtio_blk *vblk,
+		struct io_uring_cmd *ioucmd, unsigned int issue_flags, bool vec)
+{
+	struct virtblk_uring_cmd_pdu *pdu = virtblk_uring_cmd_pdu(ioucmd);
+	const struct virtblk_uring_cmd *cmd = io_uring_sqe128_cmd(ioucmd->sqe,
+								  struct virtblk_uring_cmd);
+	struct request_queue *q = vblk->disk->queue;
+	struct virtblk_req *vbr;
+	struct request *req;
+	blk_opf_t rq_flags = REQ_ALLOC_CACHE;
+	blk_mq_req_flags_t blk_flags = 0;
+	u32 type;
+	uintptr_t data;
+	unsigned long data_len, flag;
+	int ret;
+
+	type = READ_ONCE(cmd->type);
+	flag = READ_ONCE(cmd->flag);
+	data = READ_ONCE(cmd->data);
+	data_len = READ_ONCE(cmd->data_len);
+
+	/* Only support OUT and IN for uring_cmd currently */
+	if ((type != VIRTIO_BLK_T_OUT) && (type != VIRTIO_BLK_T_IN))
+		return -EOPNOTSUPP;
+
+	if (issue_flags & IO_URING_F_NONBLOCK) {
+		rq_flags |= REQ_NOWAIT;
+		blk_flags = BLK_MQ_REQ_NOWAIT;
+	}
+
+	rq_flags |= (type & VIRTIO_BLK_T_OUT) ? REQ_OP_DRV_OUT : REQ_OP_DRV_IN;
+
+	req = blk_mq_alloc_request(q, rq_flags, blk_flags);
+	if (IS_ERR(req))
+		return PTR_ERR(req);
+
+	req->rq_flags |= RQF_DONTPREP;
+	vbr = blk_mq_rq_to_pdu(req);
+	vbr->in_hdr_len = sizeof(vbr->in_hdr.status);
+	vbr->out_hdr.ioprio = cpu_to_virtio32(vblk->vdev, READ_ONCE(cmd->ioprio));
+	vbr->out_hdr.sector = cpu_to_virtio64(vblk->vdev, READ_ONCE(cmd->sector));
+	vbr->out_hdr.type = cpu_to_virtio32(vblk->vdev, type);
+
+	if (data && data_len) {
+		ret = virtblk_map_user_request(req, data, data_len, ioucmd, issue_flags, vec);
+		if (ret)
+			return ret;
+	} else {
+		/* user should ensure passthrough command have data */
+		blk_mq_free_request(req);
+		return -EINVAL;
+	}
+
+	/* to free bio on completion, as req->bio will be null at that time */
+	pdu->bio = req->bio;
+	req->end_io_data = ioucmd;
+	bio_set_dev(req->bio, vblk->disk->part0);
+
+	req->end_io = virtblk_uring_cmd_end_io;
+	blk_execute_rq_nowait(req, false);
+	return -EIOCBQUEUED;
+}
+
+static int virtblk_uring_cmd(struct virtio_blk *vblk, struct io_uring_cmd *ioucmd,
+			     unsigned int issue_flags)
+{
+	int ret;
+
+	BUILD_BUG_ON(sizeof(struct virtblk_uring_cmd_pdu) > sizeof(ioucmd->pdu));
+
+	/* currently we need 128 bytes sqe and 16 bytes cqe */
+	if ((issue_flags & IO_URING_F_SQE128) != IO_URING_F_SQE128)
+		return -EOPNOTSUPP;
+
+	switch (ioucmd->cmd_op) {
+	case VIRTBLK_URING_CMD_IO:
+		ret = virtblk_uring_cmd_io(vblk, ioucmd, issue_flags, false);
+		break;
+	case VIRTBLK_URING_CMD_IO_VEC:
+		ret = virtblk_uring_cmd_io(vblk, ioucmd, issue_flags, true);
+		break;
+	default:
+		ret = -ENOTTY;
+	}
+
+	return ret;
+}
+
+static int virtblk_chr_uring_cmd(struct io_uring_cmd *ioucmd, unsigned int issue_flags)
+{
+	struct virtio_blk *vblk = container_of(file_inode(ioucmd->file)->i_cdev,
+			struct virtio_blk, cdev);
+
+	return virtblk_uring_cmd(vblk, ioucmd, issue_flags);
+}
+
 static void virtblk_cdev_rel(struct device *dev)
 {
 	ida_free(&vd_chr_minor_ida, MINOR(dev->devt));
@@ -1322,6 +1496,7 @@ static const struct file_operations virtblk_chr_fops = {
 	.owner		= THIS_MODULE,
 	.open		= virtblk_chr_open,
 	.release	= virtblk_chr_release,
+	.uring_cmd	= virtblk_chr_uring_cmd,
 };
 
 static unsigned int virtblk_queue_depth;
