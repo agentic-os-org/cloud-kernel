@@ -139,6 +139,8 @@ struct virtio_blk {
 
 #ifdef CONFIG_VIRTIO_BLK_RING_PAIR
 	bool ring_pair;
+	bool no_align;
+	bool hide_bdev;
 	/* saved indirect desc pointer, dma_addr and dma_len for SQ */
 	struct virtblk_indir_desc **indir_desc;
 #endif
@@ -1759,6 +1761,12 @@ static int check_ext_feature(struct virtio_blk *vblk, void __iomem *ioaddr,
 	vblk->ring_pair = !!(*host_ext_features & VIRTIO_BLK_EXT_F_RING_PAIR);
 	if (vblk->ring_pair)
 		*guest_ext_features |= (VIRTIO_BLK_EXT_F_RING_PAIR);
+	vblk->no_align = !!(*host_ext_features & VIRTIO_BLK_EXT_F_RING_NO_ALIGN);
+	if (vblk->no_align)
+		*guest_ext_features |= (VIRTIO_BLK_EXT_F_RING_NO_ALIGN);
+	vblk->hide_bdev = !!(*host_ext_features & VIRTIO_BLK_EXT_F_HIDE_BLOCK);
+	if (vblk->hide_bdev)
+		*guest_ext_features |= (VIRTIO_BLK_EXT_F_HIDE_BLOCK);
 
 	return 0;
 }
@@ -1946,6 +1954,8 @@ static int init_vq(struct virtio_blk *vblk)
 	 * to orginal use, so err needs a positive initial value
 	 */
 	vblk->ring_pair = false;
+	vblk->no_align = false;
+	vblk->hide_bdev = false;
 
 	/* ext feature only support for virtio_blk over pci device currently */
 	if (!virtblk_rpair_disable && dev_is_pci(vblk->vdev->dev.parent)) {
@@ -2939,7 +2949,12 @@ static int virtblk_probe(struct virtio_device *vdev)
 			goto out_cleanup_disk;
 	}
 
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	if (!vblk->hide_bdev)
+		err = device_add_disk(&vdev->dev, vblk->disk, virtblk_attr_groups);
+#else
 	err = device_add_disk(&vdev->dev, vblk->disk, virtblk_attr_groups);
+#endif
 	if (err)
 		goto out_cleanup_disk;
 
