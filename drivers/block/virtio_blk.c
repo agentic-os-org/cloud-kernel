@@ -137,6 +137,9 @@ struct virtblk_req {
 
 	size_t in_hdr_len;
 
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	struct scatterlist inline_sg[2];
+#endif
 	struct sg_table sg_table;
 	struct sg_table sg_table_extra;
 	struct scatterlist sg[];
@@ -184,12 +187,102 @@ static inline struct virtio_blk_vq *get_virtio_blk_vq_rpair(struct blk_mq_hw_ctx
 	return vq;
 }
 
+static int virtblk_map_sg(struct virtqueue *vq, struct scatterlist *sglist,
+			  enum dma_data_direction dir)
+{
+	struct scatterlist *sg, *last;
+
+	for (sg = sglist; sg; sg = sg_next(sg)) {
+		sg_dma_address(sg) = virtqueue_dma_map_page_attrs(vq, sg_page(sg),
+					sg->offset, sg->length, dir, 0);
+		sg_dma_len(sg) = sg->length;
+		if (virtqueue_map_mapping_error(vq, sg->dma_address)) {
+			last = sg;
+			goto out;
+		}
+	}
+	return 0;
+out:
+	for (sg = sglist; sg && sg != last; sg = sg_next(sg))
+		virtqueue_dma_unmap_page_attrs(vq, sg->dma_address,
+					       sg->length, dir, 0);
+	return -ENOMEM;
+}
+
+static void virtblk_unmap_sg(struct virtqueue *vq, struct scatterlist *sglist,
+			     enum dma_data_direction dir)
+{
+	struct scatterlist *sg;
+
+	for (sg = sglist; sg; sg = sg_next(sg))
+		virtqueue_dma_unmap_page_attrs(vq, sg->dma_address,
+					       sg->length, dir, 0);
+}
+
+static int virtblk_rq_map(struct virtqueue *vq, struct scatterlist *sgs[],
+			  unsigned int out_sgs, unsigned int in_sgs)
+{
+	int i, ret, done_out_sgs, done_in_sgs;
+
+	for (i = 0; i < out_sgs; i++) {
+		ret = virtblk_map_sg(vq, sgs[i], DMA_TO_DEVICE);
+		if (ret < 0) {
+			done_out_sgs = i;
+			goto cleanup_out_map;
+		}
+	}
+
+	for (; i < out_sgs + in_sgs; i++) {
+		ret = virtblk_map_sg(vq, sgs[i], DMA_FROM_DEVICE);
+		if (ret < 0) {
+			done_out_sgs = out_sgs;
+			done_in_sgs = i - out_sgs;
+			goto cleanup_in_map;
+		}
+	}
+	return 0;
+
+cleanup_in_map:
+	for (i = out_sgs; i < out_sgs + done_in_sgs; i++)
+		virtblk_unmap_sg(vq, sgs[i], DMA_FROM_DEVICE);
+cleanup_out_map:
+	for (i = 0; i < done_out_sgs; i++)
+		virtblk_unmap_sg(vq, sgs[i], DMA_TO_DEVICE);
+	return -ENOMEM;
+}
+
+static void virtblk_rq_unmap(struct virtqueue *vq, struct virtblk_req *vbr)
+{
+	struct request *req = blk_mq_rq_from_pdu(vbr);
+	int dir;
+
+	virtblk_unmap_sg(vq, &vbr->inline_sg[0], DMA_TO_DEVICE);
+	virtblk_unmap_sg(vq, &vbr->inline_sg[1], DMA_FROM_DEVICE);
+
+	if (!blk_rq_nr_phys_segments(req))
+		return;
+
+	if (vbr_is_bidirectional(vbr)) {
+		virtblk_unmap_sg(vq, vbr->sg_table.sgl, DMA_TO_DEVICE);
+		virtblk_unmap_sg(vq, vbr->sg_table_extra.sgl, DMA_FROM_DEVICE);
+	} else {
+		if (vbr->out_hdr.type & cpu_to_virtio32(vq->vdev, VIRTIO_BLK_T_OUT))
+			dir = DMA_TO_DEVICE;
+		else
+			dir = DMA_FROM_DEVICE;
+		virtblk_unmap_sg(vq, vbr->sg_table.sgl, dir);
+	}
+}
+
 static int virtblk_add_req_bidirectional_rpair(struct virtqueue *vq,
 		struct virtblk_req *vbr, struct scatterlist *data_sg,
 		struct scatterlist *data_sg_extra)
 {
-	struct scatterlist out_hdr, in_hdr, *sgs[4];
+	struct scatterlist *sgs[4];
+	struct scatterlist *out_hdr = &vbr->inline_sg[0];
+	struct scatterlist *in_hdr = &vbr->inline_sg[1];
 	unsigned int num_out = 0, num_in = 0;
+	int ret;
 
 	/*
 	 * vritblk_add_req use 'bool' have_data, while we use int num to
@@ -199,27 +292,37 @@ static int virtblk_add_req_bidirectional_rpair(struct virtqueue *vq,
 	if ((sg_nents(data_sg) == 0) || (sg_nents(data_sg_extra) == 0))
 		return -EINVAL;
 
-	sg_init_one(&out_hdr, &vbr->out_hdr, sizeof(vbr->out_hdr));
-	sg_init_one(&in_hdr, &vbr->in_hdr.status, vbr->in_hdr_len);
-	sgs[num_out++] = &out_hdr;
+	sg_init_one(out_hdr, &vbr->out_hdr, sizeof(vbr->out_hdr));
+	sg_init_one(in_hdr, &vbr->in_hdr.status, vbr->in_hdr_len);
+	sgs[num_out++] = out_hdr;
 	sgs[num_out++] = data_sg;
 	sgs[num_out + num_in++] = data_sg_extra;
-	sgs[num_out + num_in++] = &in_hdr;
+	sgs[num_out + num_in++] = in_hdr;
 
-	return virtqueue_add_sgs(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC);
+	ret = virtblk_rq_map(vq, sgs, num_out, num_in);
+	if (ret < 0)
+		return ret;
+
+	ret = virtqueue_add_sgs(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC);
+	if (ret < 0)
+		virtblk_rq_unmap(vq, vbr);
+	return ret;
 }
 
 static int virtblk_add_req_rpair(struct virtqueue *vq, struct virtblk_req *vbr)
 {
-	struct scatterlist out_hdr, in_hdr, *sgs[3];
+	struct scatterlist *sgs[3];
+	struct scatterlist *out_hdr = &vbr->inline_sg[0];
+	struct scatterlist *in_hdr = &vbr->inline_sg[1];
 	unsigned int num_out = 0, num_in = 0;
+	int ret;
 
 	if (vbr_is_bidirectional(vbr))
 		return virtblk_add_req_bidirectional_rpair(vq, vbr,
 				vbr->sg_table.sgl, vbr->sg_table_extra.sgl);
 
-	sg_init_one(&out_hdr, &vbr->out_hdr, sizeof(vbr->out_hdr));
-	sgs[num_out++] = &out_hdr;
+	sg_init_one(out_hdr, &vbr->out_hdr, sizeof(vbr->out_hdr));
+	sgs[num_out++] = out_hdr;
 
 	if (vbr->sg_table.nents) {
 		if (vbr->out_hdr.type & cpu_to_virtio32(vq->vdev, VIRTIO_BLK_T_OUT))
@@ -228,10 +331,17 @@ static int virtblk_add_req_rpair(struct virtqueue *vq, struct virtblk_req *vbr)
 			sgs[num_out + num_in++] = vbr->sg_table.sgl;
 	}
 
-	sg_init_one(&in_hdr, &vbr->in_hdr.status, vbr->in_hdr_len);
-	sgs[num_out + num_in++] = &in_hdr;
+	sg_init_one(in_hdr, &vbr->in_hdr.status, vbr->in_hdr_len);
+	sgs[num_out + num_in++] = in_hdr;
 
-	return virtqueue_add_sgs(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC);
+	ret = virtblk_rq_map(vq, sgs, num_out, num_in);
+	if (ret < 0)
+		return ret;
+
+	ret = virtqueue_add_sgs(vq, sgs, num_out, num_in, vbr, GFP_ATOMIC);
+	if (ret < 0)
+		virtblk_rq_unmap(vq, vbr);
+	return ret;
 }
 #endif
 
