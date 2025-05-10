@@ -209,6 +209,11 @@ struct vring_virtqueue {
 
 	enum vq_layout layout;
 
+	/* If enable vring pair, Virtqueue will save the indirect desc
+	 * pointer and avoid the pre-unmap.
+	 */
+	bool save_indir;
+
 	/*
 	 * Without IN_ORDER it's the head of free buffer list. With
 	 * IN_ORDER and SPLIT, it's the next available buffer
@@ -525,9 +530,9 @@ static unsigned int vring_unmap_one_split(const struct vring_virtqueue *vq,
 	flags = extra->flags;
 
 	if (flags & VRING_DESC_F_INDIRECT) {
-		if (!vq->use_map_api)
+		if (!vq->use_map_api || vq->save_indir)
 			goto out;
-	} else if (!vring_need_unmap_buffer(vq, extra))
+	} else if (vq->save_indir || !vring_need_unmap_buffer(vq, extra))
 		goto out;
 
 	virtqueue_unmap_page_attrs(&vq->vq,
@@ -808,6 +813,7 @@ static inline int virtqueue_add_split_rpair(struct vring_virtqueue *vq,
 	unsigned int i, n, avail, descs_used, prev, err_idx;
 	int head;
 	bool indirect;
+	dma_addr_t l1_addr;
 
 	START_USE(vq);
 
@@ -825,9 +831,10 @@ static inline int virtqueue_add_split_rpair(struct vring_virtqueue *vq,
 
 	head = vq->free_head;
 
-	if (virtqueue_use_indirect(vq, total_sg))
+	if (virtqueue_use_indirect(vq, total_sg)) {
+		total_sg += 1;
 		desc = alloc_indirect_split(vq, total_sg, gfp);
-	else {
+	} else {
 		desc = NULL;
 		WARN_ON_ONCE(total_sg > vq->split.vring.num && !vq->indirect);
 	}
@@ -862,6 +869,14 @@ static inline int virtqueue_add_split_rpair(struct vring_virtqueue *vq,
 		return -ENOSPC;
 	}
 
+	if (indirect && vq->save_indir) {
+		l1_addr = vring_map_single(vq, desc,
+				total_sg * sizeof(struct vring_desc),
+				DMA_TO_DEVICE);
+		if (vring_mapping_error(vq, l1_addr))
+			goto unmap_release;
+	}
+
 	for (n = 0; n < out_sgs; n++) {
 		for (sg = sgs[n]; sg; sg = sg_next(sg)) {
 			dma_addr_t addr;
@@ -878,6 +893,12 @@ static inline int virtqueue_add_split_rpair(struct vring_virtqueue *vq,
 			i = virtqueue_add_desc_split(vq, desc, extra, i, addr, len,
 						     VRING_DESC_F_NEXT,
 						     premapped);
+		}
+		if ((n == 0) && indirect && vq->save_indir) {
+			prev = i;
+			i = virtqueue_add_desc_split(vq, desc, extra, i, l1_addr,
+						total_sg * sizeof(struct vring_desc),
+						VRING_DESC_F_NEXT, premapped);
 		}
 	}
 	for (; n < (out_sgs + in_sgs); n++) {
@@ -906,16 +927,17 @@ static inline int virtqueue_add_split_rpair(struct vring_virtqueue *vq,
 			~VRING_DESC_F_NEXT;
 
 	if (indirect) {
-		/* Now that the indirect table is filled in, map it. */
-		dma_addr_t addr = vring_map_single(
-			vq, desc, total_sg * sizeof(struct vring_desc),
-			DMA_TO_DEVICE);
-		if (vring_mapping_error(vq, addr))
-			goto unmap_release;
-
+		if (!vq->save_indir) {
+			/* Now that the indirect table is filled in, map it. */
+			l1_addr = vring_map_single(
+				vq, desc, total_sg * sizeof(struct vring_desc),
+				DMA_TO_DEVICE);
+			if (vring_mapping_error(vq, l1_addr))
+				goto unmap_release;
+		}
 		virtqueue_add_desc_split(vq, vq->split.vring.desc,
 					 vq->split.desc_extra,
-					 head, addr,
+					 head, l1_addr,
 					 total_sg * sizeof(struct vring_desc),
 					 VRING_DESC_F_INDIRECT, false);
 	}
@@ -1040,7 +1062,8 @@ static void detach_indirect_split(struct vring_virtqueue *vq,
 			vring_unmap_one_split(vq, &extra[j]);
 	}
 
-	kfree(indir_desc);
+	if (!vq->save_indir)
+		kfree(indir_desc);
 	vq->split.desc_state[head].indir_desc = NULL;
 }
 
@@ -1520,6 +1543,7 @@ static struct virtqueue *__vring_new_virtqueue_split(unsigned int index,
 #endif
 	vq->map = map;
 	vq->use_map_api = vring_use_map_api(vdev);
+	vq->save_indir = false;
 
 	vq->indirect = virtio_has_feature(vdev, VIRTIO_RING_F_INDIRECT_DESC) &&
 		!context;
@@ -2794,6 +2818,7 @@ static struct virtqueue *vring_create_virtqueue_packed(
 	}
 
 	to_vvq(vq)->we_own_ring = true;
+	to_vvq(vq)->save_indir = false;
 
 	return vq;
 }
@@ -3119,7 +3144,7 @@ int virtqueue_add_sgs_rpair(struct virtqueue *_vq,
 			total_sg++;
 	}
 	return virtqueue_add_rpair(_vq, sgs, total_sg, out_sgs, in_sgs,
-			     data, NULL, false, gfp);
+			     data, NULL, true, gfp);
 }
 EXPORT_SYMBOL_GPL(virtqueue_add_sgs_rpair);
 
@@ -3649,6 +3674,23 @@ int virtqueue_resize(struct virtqueue *_vq, u32 num,
 	return err;
 }
 EXPORT_SYMBOL_GPL(virtqueue_resize);
+
+/**
+ * virtqueue_set_save_indir - set the vring save_indir
+ * @_vq: the struct virtqueue we're talking about.
+ *
+ * Enable the save_indir mode of the vq.
+ *
+ */
+void virtqueue_set_save_indir(struct virtqueue *_vq)
+{
+	struct vring_virtqueue *vq = to_vvq(_vq);
+
+	START_USE(vq);
+	vq->save_indir = true;
+	END_USE(vq);
+}
+EXPORT_SYMBOL_GPL(virtqueue_set_save_indir);
 
 /**
  * virtqueue_reset - detach and recycle all unused buffers
