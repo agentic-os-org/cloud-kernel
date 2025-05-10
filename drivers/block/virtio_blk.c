@@ -2172,6 +2172,59 @@ static const struct attribute_group *virtblk_attr_groups[] = {
 	NULL,
 };
 
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+static void blk_mq_virtio_map_queues_rpair(struct blk_mq_queue_map *qmap,
+	struct virtio_device *vdev, int first_vec)
+{
+	const struct cpumask *mask;
+	unsigned int queue, cpu;
+
+	if (!vdev->config->get_vq_affinity)
+		goto fallback;
+
+	for (queue = 0; queue < qmap->nr_queues; queue++) {
+		mask = vdev->config->get_vq_affinity(vdev, first_vec +
+						virtblk_qid_to_cq_qid(queue));
+		if (!mask)
+			goto fallback;
+
+		for_each_cpu(cpu, mask)
+			qmap->mq_map[cpu] = qmap->queue_offset + queue;
+	}
+
+	return;
+fallback:
+	blk_mq_map_queues(qmap);
+}
+
+static void virtblk_map_queues_rpair(struct blk_mq_tag_set *set)
+{
+	struct virtio_blk *vblk = set->driver_data;
+	int i, qoff;
+
+	for (i = 0, qoff = 0; i < set->nr_maps; i++) {
+		struct blk_mq_queue_map *map = &set->map[i];
+
+		map->nr_queues = vblk->io_queues[i];
+		map->queue_offset = qoff;
+		qoff += map->nr_queues;
+
+		if (map->nr_queues == 0)
+			continue;
+
+		/*
+		 * Regular queues have interrupts and hence CPU affinity is
+		 * defined by the core virtio code, but polling queues have
+		 * no interrupts so we let the block layer assign CPU affinity.
+		 */
+		if (i == HCTX_TYPE_POLL)
+			blk_mq_map_queues(&set->map[i]);
+		else
+			blk_mq_virtio_map_queues_rpair(&set->map[i], vblk->vdev, 0);
+	}
+}
+#endif
+
 static void virtblk_map_queues(struct blk_mq_tag_set *set)
 {
 	struct virtio_blk *vblk = set->driver_data;
@@ -2285,7 +2338,7 @@ static const struct blk_mq_ops virtio_mq_pair_ops = {
 	.queue_rqs	= virtio_queue_rqs_rpair,
 	.commit_rqs	= virtio_commit_rqs,
 	.complete	= virtblk_request_done,
-	.map_queues	= virtblk_map_queues,
+	.map_queues	= virtblk_map_queues_rpair,
 	.poll		= virtblk_poll_rpair,
 };
 #endif
