@@ -58,6 +58,7 @@ static struct class *vd_chr_class;
 static struct workqueue_struct *virtblk_wq;
 
 struct virtblk_uring_cmd_pdu {
+	struct request *req;
 	struct bio *bio;
 	u8 status;
 };
@@ -1289,7 +1290,21 @@ static enum rq_end_io_ret virtblk_uring_cmd_end_io(struct request *req,
 	if (!pdu->status)
 		pdu->status = blk_status_to_errno(err);
 
-	io_uring_cmd_do_in_task_lazy(ioucmd, virtblk_uring_task_cb);
+	/*
+	 * For IOPOLL, check if this completion is happening in the context
+	 * of the same io_ring that owns the request (local context). If so,
+	 * we can complete inline without task_work overhead. Otherwise, we
+	 * must punt to task_work to ensure completion happens in the correct
+	 * ring's context.
+	 */
+	if (blk_rq_is_poll(req) && iob &&
+	    iob->poll_ctx == io_uring_cmd_ctx_handle(ioucmd)) {
+		if (pdu->bio)
+			blk_rq_unmap_user(pdu->bio);
+		io_uring_cmd_done(ioucmd, pdu->status, 0);
+	} else {
+		io_uring_cmd_do_in_task_lazy(ioucmd, virtblk_uring_task_cb);
+	}
 
 	return RQ_END_IO_FREE;
 }
@@ -1356,6 +1371,8 @@ static int virtblk_uring_cmd_io(struct virtio_blk *vblk,
 		rq_flags |= REQ_NOWAIT;
 		blk_flags = BLK_MQ_REQ_NOWAIT;
 	}
+	if (issue_flags & IO_URING_F_IOPOLL)
+		rq_flags |= REQ_POLLED;
 
 	rq_flags |= (type & VIRTIO_BLK_T_OUT) ? REQ_OP_DRV_OUT : REQ_OP_DRV_IN;
 
@@ -1379,6 +1396,8 @@ static int virtblk_uring_cmd_io(struct virtio_blk *vblk,
 		blk_mq_free_request(req);
 		return -EINVAL;
 	}
+
+	pdu->req = req;
 
 	/* to free bio on completion, as req->bio will be null at that time */
 	pdu->bio = req->bio;
@@ -1421,6 +1440,20 @@ static int virtblk_chr_uring_cmd(struct io_uring_cmd *ioucmd, unsigned int issue
 			struct virtio_blk, cdev);
 
 	return virtblk_uring_cmd(vblk, ioucmd, issue_flags);
+}
+
+static int virtblk_chr_uring_cmd_iopoll(struct io_uring_cmd *ioucmd,
+				 struct io_comp_batch *iob,
+				 unsigned int poll_flags)
+{
+	struct virtblk_uring_cmd_pdu *pdu = virtblk_uring_cmd_pdu(ioucmd);
+	struct request *req;
+	int ret = 0;
+
+	req = pdu->req;
+	if (req && blk_rq_is_poll(req))
+		ret = blk_rq_poll(req, iob, poll_flags);
+	return ret;
 }
 
 static void virtblk_cdev_rel(struct device *dev)
@@ -1497,6 +1530,7 @@ static const struct file_operations virtblk_chr_fops = {
 	.open		= virtblk_chr_open,
 	.release	= virtblk_chr_release,
 	.uring_cmd	= virtblk_chr_uring_cmd,
+	.uring_cmd_iopoll = virtblk_chr_uring_cmd_iopoll,
 };
 
 static unsigned int virtblk_queue_depth;
