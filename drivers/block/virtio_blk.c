@@ -2612,6 +2612,12 @@ static const struct file_operations virtblk_chr_fops = {
 static unsigned int virtblk_queue_depth;
 module_param_named(queue_depth, virtblk_queue_depth, uint, 0444);
 
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+static unsigned short virtblk_dyn_max_rqs = 16384;
+module_param_named(dyn_max_rqs, virtblk_dyn_max_rqs, ushort, 0444);
+MODULE_PARM_DESC(dyn_max_rqs, "Max requests per rpair(0~65535), default 2^14");
+#endif
+
 static int virtblk_read_limits(struct virtio_blk *vblk,
 		struct queue_limits *lim)
 {
@@ -2854,15 +2860,25 @@ static int virtblk_probe(struct virtio_device *vdev)
 
 	memset(&vblk->tag_set, 0, sizeof(vblk->tag_set));
 #ifdef CONFIG_VIRTIO_BLK_RING_PAIR
-	vblk->tag_set.ops = vblk->ring_pair ? &virtio_mq_pair_ops :
-					      &virtio_mq_ops;
-	vblk->tag_set.nr_hw_queues = vblk->ring_pair ? vblk->num_vqs / VIRTBLK_RING_NUM :
-						vblk->num_vqs;
+	if (vblk->ring_pair) {
+		vblk->tag_set.ops = &virtio_mq_pair_ops;
+		vblk->tag_set.nr_hw_queues = vblk->num_vqs / VIRTBLK_RING_NUM;
+		/* For ring pair, we don't want to use io scheduler. So we set
+		 * NO_SCHED flag, in this case BLK_MQ_F_SHOULD_MERGE is unused.
+		 */
+		vblk->tag_set.flags = BLK_MQ_F_DYN_ALLOC | BLK_MQ_F_NO_SCHED_BY_DEFAULT;
+		vblk->tag_set.queue_depth = virtblk_dyn_max_rqs;
+		vblk->tag_set.nr_static_rqs = queue_depth;
+	} else {
+		vblk->tag_set.ops = &virtio_mq_ops;
+		vblk->tag_set.nr_hw_queues = vblk->num_vqs;
+		vblk->tag_set.queue_depth = queue_depth;
+	}
 #else
 	vblk->tag_set.ops = &virtio_mq_ops;
 	vblk->tag_set.nr_hw_queues = vblk->num_vqs;
-#endif
 	vblk->tag_set.queue_depth = queue_depth;
+#endif
 	vblk->tag_set.numa_node = NUMA_NO_NODE;
 	/* For bidirectional passthrough vblk request, both WRITE and READ
 	 * operations need pre-alloc inline SGs. So we should prealloc twice
