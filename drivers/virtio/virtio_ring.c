@@ -14,6 +14,7 @@
 #include <linux/kmsan.h>
 #include <linux/spinlock.h>
 #include <xen/xen.h>
+#include <linux/seq_file.h>
 
 #ifdef DEBUG
 /* For development, we want to crash whenever the ring is screwed. */
@@ -4339,6 +4340,103 @@ void virtqueue_map_sync_single_range_for_device(const struct virtqueue *_vq,
 						 offset, size, dir);
 }
 EXPORT_SYMBOL_GPL(virtqueue_map_sync_single_range_for_device);
+
+/**
+ * virtqueue_show_split_message - print split queue structure
+ * @_vq: the struct virtqueue we're talking about.
+ * @s: the struct seq_file
+ * Before calling this function, get lock to confirm that
+ * the virtqueue is not in use.
+ */
+void virtqueue_show_split_message(struct virtqueue *_vq, struct seq_file *s)
+{
+	struct vring_virtqueue *vq = to_vvq(_vq);
+	struct vring_virtqueue_split *split = &vq->split;
+	u16 last_used_idx, used_idx, idx, idx_in_used_ring, flags;
+	struct vring_desc *desc;
+	int len, i;
+
+	last_used_idx = vq->last_used_idx;
+	used_idx = virtio16_to_cpu(vq->vq.vdev, split->vring.used->idx);
+
+	seq_printf(s, "Virtqueue %d (0x%px): num %d\n", _vq->index,
+						vq, split->vring.num);
+	seq_printf(s, "Descriptor Table: num_free %d, free_head %d\n",
+						_vq->num_free, vq->free_head);
+	seq_printf(s, "Available Ring: flags 0x%x, avail_idx %d\n",
+			split->avail_flags_shadow, split->vring.avail->idx);
+	seq_printf(s, "Used Ring: used %d, last_used_index %d\n",
+			used_idx, last_used_idx);
+
+	if (last_used_idx == used_idx)
+		goto out;
+
+	seq_puts(s, "----------  ---------------- -------\n");
+	seq_puts(s, "USED_INDEX  DESC_TABLE_INDEX DRVDATA\n");
+	while (last_used_idx != used_idx) {
+		idx = last_used_idx & (split->vring.num - 1);
+		idx_in_used_ring = virtio32_to_cpu(vq->vq.vdev,
+					split->vring.used->ring[idx].id);
+
+		seq_printf(s, "%10d  %16d 0x%px\n", idx, idx_in_used_ring,
+				split->desc_state[idx_in_used_ring].data);
+		last_used_idx++;
+	}
+	seq_puts(s, "----------  ---------------- -------\n");
+	last_used_idx = vq->last_used_idx;
+	while (last_used_idx != used_idx) {
+		idx = last_used_idx & (split->vring.num - 1);
+		idx_in_used_ring = virtio32_to_cpu(vq->vq.vdev,
+					split->vring.used->ring[idx].id);
+
+		if (!vq->indirect) {
+			seq_printf(s, "Direct desc[%d]\n", idx_in_used_ring);
+			i = idx_in_used_ring;
+			do {
+				desc = &split->vring.desc[i];
+				flags = virtio16_to_cpu(vq->vq.vdev, desc->flags);
+
+				seq_printf(s, "   desc[%d] ", i);
+				seq_printf(s, "dma_addr=0x%-16llx ",
+					virtio64_to_cpu(vq->vq.vdev, desc->addr));
+				seq_printf(s, "flags=0x%-4x ", flags);
+				seq_printf(s, "len=%-8d ",
+					virtio32_to_cpu(vq->vq.vdev, desc->len));
+				seq_printf(s, "next=%-4d\n",
+					virtio16_to_cpu(vq->vq.vdev, desc->next));
+				i = desc->next;
+			} while (flags & VRING_DESC_F_NEXT);
+		} else {
+			desc = &split->vring.desc[idx_in_used_ring];
+			len = split->desc_extra[idx_in_used_ring].len;
+			seq_printf(s, "P{0x%px} desc[%d]", desc, idx_in_used_ring);
+			seq_printf(s, "dma_addr=0x%-16llx len=%-8d\n",
+					virtio64_to_cpu(vq->vq.vdev, desc[i].addr),
+					virtio32_to_cpu(vq->vq.vdev, desc[i].len));
+
+			/* print indir_descs */
+			desc = split->desc_state[idx_in_used_ring].indir_desc;
+			for (i = 0; i < len / sizeof(struct vring_desc); i++) {
+				seq_printf(s, "    indir_desc[%d] ", i);
+				seq_printf(s, "dma_addr=0x%-16llx ",
+					virtio64_to_cpu(vq->vq.vdev, desc[i].addr));
+				seq_printf(s, "flags=0x%-4x ",
+					virtio16_to_cpu(vq->vq.vdev, desc[i].flags));
+				seq_printf(s, "len=%-8d ",
+					virtio32_to_cpu(vq->vq.vdev, desc[i].len));
+				seq_printf(s, "next=%-4d\n",
+					virtio16_to_cpu(vq->vq.vdev, desc[i].next));
+			}
+		}
+		last_used_idx++;
+	}
+
+out:
+	seq_puts(s, "=======================================\n");
+	return;
+
+}
+EXPORT_SYMBOL_GPL(virtqueue_show_split_message);
 
 MODULE_DESCRIPTION("Virtio ring implementation");
 MODULE_LICENSE("GPL");
