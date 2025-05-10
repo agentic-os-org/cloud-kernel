@@ -209,6 +209,7 @@ static const char *const hctx_flag_name[] = {
 	HCTX_FLAG_NAME(BLOCKING),
 	HCTX_FLAG_NAME(TAG_RR),
 	HCTX_FLAG_NAME(NO_SCHED_BY_DEFAULT),
+	HCTX_FLAG_NAME(DYN_ALLOC),
 };
 #undef HCTX_FLAG_NAME
 
