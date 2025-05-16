@@ -2375,6 +2375,11 @@ event_filter_match(struct perf_event *event)
 	       perf_cgroup_match(event);
 }
 
+static inline bool is_event_in_freq_mode(struct perf_event *event)
+{
+	return event->attr.freq && event->attr.sample_freq;
+}
+
 static void
 event_sched_out(struct perf_event *event, struct perf_event_context *ctx)
 {
@@ -2423,7 +2428,7 @@ event_sched_out(struct perf_event *event, struct perf_event_context *ctx)
 
 	if (!is_software_event(event))
 		cpc->active_oncpu--;
-	if (event->attr.freq && event->attr.sample_freq) {
+	if (is_event_in_freq_mode(event)) {
 		ctx->nr_freq--;
 		epc->nr_freq--;
 	}
@@ -2711,7 +2716,7 @@ event_sched_in(struct perf_event *event, struct perf_event_context *ctx)
 
 	if (!is_software_event(event))
 		cpc->active_oncpu++;
-	if (event->attr.freq && event->attr.sample_freq) {
+	if (is_event_in_freq_mode(event)) {
 		ctx->nr_freq++;
 		epc->nr_freq++;
 	}
@@ -4359,11 +4364,11 @@ static void perf_adjust_freq_unthr_events(struct list_head *event_list)
 		if (hwc->interrupts == MAX_INTERRUPTS) {
 			hwc->interrupts = 0;
 			perf_log_throttle(event, 1);
-			if (!event->attr.freq || !event->attr.sample_freq)
+			if (!is_event_in_freq_mode(event))
 				event->pmu->start(event, 0);
 		}
 
-		if (!event->attr.freq || !event->attr.sample_freq)
+		if (!is_event_in_freq_mode(event))
 			continue;
 
 		/*
@@ -12638,7 +12643,7 @@ perf_event_alloc(struct perf_event_attr *attr, int cpu,
 
 	hwc = &event->hw;
 	hwc->sample_period = attr->sample_period;
-	if (attr->freq && attr->sample_freq)
+	if (is_event_in_freq_mode(event))
 		hwc->sample_period = 1;
 	hwc->last_period = hwc->sample_period;
 
