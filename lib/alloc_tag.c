@@ -6,6 +6,7 @@
 #include <linux/module.h>
 #include <linux/page_ext.h>
 #include <linux/pgalloc_tag.h>
+#include <linux/percpu.h>
 #include <linux/proc_fs.h>
 #include <linux/rcupdate.h>
 #include <linux/sched.h>
@@ -175,6 +176,26 @@ static bool alloc_tag_module_unload(struct codetag_type *cttype,
 			module_unused = false;
 	}
 
+	/*
+	 * Module memory is about to be freed, so the counters can be
+	 * released.  If any tag is still in use, the tag section stays
+	 * alive via unload_codetags and takes the counters with it.
+	 */
+	if (module_unused) {
+		iter = codetag_get_ct_iter(cttype);
+		for (ct = codetag_next_ct(&iter);
+		     ct; ct = codetag_next_ct(&iter)) {
+			if (iter.cmod != cmod)
+				continue;
+
+			tag = ct_to_alloc_tag(ct);
+			if (tag->counters) {
+				free_percpu(tag->counters);
+				tag->counters = NULL;
+			}
+		}
+	}
+
 	return module_unused;
 }
 
@@ -183,6 +204,59 @@ static bool mem_profiling_support __meminitdata = true;
 #else
 static bool mem_profiling_support __meminitdata;
 #endif
+
+/*
+ * Module tags carry .counters == NULL (see the MODULE variant of
+ * DEFINE_ALLOC_TAG) and get their per-cpu counters here, dynamically from
+ * the per-cpu allocator instead of the fixed PERCPU_MODULE_RESERVE area.
+ * Built-in tags already point at a static counter and are skipped.
+ * Called with cttype->mod_lock held for write.
+ */
+static void alloc_tag_module_load(struct codetag_type *cttype,
+				   struct codetag_module *cmod)
+{
+	struct codetag_iterator iter = codetag_get_ct_iter(cttype);
+	struct alloc_tag *tag;
+	struct codetag *ct;
+
+	for (ct = codetag_next_ct(&iter); ct; ct = codetag_next_ct(&iter)) {
+		if (iter.cmod != cmod)
+			continue;
+
+		tag = ct_to_alloc_tag(ct);
+		if (tag->counters)
+			continue;
+
+		tag->counters = alloc_percpu(struct alloc_tag_counters);
+		if (!tag->counters) {
+			struct codetag_iterator rollback_iter =
+				codetag_get_ct_iter(cttype);
+			struct codetag *rb_ct;
+
+			/* Roll back the counters already allocated. */
+			for (rb_ct = codetag_next_ct(&rollback_iter);
+			     rb_ct && rb_ct != ct;
+			     rb_ct = codetag_next_ct(&rollback_iter)) {
+				struct alloc_tag *rb_tag;
+
+				if (rollback_iter.cmod != cmod)
+					continue;
+				rb_tag = ct_to_alloc_tag(rb_ct);
+				if (!rb_tag->counters)
+					continue;
+				free_percpu(rb_tag->counters);
+				rb_tag->counters = NULL;
+			}
+
+			static_branch_disable(&mem_alloc_profiling_key);
+			mem_profiling_support = false;
+			pr_err("Failed to allocate memory for allocation tag percpu counters in module %s.\n"
+			       "Memory allocation profiling is disabled!\n",
+			       ct->modname ? ct->modname : "?");
+			return;
+		}
+	}
+}
 
 static int __init setup_early_mem_profiling(char *str)
 {
@@ -361,6 +435,7 @@ static int __init alloc_tag_init(void)
 	const struct codetag_type_desc desc = {
 		.section	= "alloc_tags",
 		.tag_size	= sizeof(struct alloc_tag),
+		.module_load	= alloc_tag_module_load,
 		.module_unload	= alloc_tag_module_unload,
 	};
 
