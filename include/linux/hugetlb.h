@@ -283,6 +283,8 @@ bool is_hugetlb_entry_hwpoisoned(pte_t pte);
 void hugetlb_unshare_all_pmds(struct vm_area_struct *vma);
 void hugetlb_split(struct vm_area_struct *vma, unsigned long addr);
 
+struct folio *alloc_hugetlb_folio_size(int nid, unsigned long size);
+
 #else /* !CONFIG_HUGETLB_PAGE */
 
 static inline void hugetlb_dup_vma_private(struct vm_area_struct *vma)
@@ -1350,5 +1352,19 @@ hugetlb_walk(struct vm_area_struct *vma, unsigned long addr, unsigned long sz)
 #endif
 	return huge_pte_offset(vma->vm_mm, addr, sz);
 }
+
+#ifdef CONFIG_PFN_RANGE_ALLOC
+struct folio *hugetlb_pool_alloc(int nid);
+int hugetlb_pool_free(struct folio *folio);
+#else
+static inline struct folio *hugetlb_pool_alloc(int nid)
+{
+	return ERR_PTR(-EINVAL);
+}
+static inline int hugetlb_pool_free(struct folio *folio)
+{
+	return -EINVAL;
+}
+#endif
 
 #endif /* _LINUX_HUGETLB_H */
