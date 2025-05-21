@@ -212,8 +212,8 @@ static bool mem_profiling_support __meminitdata;
  * Built-in tags already point at a static counter and are skipped.
  * Called with cttype->mod_lock held for write.
  */
-static void alloc_tag_module_load(struct codetag_type *cttype,
-				   struct codetag_module *cmod)
+static int alloc_tag_module_load(struct codetag_type *cttype,
+				 struct codetag_module *cmod)
 {
 	struct codetag_iterator iter = codetag_get_ct_iter(cttype);
 	struct alloc_tag *tag;
@@ -248,14 +248,13 @@ static void alloc_tag_module_load(struct codetag_type *cttype,
 				rb_tag->counters = NULL;
 			}
 
-			static_branch_disable(&mem_alloc_profiling_key);
-			mem_profiling_support = false;
-			pr_err("Failed to allocate memory for allocation tag percpu counters in module %s.\n"
-			       "Memory allocation profiling is disabled!\n",
+			pr_err("Failed to allocate memory for allocation tag percpu counters in the module %s\n",
 			       ct->modname ? ct->modname : "?");
-			return;
+			return -ENOMEM;
 		}
 	}
+
+	return 0;
 }
 
 static int __init setup_early_mem_profiling(char *str)
