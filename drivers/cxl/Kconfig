@@ -103,6 +103,42 @@ config CXL_MEM
 
 	  If unsure say 'm'.
 
+config CXL_FEATURES
+	bool "CXL: Features"
+	depends on CXL_PCI
+	help
+	  Enable support for CXL Features. A CXL device that includes a mailbox
+	  supports commands that allows listing, getting, and setting of
+	  optionally defined features such as memory sparing or post package
+	  sparing. Vendors may define custom features for the device.
+
+	  If unsure say 'n'
+
+config CXL_EDAC_MEM_FEATURES
+	def_bool n
+	help
+	  Disabled in ANCK: core/edac.c is not backported. The option is
+	  kept so that region.c probe calls and cxlmem.h stubs reference
+	  a valid symbol in all configurations.
+
+config CXL_EDAC_SCRUB
+	bool "Enable CXL Patrol Scrub Control (Patrol Read)"
+	depends on CXL_EDAC_MEM_FEATURES
+	depends on EDAC_SCRUB
+	help
+	  The CXL EDAC scrub control is optional and allows host to
+	  control the scrub feature configurations of CXL memory expander
+	  devices.
+
+	  When enabled 'cxl_mem' and 'cxl_region' EDAC devices are
+	  published with memory scrub control attributes as described by
+	  Documentation/ABI/testing/sysfs-edac-scrub.
+
+	  Say 'y' if you have an expert need to change default settings
+	  of a memory scrub feature established by the platform/device
+	  (e.g. scrub rates for the patrol scrub feature).
+	  Otherwise say 'n'.
+
 config CXL_PORT
 	default CXL_BUS
 	tristate
