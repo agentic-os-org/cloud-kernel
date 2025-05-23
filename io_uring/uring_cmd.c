@@ -242,6 +242,9 @@ int io_uring_cmd_import_fixed_vec(struct io_uring_cmd *ioucmd,
 	struct uring_cache *cache = req->async_data;
 	int ret;
 
+	if (WARN_ON_ONCE(!(ioucmd->flags & IORING_URING_CMD_FIXED)))
+		return -EINVAL;
+
 	ret = io_prep_reg_iovec(req, &cache->vec, uvec, uvec_segs);
 	if (ret)
 		return ret;
