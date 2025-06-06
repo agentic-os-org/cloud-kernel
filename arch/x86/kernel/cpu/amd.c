@@ -28,7 +28,7 @@
 
 #include "cpu.h"
 
-u16 invlpgb_count_max __ro_after_init;
+u16 invlpgb_count_max __ro_after_init = 1;
 
 /*
  * nodes_per_socket: Stores the number of nodes per socket.
