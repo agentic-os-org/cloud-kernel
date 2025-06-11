@@ -1044,6 +1044,9 @@ static __init int svm_hardware_setup(void)
 		}
 	}
 
+	if (!avic)
+		enable_ipiv = false;
+
 	if (vls) {
 		if (!npt_enabled ||
 		    !boot_cpu_has(X86_FEATURE_V_VMSAVE_VMLOAD) ||
