@@ -82,9 +82,11 @@ static unsigned long vgic_mmio_read_v3_misc(struct kvm_vcpu *vcpu,
 			value |= (INTERRUPT_ID_BITS_ITS - 1) << 19;
 			value |= GICD_TYPER_LPIS;
 			/* Limit the number of vlpis to 4096 */
-			if (kvm_vgic_global_state.flags & FLAGS_WORKAROUND_HIP10_ERRATUM_162200803)
+			if (kvm_vgic_global_state.has_gicv4 &&
+			    !kvm_vgic_global_state.has_gicv4_1 &&
+			    kvm_vgic_global_state.flags &
+			    FLAGS_WORKAROUND_HIP10_ERRATUM_162200803)
 				value |= 11 << GICD_TYPER_NUM_LPIS_SHIFT;
-
 		} else {
 			value |= (INTERRUPT_ID_BITS_SPIS - 1) << 19;
 		}
