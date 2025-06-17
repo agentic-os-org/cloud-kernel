@@ -58,7 +58,9 @@ MODULE_PARM_DESC(poll_queues, "The number of dedicated virtqueues for polling I/
 static int major;
 static DEFINE_IDA(vd_index_ida);
 
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
 static DEFINE_IDA(vd_chr_minor_ida);
+#endif
 static dev_t vd_chr_devt;
 static struct class *vd_chr_class;
 
@@ -2599,6 +2601,7 @@ static int virtblk_chr_uring_cmd_iopoll(struct io_uring_cmd *ioucmd,
 	return ret;
 }
 
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
 static void virtblk_cdev_rel(struct device *dev)
 {
 	ida_free(&vd_chr_minor_ida, MINOR(dev->devt));
@@ -2642,6 +2645,7 @@ fail:
 	put_device(cdev_device);
 	return ret;
 }
+#endif
 
 static int virtblk_chr_open(struct inode *inode, struct file *file)
 {
@@ -3141,7 +3145,11 @@ static int virtblk_probe(struct virtio_device *vdev)
 		goto out_cleanup_disk;
 
 	virtio_blk_dev_dbg_init(vblk);
-	WARN_ON(virtblk_cdev_add(vblk, &virtblk_chr_fops));
+
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	if (vblk->no_align)
+		WARN_ON(virtblk_cdev_add(vblk, &virtblk_chr_fops));
+#endif
 
 	return 0;
 
@@ -3172,7 +3180,10 @@ static void virtblk_remove(struct virtio_device *vdev)
 	/* Make sure no work handler is accessing the device. */
 	flush_work(&vblk->config_work);
 
-	virtblk_cdev_del(&vblk->cdev, &vblk->cdev_device);
+#ifdef CONFIG_VIRTIO_BLK_RING_PAIR
+	if (vblk->no_align)
+		virtblk_cdev_del(&vblk->cdev, &vblk->cdev_device);
+#endif
 
 	del_gendisk(vblk->disk);
 	blk_mq_free_tag_set(&vblk->tag_set);
