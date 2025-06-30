@@ -81,8 +81,14 @@ static void usb_parse_ss_endpoint_companion(struct device *ddev, int cfgno,
 	 */
 	desc = (struct usb_ss_ep_comp_descriptor *) buffer;
 
-	if (desc->bDescriptorType != USB_DT_SS_ENDPOINT_COMP ||
-			size < USB_DT_SS_EP_COMP_SIZE) {
+	if (size < USB_DT_SS_EP_COMP_SIZE) {
+		dev_warn(ddev,
+			   "invalid SuperSpeed endpoint companion descriptor "
+			   "of length %d, skipping\n", size);
+		return;
+	}
+
+	if (desc->bDescriptorType != USB_DT_SS_ENDPOINT_COMP) {
 		dev_warn(ddev, "No SuperSpeed endpoint companion for config %d "
 				" interface %d altsetting %d ep %d: "
 				"using minimum values\n",
@@ -173,7 +179,7 @@ static void usb_parse_ss_endpoint_companion(struct device *ddev, int cfgno,
 	if (usb_endpoint_xfer_isoc(&ep->desc) &&
 	    USB_SS_SSP_ISOC_COMP(desc->bmAttributes))
 		usb_parse_ssp_isoc_endpoint_companion(ddev, cfgno, inum, asnum,
-							ep, buffer, size);
+						      ep, buffer, size);
 }
 
 static const unsigned short low_speed_maxpacket_maxes[4] = {
