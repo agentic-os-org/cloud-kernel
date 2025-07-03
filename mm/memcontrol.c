@@ -4010,15 +4010,18 @@ ssize_t mem_cgroup_pgcache_limit_size_write(struct kernfs_open_file *of, char *b
 					    size_t nbytes, loff_t off)
 {
 	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	struct mem_cgroup *p = parent_mem_cgroup(memcg);
 	struct page_counter *counter = &memcg->memory;
 	unsigned long size, max = counter->max * PAGE_SIZE;
 
 	buf = strstrip(buf);
 	size = (unsigned long)memparse(buf, NULL);
 	if (size > max)
-		memcg->pgcache_limit_size = max;
-	else
-		memcg->pgcache_limit_size = size;
+		return -EINVAL;
+	if (p && is_memcg_pgcache_limit_enabled(p) &&
+	    p->pgcache_limit_size != 0 && p->pgcache_limit_size < size)
+		return -EINVAL;
+	memcg->pgcache_limit_size = size;
 
 	return nbytes;
 }
@@ -4392,6 +4395,7 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 					    : 50;
 #ifdef CONFIG_PAGECACHE_LIMIT
 		memcg->allow_pgcache_limit = parent->allow_pgcache_limit;
+		memcg->pgcache_limit_size = parent->pgcache_limit_size;
 		memcg->pgcache_limit_sync = parent->pgcache_limit_sync;
 		memcg->pgcache_limit_reclaim_interval = parent->pgcache_limit_reclaim_interval;
 		memcg->pgcache_limit_reclaim_bytes = parent->pgcache_limit_reclaim_bytes;
