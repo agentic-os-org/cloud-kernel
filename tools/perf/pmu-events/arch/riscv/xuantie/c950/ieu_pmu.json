@@ -156,7 +156,7 @@
     },
     {
         "EventName": "ieu.ds.stall",
-        "EventCode": "0x000000b3",
+        "EventCode": "0x000000b4",
         "BriefDescription": "cycle nums of ds stall when rn vld in ds"
     }
 ]
