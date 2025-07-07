@@ -19,6 +19,10 @@ struct dev_pagemap;
 #ifdef CONFIG_MEMORY_HOTPLUG
 struct page *pfn_to_online_page(unsigned long pfn);
 
+#define MHP_PHASE_PREPARE	1
+#define MHP_PHASE_DEFERRED	2
+#define MHP_PHASE_DEFAULT	3
+
 /* Types for control the zone type of onlined and offlined memory */
 enum {
 	/* Offline the memory. */
