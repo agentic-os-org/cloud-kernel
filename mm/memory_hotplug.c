@@ -1063,6 +1063,30 @@ struct zone *zone_for_pfn_range(int online_type, int nid,
 	return default_zone_for_pfn(nid, start_pfn, nr_pages);
 }
 
+void __adjust_present_page_count(struct page *page, struct memory_group *group,
+			       long nr_pages, struct zone *zone, int phase)
+{
+	const bool movable = zone_idx(zone) == ZONE_MOVABLE;
+
+	if (phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_DEFERRED) {
+		/*
+		 * We only support onlining/offlining/adding/removing of complete
+		 * memory blocks; therefore, either all is either early or hotplugged.
+		 */
+		if (early_section(__pfn_to_section(page_to_pfn(page))))
+			zone->present_early_pages += nr_pages;
+		zone->present_pages += nr_pages;
+		zone->zone_pgdat->node_present_pages += nr_pages;
+	}
+
+	if (phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_PREPARE) {
+		if (group && movable)
+			group->present_movable_pages += nr_pages;
+		else if (group && !movable)
+			group->present_kernel_pages += nr_pages;
+	}
+}
+
 /*
  * This function should only be called by memory_block_{online,offline},
  * and {online,offline}_pages.
@@ -1071,21 +1095,8 @@ void adjust_present_page_count(struct page *page, struct memory_group *group,
 			       long nr_pages)
 {
 	struct zone *zone = page_zone(page);
-	const bool movable = zone_idx(zone) == ZONE_MOVABLE;
 
-	/*
-	 * We only support onlining/offlining/adding/removing of complete
-	 * memory blocks; therefore, either all is either early or hotplugged.
-	 */
-	if (early_section(__pfn_to_section(page_to_pfn(page))))
-		zone->present_early_pages += nr_pages;
-	zone->present_pages += nr_pages;
-	zone->zone_pgdat->node_present_pages += nr_pages;
-
-	if (group && movable)
-		group->present_movable_pages += nr_pages;
-	else if (group && !movable)
-		group->present_kernel_pages += nr_pages;
+	__adjust_present_page_count(page, group, nr_pages, zone, MHP_PHASE_DEFAULT);
 }
 
 int mhp_init_memmap_on_memory(unsigned long pfn, unsigned long nr_pages,
