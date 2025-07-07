@@ -693,9 +693,8 @@ skip_inval:
 	if (sdp->sd_lockstruct.ls_ops->lm_lock)	{
 		/* lock_dlm */
 		ret = sdp->sd_lockstruct.ls_ops->lm_lock(gl, target, lck_flags);
-		if (ret == -EINVAL && gl->gl_target == LM_ST_UNLOCKED &&
-		    target == LM_ST_UNLOCKED &&
-		    test_bit(SDF_SKIP_DLM_UNLOCK, &sdp->sd_flags)) {
+		if (ret == -ENODEV && gl->gl_target == LM_ST_UNLOCKED &&
+		    target == LM_ST_UNLOCKED) {
 			finish_xmote(gl, target);
 			gfs2_glock_queue_work(gl, 0);
 		} else if (ret) {
