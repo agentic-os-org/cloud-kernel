@@ -746,34 +746,36 @@ static inline void section_taint_zone_device(unsigned long pfn)
  * (usually MIGRATE_MOVABLE). Besides setting the migratetype, no related
  * zone stats (e.g., nr_isolate_pageblock) are touched.
  */
-void __ref move_pfn_range_to_zone(struct zone *zone, unsigned long start_pfn,
-				  unsigned long nr_pages,
-				  struct vmem_altmap *altmap, int migratetype)
+void __ref __move_pfn_range_to_zone(struct zone *zone, unsigned long start_pfn,
+				  unsigned long nr_pages, struct vmem_altmap *altmap,
+				  int migratetype, int phase)
 {
 	struct pglist_data *pgdat = zone->zone_pgdat;
 	int nid = pgdat->node_id;
 
+	if (phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_PREPARE) {
 #ifdef KIDLED_AGE_NOT_IN_PAGE_FLAGS
-	kidled_free_folio_age(pgdat);
+		kidled_free_folio_age(pgdat);
 #endif
-	clear_zone_contiguous(zone);
+		clear_zone_contiguous(zone);
 
-	if (zone_is_empty(zone))
-		init_currently_empty_zone(zone, start_pfn, nr_pages);
-	resize_zone_range(zone, start_pfn, nr_pages);
-	resize_pgdat_range(pgdat, start_pfn, nr_pages);
+		if (zone_is_empty(zone))
+			init_currently_empty_zone(zone, start_pfn, nr_pages);
+		resize_zone_range(zone, start_pfn, nr_pages);
+		resize_pgdat_range(pgdat, start_pfn, nr_pages);
 
-	/*
-	 * Subsection population requires care in pfn_to_online_page().
-	 * Set the taint to enable the slow path detection of
-	 * ZONE_DEVICE pages in an otherwise  ZONE_{NORMAL,MOVABLE}
-	 * section.
-	 */
-	if (zone_is_zone_device(zone)) {
-		if (!IS_ALIGNED(start_pfn, PAGES_PER_SECTION))
-			section_taint_zone_device(start_pfn);
-		if (!IS_ALIGNED(start_pfn + nr_pages, PAGES_PER_SECTION))
-			section_taint_zone_device(start_pfn + nr_pages);
+		/*
+		 * Subsection population requires care in pfn_to_online_page().
+		 * Set the taint to enable the slow path detection of
+		 * ZONE_DEVICE pages in an otherwise  ZONE_{NORMAL,MOVABLE}
+		 * section.
+		 */
+		if (zone_is_zone_device(zone)) {
+			if (!IS_ALIGNED(start_pfn, PAGES_PER_SECTION))
+				section_taint_zone_device(start_pfn);
+			if (!IS_ALIGNED(start_pfn + nr_pages, PAGES_PER_SECTION))
+				section_taint_zone_device(start_pfn + nr_pages);
+		}
 	}
 
 	/*
@@ -782,10 +784,29 @@ void __ref move_pfn_range_to_zone(struct zone *zone, unsigned long start_pfn,
 	 * expects the zone spans the pfn range. All the pages in the range
 	 * are reserved so nobody should be touching them so we should be safe
 	 */
-	memmap_init_range(nr_pages, nid, zone_idx(zone), start_pfn, 0,
+	if (phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_DEFERRED)
+		memmap_init_range(nr_pages, nid, zone_idx(zone), start_pfn, 0,
 			 MEMINIT_HOTPLUG, altmap, migratetype);
 
-	set_zone_contiguous(zone);
+	if (phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_PREPARE)
+		set_zone_contiguous(zone);
+}
+
+/*
+ * Associate the pfn range with the given zone, initializing the memmaps
+ * and resizing the pgdat/zone data to span the added pages. After this
+ * call, all affected pages are PG_reserved.
+ *
+ * All aligned pageblocks are initialized to the specified migratetype
+ * (usually MIGRATE_MOVABLE). Besides setting the migratetype, no related
+ * zone stats (e.g., nr_isolate_pageblock) are touched.
+ */
+void __ref move_pfn_range_to_zone(struct zone *zone, unsigned long start_pfn,
+				  unsigned long nr_pages,
+				  struct vmem_altmap *altmap, int migratetype)
+{
+	__move_pfn_range_to_zone(zone, start_pfn, nr_pages, altmap, migratetype,
+				 MHP_PHASE_DEFAULT);
 }
 
 struct auto_movable_stats {
