@@ -1374,6 +1374,13 @@ typedef struct pglist_data {
 	 */
 	spinlock_t node_size_lock;
 #endif
+#ifdef CONFIG_MEMORY_HOTPLUG
+	/*
+	 * This workqueue is used to handle deferred pages
+	 * initialization of hotplugged memory.
+	 */
+	struct workqueue_struct *deferred_hotplug_wq;
+#endif
 	unsigned long node_start_pfn;
 	unsigned long node_present_pages; /* total number of physical pages */
 	unsigned long node_spanned_pages; /* total size of physical page

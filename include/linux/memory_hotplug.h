@@ -114,6 +114,9 @@ extern int mhp_init_memmap_on_memory(unsigned long pfn, unsigned long nr_pages,
 extern void mhp_deinit_memmap_on_memory(unsigned long pfn, unsigned long nr_pages);
 extern int online_pages(unsigned long pfn, unsigned long nr_pages,
 			struct zone *zone, struct memory_group *group);
+extern int __online_pages(unsigned long pfn, unsigned long nr_pages,
+			  struct zone *zone, struct memory_group *group,
+			  int phase);
 extern void __offline_isolated_pages(unsigned long start_pfn,
 				     unsigned long end_pfn);
 
@@ -131,6 +134,7 @@ extern u64 max_mem_size;
 
 extern int mhp_online_type_from_str(const char *str);
 
+extern unsigned int parallel_hotplug_ratio;
 /* Default online_type (MMOP_*) when new memory blocks are added. */
 extern int mhp_default_online_type;
 /* If movable_node boot option specified */
@@ -312,6 +316,7 @@ extern struct zone *zone_for_pfn_range(int online_type, int nid,
 extern int arch_create_linear_mapping(int nid, u64 start, u64 size,
 				      struct mhp_params *params);
 void arch_remove_linear_mapping(u64 start, u64 size);
+extern int deferred_online_memory(int nid, u64 start, u64 size);
 #endif /* CONFIG_MEMORY_HOTPLUG */
 
 #endif /* __LINUX_MEMORY_HOTPLUG_H */

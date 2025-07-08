@@ -185,6 +185,18 @@ MODULE_PARM_DESC(auto_movable_ratio,
 		"in percent for \"auto-movable\" online policy. Default: 301");
 
 /*
+ * Note: If parallel_hotplug_ratio is nonzero, `deferred_online_memory` must be called
+ * somewhere to finalize onlining the memory; otherwise, the memory state will remain in
+ * a problematic intermediate state indefinitely.
+ */
+unsigned int parallel_hotplug_ratio __read_mostly;
+EXPORT_SYMBOL_GPL(parallel_hotplug_ratio);
+module_param(parallel_hotplug_ratio, uint, 0644);
+MODULE_PARM_DESC(parallel_hotplug_ratio,
+		"Set the ratio of parallel hotplug workers to the number of CPUs on "
+		"the node, with values constrained between 0 and 100. Default: 0");
+
+/*
  * memory_hotplug.auto_movable_numa_aware: consider numa node stats
  */
 #ifdef CONFIG_NUMA
@@ -1194,8 +1206,12 @@ int __ref __online_pages(unsigned long pfn, unsigned long nr_pages,
 	/* associate pfn range with the zone */
 	__move_pfn_range_to_zone(zone, pfn, nr_pages, NULL, MIGRATE_ISOLATE, phase);
 
-	if (phase == MHP_PHASE_PREPARE)
-		goto adjust_count;
+	if (phase == MHP_PHASE_PREPARE) {
+		__adjust_present_page_count(pfn_to_page(pfn), group, nr_pages,
+					    zone, phase);
+		atomic_long_add(nr_pages, &zone->deferred_pages);
+		return 0;
+	}
 
 	arg.start_pfn = pfn;
 	arg.nr_pages = nr_pages;
@@ -1226,12 +1242,8 @@ int __ref __online_pages(unsigned long pfn, unsigned long nr_pages,
 
 	online_pages_range(pfn, nr_pages);
 
-adjust_count:
 	__adjust_present_page_count(pfn_to_page(pfn), group, nr_pages, zone, phase);
-	if (phase == MHP_PHASE_PREPARE) {
-		atomic_long_add(nr_pages, &zone->deferred_pages);
-		return 0;
-	} else if (phase == MHP_PHASE_DEFERRED)
+	if (phase == MHP_PHASE_DEFERRED)
 		atomic_long_sub(nr_pages, &zone->deferred_pages);
 
 	node_states_set_node(nid, &arg);
@@ -1275,6 +1287,134 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
 {
 	return __online_pages(pfn, nr_pages, zone, group, MHP_PHASE_DEFAULT);
 }
+
+static int deferred_memory_block_online_pages(struct memory_block *mem,
+					      void *arg)
+{
+	unsigned long start_pfn, nr_pages;
+	unsigned long nr_vmemmap_pages = 0;
+	struct zone *zone;
+	int ret;
+
+	/* Continue if struct pages initialization need to be deferred */
+	if (mhp_default_online_type == MMOP_OFFLINE ||
+	    mem->state == MEM_ONLINE || !mem->zone ||
+	    atomic_cmpxchg(&mem->deferred_state, MEM_NEED_DEFER,
+			   MEM_SKIP_DEFER) != MEM_NEED_DEFER)
+		return 0;
+
+	zone = mem->zone;
+
+	start_pfn = section_nr_to_pfn(mem->start_section_nr);
+	nr_pages = memory_block_size_bytes() >> PAGE_SHIFT;
+	if (mem->altmap)
+		nr_vmemmap_pages = mem->altmap->free;
+
+	mem_hotplug_begin();
+	ret = __online_pages(start_pfn + nr_vmemmap_pages,
+			     nr_pages - nr_vmemmap_pages, zone, mem->group,
+			     MHP_PHASE_DEFERRED);
+	if (ret) {
+		if (nr_vmemmap_pages)
+			mhp_deinit_memmap_on_memory(start_pfn, nr_vmemmap_pages);
+		goto out;
+	}
+
+	mem->state = MEM_ONLINE;
+out:
+	mem_hotplug_done();
+	return ret;
+}
+
+struct deferred_walk_memory_blocks_work {
+	struct work_struct work;
+	u64 start;
+	u64 size;
+	int ret;
+};
+
+static void deferred_walk_memory_blocks_worker(struct work_struct *work)
+{
+	struct deferred_walk_memory_blocks_work *w = container_of(
+		work, struct deferred_walk_memory_blocks_work, work);
+
+	w->ret = walk_memory_blocks(w->start, w->size, NULL,
+				 deferred_memory_block_online_pages);
+}
+
+int __ref deferred_online_memory(int nid, u64 start, u64 size)
+{
+	struct pglist_data *pgdat = NODE_DATA(nid);
+	int i, ret = 0;
+	struct workqueue_struct *wq;
+	struct deferred_walk_memory_blocks_work *ws, *w;
+	const struct cpumask *cpumask;
+	u64 chunk_start = start;
+	u64 chunk_size, chunk_num, chunk_remain;
+
+	if (!parallel_hotplug_ratio)
+		return -EINVAL;
+
+	wq = pgdat->deferred_hotplug_wq;
+	if (!wq) {
+		pr_warn("Deferred hotplug work queue is not initialized for node %d\n",
+			nid);
+		goto sequential;
+	}
+
+	cpumask = cpumask_of_node(nid);
+	/*
+	 * The number of parallel workers (chunk_num) should be less than
+	 * or equal to the maximum number of CPUs on the node.
+	 * And the memory size handled by each worker needs to be aligned
+	 * with the memory block size.
+	 */
+	chunk_num =
+		max_t(uint, 1,
+		      max_t(uint, cpumask_weight(cpumask), 1) *
+			      min_t(uint, parallel_hotplug_ratio, 100) / 100);
+	chunk_size = ALIGN(size / chunk_num, memory_block_size_bytes());
+	chunk_num = size / chunk_size;
+	chunk_remain = size % chunk_size;
+
+	if (chunk_num == 1)
+		goto sequential;
+
+	ws = kmalloc_array_node(chunk_num, sizeof(*ws), GFP_KERNEL, nid);
+	if (!ws)
+		goto sequential;
+
+	for (i = 0; i < chunk_num; i++) {
+		w = ws + i;
+		INIT_WORK(&w->work, deferred_walk_memory_blocks_worker);
+		w->start = chunk_start;
+		if (i == chunk_num - 1)
+			w->size = chunk_size + chunk_remain;
+		else
+			w->size = chunk_size;
+		chunk_start += w->size;
+		queue_work_node(nid, wq, &w->work);
+	}
+
+	flush_workqueue(wq);
+
+	for (i = 0; i < chunk_num; i++) {
+		w = ws + i;
+		if (w->ret) {
+			ret = w->ret;
+			pr_err("Deferred online memory failed for node %d, start: %#llx, size: %#llx, ret: %d\n",
+			       nid, w->start, w->size, ret);
+			break;
+		}
+	}
+	kfree(ws);
+	return ret;
+
+sequential:
+	return walk_memory_blocks(start, size, NULL,
+				 deferred_memory_block_online_pages);
+}
+EXPORT_SYMBOL_GPL(deferred_online_memory);
 
 /* we are OK calling __meminit stuff here - we have CONFIG_MEMORY_HOTPLUG */
 static pg_data_t __ref *hotadd_init_pgdat(int nid)
@@ -2214,6 +2354,25 @@ void try_offline_node(int nid)
 }
 EXPORT_SYMBOL(try_offline_node);
 
+/*
+ * try_release_deferred_mhp_wq - release the deferred hotplug workqueue of @nid
+ * @nid: node whose workqueue to release
+ */
+static void try_release_deferred_mhp_wq(int nid)
+{
+	struct workqueue_struct *wq;
+
+	if (nid < 0 || nid >= MAX_NUMNODES || !node_possible(nid))
+		return;
+
+	if (node_online(nid))
+		return;
+
+	wq = xchg(&NODE_DATA(nid)->deferred_hotplug_wq, NULL);
+	if (wq)
+		destroy_workqueue(wq);
+}
+
 static int __ref try_remove_memory(u64 start, u64 size)
 {
 	struct memory_block *mem;
@@ -2287,6 +2446,14 @@ static int __ref try_remove_memory(u64 start, u64 size)
 		try_offline_node(nid);
 
 	mem_hotplug_done();
+
+	/*
+	 * Must stay outside mem_hotplug_lock: destroy_workqueue() drains the
+	 * queue and its workers need that very lock.
+	 */
+	if (nid != NUMA_NO_NODE)
+		try_release_deferred_mhp_wq(nid);
+
 	return 0;
 }
 
