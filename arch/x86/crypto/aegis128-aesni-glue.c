@@ -114,22 +114,26 @@ static void crypto_aegis128_aesni_process_ad(
 	}
 }
 
-static void crypto_aegis128_aesni_process_crypt(
+static int crypto_aegis128_aesni_process_crypt(
 		struct aegis_state *state, struct skcipher_walk *walk,
 		const struct aegis_crypt_ops *ops)
 {
+	int err = 0;
+
 	while (walk->nbytes >= AEGIS128_BLOCK_SIZE) {
 		ops->crypt_blocks(state,
 				  round_down(walk->nbytes, AEGIS128_BLOCK_SIZE),
 				  walk->src.virt.addr, walk->dst.virt.addr);
-		skcipher_walk_done(walk, walk->nbytes % AEGIS128_BLOCK_SIZE);
+		err = skcipher_walk_done(walk,
+					walk->nbytes % AEGIS128_BLOCK_SIZE);
 	}
 
 	if (walk->nbytes) {
 		ops->crypt_tail(state, walk->nbytes, walk->src.virt.addr,
 				walk->dst.virt.addr);
-		skcipher_walk_done(walk, 0);
+		err = skcipher_walk_done(walk, 0);
 	}
+	return err;
 }
 
 static struct aegis_ctx *crypto_aegis128_aesni_ctx(struct crypto_aead *aead)
@@ -162,26 +166,31 @@ static int crypto_aegis128_aesni_setauthsize(struct crypto_aead *tfm,
 	return 0;
 }
 
-static void crypto_aegis128_aesni_crypt(struct aead_request *req,
-					struct aegis_block *tag_xor,
-					unsigned int cryptlen,
-					const struct aegis_crypt_ops *ops)
+static int crypto_aegis128_aesni_crypt(struct aead_request *req,
+				       struct aegis_block *tag_xor,
+				       unsigned int cryptlen,
+				       const struct aegis_crypt_ops *ops)
 {
 	struct crypto_aead *tfm = crypto_aead_reqtfm(req);
 	struct aegis_ctx *ctx = crypto_aegis128_aesni_ctx(tfm);
 	struct skcipher_walk walk;
 	struct aegis_state state;
+	int err;
 
-	ops->skcipher_walk_init(&walk, req, true);
+	err = ops->skcipher_walk_init(&walk, req, true);
+	if (err)
+		return err;
 
 	kernel_fpu_begin();
 
 	crypto_aegis128_aesni_init(&state, ctx->key.bytes, req->iv);
 	crypto_aegis128_aesni_process_ad(&state, req->src, req->assoclen);
-	crypto_aegis128_aesni_process_crypt(&state, &walk, ops);
-	crypto_aegis128_aesni_final(&state, tag_xor, req->assoclen, cryptlen);
+	err = crypto_aegis128_aesni_process_crypt(&state, &walk, ops);
+	if (err == 0)
+		crypto_aegis128_aesni_final(&state, tag_xor, req->assoclen, cryptlen);
 
 	kernel_fpu_end();
+	return err;
 }
 
 static int crypto_aegis128_aesni_encrypt(struct aead_request *req)
@@ -196,8 +205,11 @@ static int crypto_aegis128_aesni_encrypt(struct aead_request *req)
 	struct aegis_block tag = {};
 	unsigned int authsize = crypto_aead_authsize(tfm);
 	unsigned int cryptlen = req->cryptlen;
+	int err;
 
-	crypto_aegis128_aesni_crypt(req, &tag, cryptlen, &OPS);
+	err = crypto_aegis128_aesni_crypt(req, &tag, cryptlen, &OPS);
+	if (err)
+		return err;
 
 	scatterwalk_map_and_copy(tag.bytes, req->dst,
 				 req->assoclen + cryptlen, authsize, 1);
@@ -218,11 +230,14 @@ static int crypto_aegis128_aesni_decrypt(struct aead_request *req)
 	struct aegis_block tag;
 	unsigned int authsize = crypto_aead_authsize(tfm);
 	unsigned int cryptlen = req->cryptlen - authsize;
+	int err;
 
 	scatterwalk_map_and_copy(tag.bytes, req->src,
 				 req->assoclen + cryptlen, authsize, 0);
 
-	crypto_aegis128_aesni_crypt(req, &tag, cryptlen, &OPS);
+	err = crypto_aegis128_aesni_crypt(req, &tag, cryptlen, &OPS);
+	if (err)
+		return err;
 
 	return crypto_memneq(tag.bytes, zeros.bytes, authsize) ? -EBADMSG : 0;
 }
