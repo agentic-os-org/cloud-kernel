@@ -818,7 +818,8 @@ static void auto_movable_stats_account_zone(struct auto_movable_stats *stats,
 					    struct zone *zone)
 {
 	if (zone_idx(zone) == ZONE_MOVABLE) {
-		stats->movable_pages += zone->present_pages;
+		stats->movable_pages +=
+			zone->present_pages + zone_deferred_pages(zone);
 	} else {
 		stats->kernel_early_pages += zone->present_early_pages;
 #ifdef CONFIG_CMA
@@ -1169,8 +1170,9 @@ void mhp_deinit_memmap_on_memory(unsigned long pfn, unsigned long nr_pages)
 /*
  * Must be called with mem_hotplug_lock in write mode.
  */
-int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
-		       struct zone *zone, struct memory_group *group)
+int __ref __online_pages(unsigned long pfn, unsigned long nr_pages,
+		       struct zone *zone, struct memory_group *group,
+			   int phase)
 {
 	unsigned long flags;
 	int need_zonelists_rebuild = 0;
@@ -1189,9 +1191,11 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
 			 !IS_ALIGNED(pfn + nr_pages, PAGES_PER_SECTION)))
 		return -EINVAL;
 
-
 	/* associate pfn range with the zone */
-	move_pfn_range_to_zone(zone, pfn, nr_pages, NULL, MIGRATE_ISOLATE);
+	__move_pfn_range_to_zone(zone, pfn, nr_pages, NULL, MIGRATE_ISOLATE, phase);
+
+	if (phase == MHP_PHASE_PREPARE)
+		goto adjust_count;
 
 	arg.start_pfn = pfn;
 	arg.nr_pages = nr_pages;
@@ -1221,7 +1225,14 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
 	}
 
 	online_pages_range(pfn, nr_pages);
-	adjust_present_page_count(pfn_to_page(pfn), group, nr_pages);
+
+adjust_count:
+	__adjust_present_page_count(pfn_to_page(pfn), group, nr_pages, zone, phase);
+	if (phase == MHP_PHASE_PREPARE) {
+		atomic_long_add(nr_pages, &zone->deferred_pages);
+		return 0;
+	} else if (phase == MHP_PHASE_DEFERRED)
+		atomic_long_sub(nr_pages, &zone->deferred_pages);
 
 	node_states_set_node(nid, &arg);
 	if (need_zonelists_rebuild)
@@ -1257,6 +1268,12 @@ failed_addition:
 	memory_notify(MEM_CANCEL_ONLINE, &arg);
 	remove_pfn_range_from_zone(zone, pfn, nr_pages);
 	return ret;
+}
+
+int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
+		       struct zone *zone, struct memory_group *group)
+{
+	return __online_pages(pfn, nr_pages, zone, group, MHP_PHASE_DEFAULT);
 }
 
 /* we are OK calling __meminit stuff here - we have CONFIG_MEMORY_HOTPLUG */

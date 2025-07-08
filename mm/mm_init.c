@@ -1306,6 +1306,7 @@ static void __init reset_memoryless_node_totalpages(struct pglist_data *pgdat)
 #if defined(CONFIG_MEMORY_HOTPLUG)
 		z->present_early_pages = 0;
 #endif
+		atomic_long_set(&z->deferred_pages, 0);
 	}
 
 	pgdat->node_spanned_pages = 0;
@@ -1578,6 +1579,7 @@ void __ref free_area_init_core_hotplug(struct pglist_data *pgdat)
 		struct zone *zone = pgdat->node_zones + z;
 
 		zone->present_pages = 0;
+		atomic_long_set(&zone->deferred_pages, 0);
 		zone_init_internals(zone, z, nid, 0);
 	}
 }
