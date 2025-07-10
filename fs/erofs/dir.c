@@ -63,6 +63,11 @@ static int erofs_readdir(struct file *f, struct dir_context *ctx)
 		struct erofs_dirent *de;
 		unsigned int nameoff, maxsize;
 
+		if (fatal_signal_pending(current)) {
+			err = -ERESTARTSYS;
+			break;
+		}
+
 		de = erofs_bread(&buf, i, EROFS_KMAP);
 		if (IS_ERR(de)) {
 			erofs_err(sb, "fail to readdir of logical block %u of nid %llu",
@@ -99,6 +104,7 @@ skip_this:
 		ctx->pos = erofs_pos(sb, i) + maxsize;
 		++i;
 		ofs = 0;
+		cond_resched();
 	}
 	erofs_put_metabuf(&buf);
 	if (EROFS_I(dir)->dot_omitted && ctx->pos == dir->i_size) {
