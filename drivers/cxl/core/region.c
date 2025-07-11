@@ -3683,11 +3683,9 @@ out:
 DEFINE_DEBUGFS_ATTRIBUTE(cxl_poison_clear_fops, NULL,
 			 cxl_region_debugfs_poison_clear, "%llx\n");
 
-static int cxl_region_probe(struct device *dev)
+static int cxl_region_can_probe(struct cxl_region *cxlr)
 {
-	struct cxl_region *cxlr = to_cxl_region(dev);
 	struct cxl_region_params *p = &cxlr->params;
-	bool poison_supported = true;
 	int rc;
 
 	rc = down_read_interruptible(&cxl_region_rwsem);
@@ -3709,15 +3707,29 @@ static int cxl_region_probe(struct device *dev)
 		goto out;
 	}
 
-	/*
-	 * From this point on any path that changes the region's state away from
-	 * CXL_CONFIG_COMMIT is also responsible for releasing the driver.
-	 */
 out:
 	up_read(&cxl_region_rwsem);
 
 	if (rc)
 		return rc;
+	return 0;
+}
+
+static int cxl_region_probe(struct device *dev)
+{
+	struct cxl_region *cxlr = to_cxl_region(dev);
+	struct cxl_region_params *p = &cxlr->params;
+	bool poison_supported = true;
+	int rc;
+
+	rc = cxl_region_can_probe(cxlr);
+	if (rc)
+		return rc;
+
+	/*
+	 * From this point on any path that changes the region's state away from
+	 * CXL_CONFIG_COMMIT is also responsible for releasing the driver.
+	 */
 
 	cxlr->memory_notifier.notifier_call = cxl_region_perf_attrs_callback;
 	cxlr->memory_notifier.priority = CXL_CALLBACK_PRI;
