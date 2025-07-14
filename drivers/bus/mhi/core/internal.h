@@ -323,6 +323,7 @@ enum mhi_cmd_type {
 #define MHI_TRE_DATA_DWORD0(len) (len & MHI_MAX_MTU)
 #define MHI_TRE_DATA_DWORD1(bei, ieot, ieob, chain) ((2 << 16) | (bei << 10) \
 	| (ieot << 9) | (ieob << 8) | chain)
+#define MHI_TRE_DATA_GET_CHAIN(tre) (!!((tre)->dword[1] & BIT(0)))
 
 /* RSC transfer descriptor macros */
 #define MHI_RSCTRE_DATA_PTR(ptr, len) (((u64)len << 48) | ptr)
