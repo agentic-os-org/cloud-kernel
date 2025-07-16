@@ -348,6 +348,16 @@ static int erofs_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 	if (ret < 0)
 		return ret;
 
+	iomap->offset = map.m_la;
+	iomap->length = map.m_llen;
+	iomap->flags = 0;
+	iomap->private = NULL;
+	if (!(map.m_flags & EROFS_MAP_MAPPED)) {
+		iomap->type = IOMAP_HOLE;
+		iomap->addr = IOMAP_NULL_ADDR;
+		return 0;
+	}
+
 	mdev = (struct erofs_map_dev) {
 		.m_deviceid = map.m_deviceid,
 		.m_pa = map.m_pa,
@@ -356,20 +366,9 @@ static int erofs_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 	if (ret)
 		return ret;
 
-	iomap->offset = map.m_la;
 	iomap->bdev = mdev.m_bdev;
 	iomap->dax_dev = mdev.m_daxdev;
-	iomap->length = map.m_llen;
-	iomap->flags = 0;
-	iomap->private = NULL;
-
-	if (!(map.m_flags & EROFS_MAP_MAPPED)) {
-		iomap->type = IOMAP_HOLE;
-		iomap->addr = IOMAP_NULL_ADDR;
-		if (!iomap->length)
-			iomap->length = length;
-		return 0;
-	}
+	iomap->addr = mdev.m_pa;
 
 	if (map.m_flags & EROFS_MAP_META) {
 		void *ptr;
@@ -384,7 +383,6 @@ static int erofs_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 		iomap->private = buf.base;
 	} else {
 		iomap->type = IOMAP_MAPPED;
-		iomap->addr = mdev.m_pa;
 	}
 	return 0;
 }
