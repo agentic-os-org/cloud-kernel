@@ -105,7 +105,7 @@
         "BriefDescription": "issue queue full, and exist inflight load cycle num"
     },
     {
-        "EventName": "topdown.back_bound.memory.store",
+        "EventName": "topdown.backend_bound.memory.store",
         "EventCode": "0x00000016",
         "BriefDescription": "issue queue full, and exist inflight store cycle num"
     },
