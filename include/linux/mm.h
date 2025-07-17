@@ -4688,12 +4688,20 @@ int arch_lock_shadow_stack_status(struct task_struct *t, unsigned long status);
 extern unsigned long contig_mem_pool_percent;
 struct folio *pfn_range_alloc(unsigned int nr_pages, int nid);
 int pfn_range_free(struct folio *folio);
+int set_linear_mapping_invalid(unsigned long start_pfn, unsigned long end_pfn,
+										bool set_invalid);
 #else
 static inline struct folio *pfn_range_alloc(unsigned int nr_pages, int nid)
 {
 	return ERR_PTR(-EINVAL);
 }
 static inline int pfn_range_free(struct folio *folio)
+{
+	return -EINVAL;
+}
+static inline
+int set_linear_mapping_invalid(unsigned long start_pfn, unsigned long end_pfn,
+										bool set_invalid)
 {
 	return -EINVAL;
 }
