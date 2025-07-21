@@ -51,10 +51,14 @@ static int erofs_readdir(struct file *f, struct dir_context *ctx)
 	struct inode *dir = file_inode(f);
 	struct erofs_buf buf = __EROFS_BUF_INITIALIZER;
 	struct super_block *sb = dir->i_sb;
+	struct file_ra_state *ra = &f->f_ra;
 	unsigned long bsz = sb->s_blocksize;
 	const size_t dirsize = i_size_read(dir);
 	unsigned int i = erofs_blknr(sb, ctx->pos);
 	unsigned int ofs = erofs_blkoff(sb, ctx->pos);
+	pgoff_t ra_pages =
+		PAGE_ALIGN(EROFS_I_SB(dir)->dir_ra_bytes) >> PAGE_SHIFT;
+	pgoff_t nr_pages = PAGE_ALIGN(dir->i_size) >> PAGE_SHIFT;
 	int err = 0;
 	bool initial = true;
 
@@ -66,6 +70,16 @@ static int erofs_readdir(struct file *f, struct dir_context *ctx)
 		if (fatal_signal_pending(current)) {
 			err = -ERESTARTSYS;
 			break;
+		}
+
+		/* readahead blocks to enhance performance for large directories */
+		if (ra_pages) {
+			pgoff_t idx = PAGE_ALIGN(ctx->pos) >> PAGE_SHIFT;
+			pgoff_t pages = min(nr_pages - idx, ra_pages);
+
+			if (pages > 1 && !ra_has_index(ra, idx))
+				page_cache_sync_readahead(dir->i_mapping, ra,
+							  f, idx, pages);
 		}
 
 		de = erofs_bread(&buf, i, EROFS_KMAP);

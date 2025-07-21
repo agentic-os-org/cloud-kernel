@@ -54,10 +54,13 @@ static struct erofs_attr erofs_attr_##_name = {			\
 
 #define ATTR_LIST(name) (&erofs_attr_##name.attr)
 
-static struct attribute *erofs_attrs[] = {
+EROFS_ATTR_RW_UI(dir_ra_bytes, erofs_sb_info);
+
+static struct attribute *erofs_sb_attrs[] = {
+	ATTR_LIST(dir_ra_bytes),
 	NULL,
 };
-ATTRIBUTE_GROUPS(erofs);
+ATTRIBUTE_GROUPS(erofs_sb);
 
 /* Features this copy of erofs supports */
 EROFS_ATTR_FEATURE(zero_padding);
@@ -167,7 +170,7 @@ static const struct sysfs_ops erofs_attr_ops = {
 };
 
 static struct kobj_type erofs_sb_ktype = {
-	.default_groups = erofs_groups,
+	.default_groups = erofs_sb_groups,
 	.sysfs_ops	= &erofs_attr_ops,
 	.release	= erofs_sb_release,
 };
