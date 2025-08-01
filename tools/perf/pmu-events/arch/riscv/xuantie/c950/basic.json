@@ -80,7 +80,7 @@
         "BriefDescription": "l2 acc miss num"
     },
     {
-        "EventName": "topdown.slots",
+        "EventName": "uop.spec",
         "EventCode": "0x00000011",
         "BriefDescription": "rename stage issue slots num"
     },

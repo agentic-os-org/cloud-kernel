@@ -1,43 +1,43 @@
 [
     {
-        "EventName": "inst.mispred.conbr",
+        "EventName": "inst.mispred.branch",
         "EventCode": "0x00000018",
         "BriefDescription": "speculative cond br mispred num"
     },
     {
-        "EventName": "inst.mispred.abbr",
+        "EventName": "inst.mispred.uncond_branch",
         "EventCode": "0x00000019",
         "BriefDescription": "speculative uncond br mispred num"
     },
     {
-        "EventName": "inst.mispred.indbr",
+        "EventName": "inst.mispred.ind",
         "EventCode": "0x0000001a",
-        "BriefDescription": "speculative indbr mispred num"
+        "BriefDescription": "speculative indir mispred num"
     },
     {
-        "EventName": "inst.mispred.pret",
+        "EventName": "inst.mispred.ret",
         "EventCode": "0x0000001b",
-        "BriefDescription": "speculative pret mispred num"
+        "BriefDescription": "speculative return mispred num"
     },
     {
-        "EventName": "inst.brjmp.conbr.spec",
+        "EventName": "inst.brjmp.branch.spec",
         "EventCode": "0x0000001c",
         "BriefDescription": "speculative execute cond br num"
     },
     {
-        "EventName": "inst.brjmp.abbr.spec",
+        "EventName": "inst.brjmp.uncond_branch.spec",
         "EventCode": "0x0000001d",
         "BriefDescription": "speculative execute uncond br num"
     },
     {
-        "EventName": "inst.brjmp.indbr.spec",
+        "EventName": "inst.brjmp.ind.spec",
         "EventCode": "0x0000001e",
         "BriefDescription": "speculative execute indir br num"
     },
     {
-        "EventName": "inst.brjmp.pret.spec",
+        "EventName": "inst.brjmp.ret.spec",
         "EventCode": "0x0000001f",
-        "BriefDescription": "speculative execute pret num"
+        "BriefDescription": "speculative execute return num"
     },
     {
         "EventName": "inst.brjmp.branch.tk",

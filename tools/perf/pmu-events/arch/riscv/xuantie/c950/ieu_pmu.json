@@ -65,98 +65,33 @@
         "BriefDescription": "Completed CSR instructions"
     },
     {
-        "EventName": "ieu.is.siq0.stall_cnt",
-        "EventCode": "0x00000049",
-        "BriefDescription": "cycle nums of siq0 full stall in is"
+        "EventName": "ieu.is.siq.stall",
+        "EventCode": "0x000000c0",
+        "BriefDescription": "cycle nums of siq full stall cycles"
     },
     {
-        "EventName": "ieu.is.siq1.stall_cnt",
-        "EventCode": "0x0000004a",
-        "BriefDescription": "cycle nums of siq1 full stall in is"
+        "EventName": "ieu.is.miq.stall",
+        "EventCode": "0x000000c1",
+        "BriefDescription": "cycle nums of miq full stall cycles"
     },
     {
-        "EventName": "ieu.is.siq2.stall_cnt",
-        "EventCode": "0x0000004b",
-        "BriefDescription": "cycle nums of siq2 full stall in is"
+        "EventName": "ieu.is.biq.stall",
+        "EventCode": "0x000000c2",
+        "BriefDescription": "cycle nums of biq full stall cycles"
     },
     {
-        "EventName": "ieu.is.siq3.stall_cnt",
-        "EventCode": "0x0000004c",
-        "BriefDescription": "cycle nums of siq3 full stall in is"
+        "EventName": "ieu.is.lsiq.stall",
+        "EventCode": "0x000000c3",
+        "BriefDescription": "cycle nums of lsiq full stall cycles"
     },
     {
-        "EventName": "ieu.is.miq4.stall_cnt",
-        "EventCode": "0x0000004d",
-        "BriefDescription": "cycle nums of miq4 full stall in is"
+        "EventName": "ieu.is.vfpq.stall",
+        "EventCode": "0x000000c4",
+        "BriefDescription": "cycle nums of fpiq full stall cycles"
     },
     {
-        "EventName": "ieu.is.miq5.stall_cnt",
-        "EventCode": "0x0000004e",
-        "BriefDescription": "cycle nums of miq5 full stall in is"
-    },
-    {
-        "EventName": "ieu.is.biq0.stall_cnt",
-        "EventCode": "0x0000004f",
-        "BriefDescription": "cycle nums of biq0 full stall in is"
-    },
-    {
-        "EventName": "ieu.is.biq1.stall_cnt",
-        "EventCode": "0x00000050",
-        "BriefDescription": "cycle nums of biq1 full stall in is"
-    },
-    {
-        "EventName": "ieu.is.lsiq0.stall_cnt",
-        "EventCode": "0x00000051",
-        "BriefDescription": "cycle nums of lsiq0 full stall in is"
-    },
-    {
-        "EventName": "ieu.is.ldiq1.stall_cnt",
-        "EventCode": "0x00000052",
-        "BriefDescription": "cycle nums of ldiq1 full stall in is"
-    },
-    {
-        "EventName": "ieu.is.ldiq2.stall_cnt",
-        "EventCode": "0x00000053",
-        "BriefDescription": "cycle nums of ldiq2 full stall in is"
-    },
-    {
-        "EventName": "ieu.is.stiq3.stall_cnt",
-        "EventCode": "0x00000054",
-        "BriefDescription": "cycle nums of stiq3 full stall in is"
-    },
-    {
-        "EventName": "ieu.is.vfpq0.stall_cnt",
-        "EventCode": "0x00000055",
-        "BriefDescription": "cycle nums of vfpq0 full stall in is"
-    },
-    {
-        "EventName": "ieu.is.vfpq1.stall_cnt",
-        "EventCode": "0x00000056",
-        "BriefDescription": "cycle nums of vfpq1 full stall in is"
-    },
-    {
-        "EventName": "ieu.is.fpq2.stall_cnt",
-        "EventCode": "0x00000057",
-        "BriefDescription": "cycle nums of fpq2 full stall in is"
-    },
-    {
-        "EventName": "ieu.is.fpq3.stall_cnt",
-        "EventCode": "0x00000058",
-        "BriefDescription": "cycle nums of fpq3 full stall in is"
-    },
-    {
-        "EventName": "ieu.de.stall",
-        "EventCode": "0x000000b1",
-        "BriefDescription": "cycle nums of de stall when ifu vld in de"
-    },
-    {
-        "EventName": "ieu.rn.stall",
-        "EventCode": "0x000000b2",
-        "BriefDescription": "cycle nums of rn stall when de vld in rn"
-    },
-    {
-        "EventName": "ieu.ds.stall",
-        "EventCode": "0x000000b4",
-        "BriefDescription": "cycle nums of ds stall when rn vld in ds"
+        "EventName": "topdown.backend_bound.core.div_busy",
+        "EventCode": "0x000000c5",
+        "BriefDescription": "cycle nums of div busy stall cycles"
     }
 ]
