@@ -2976,6 +2976,11 @@ static bool has_hpa_to_spa(struct cxl_root_decoder *cxlrd)
 	return cxlrd->ops && cxlrd->ops->hpa_to_spa;
 }
 
+static bool has_spa_to_hpa(struct cxl_root_decoder *cxlrd)
+{
+	return cxlrd->ops && cxlrd->ops->spa_to_hpa;
+}
+
 u64 cxl_dpa_to_hpa(struct cxl_region *cxlr, const struct cxl_memdev *cxlmd,
 		   u64 dpa)
 {
@@ -3072,14 +3077,15 @@ static int region_offset_to_dpa_result(struct cxl_region *cxlr, u64 offset,
 	ways_to_eiw(p->interleave_ways, &eiw);
 
 	/*
-	 * If the root decoder has an HPA to SPA callback, use it. Otherwise
+	 * If the root decoder has SPA to CXL HPA callback, use it. Otherwise
 	 * CXL HPA is assumed to equal SPA.
 	 */
-	hpa = p->res->start + offset;
-	if (has_hpa_to_spa(cxlrd))
-		hpa = cxlrd->ops->hpa_to_spa(cxlrd, hpa);
-	hpa_offset = hpa - p->res->start;
-
+	if (has_spa_to_hpa(cxlrd)) {
+		hpa = cxlrd->ops->spa_to_hpa(cxlrd, p->res->start + offset);
+		hpa_offset = hpa - p->res->start;
+	} else {
+		hpa_offset = offset;
+	}
 	/*
 	 * Interleave position: CXL Spec 3.2 Section 8.2.4.20.13
 	 * eiw < 8
