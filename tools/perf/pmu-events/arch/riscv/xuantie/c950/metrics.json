@@ -249,98 +249,98 @@
         "MetricName": "topdown.bad_speculation.other_flush.rate"
     },
     {
-        "MetricExpr": "inst.int.alu.spec / uop.spec",
+        "MetricExpr": "topdown.retiring.rate * inst.int.alu.spec / uop.spec",
         "PublicDescription": "Arithmetic operations L3 topdown metric",
         "BriefDescription": "Arithmetic operations L3 topdown metric",
         "MetricGroup": "TopdownL3",
         "MetricName": "topdown.retiring.int.alu.rate"
     },
     {
-        "MetricExpr": "inst.int.mul.spec / uop.spec",
+        "MetricExpr": "topdown.retiring.rate * inst.int.mul.spec / uop.spec",
         "PublicDescription": "Multiplication operations L3 topdown metric",
         "BriefDescription": "Multiplication operations L3 topdown metric",
         "MetricGroup": "TopdownL3",
         "MetricName": "topdown.retiring.int.mul.rate"
     },
     {
-        "MetricExpr": "inst.int.div.spec / uop.spec",
+        "MetricExpr": "topdown.retiring.rate * inst.int.div.spec / uop.spec",
         "PublicDescription": "Division operations L3 topdown metric",
         "BriefDescription": "Division operations L3 topdown metric",
         "MetricGroup": "TopdownL3",
         "MetricName": "topdown.retiring.int.div.rate"
     },
     {
-        "MetricExpr": "inst.int.csr.spec / uop.spec",
+        "MetricExpr": "topdown.retiring.rate * inst.int.csr.spec / uop.spec",
         "PublicDescription": "CSR access operations L3 topdown metric",
         "BriefDescription": "CSR access operations L3 topdown metric",
         "MetricGroup": "TopdownL3",
         "MetricName": "topdown.retiring.int.csr.rate"
     },
     {
-        "MetricExpr": "inst.brjmp.branch.spec / uop.spec",
+        "MetricExpr": "topdown.retiring.rate * inst.brjmp.branch.spec / uop.spec",
         "PublicDescription": "Conditional branch operations L3 topdown metric",
         "BriefDescription": "Conditional branch operations L3 topdown metric",
         "MetricGroup": "TopdownL3",
         "MetricName": "topdown.retiring.brjmp.branch.rate"
     },
     {
-        "MetricExpr": "inst.brjmp.ind.spec / uop.spec",
+        "MetricExpr": "topdown.retiring.rate * inst.brjmp.ind.spec / uop.spec",
         "PublicDescription": "Indirect branch operations L3 topdown metric",
         "BriefDescription": "Indirect branch operations L3 topdown metric",
         "MetricGroup": "TopdownL3",
         "MetricName": "topdown.retiring.brjmp.ind.rate"
     },
     {
-        "MetricExpr": "inst.brjmp.ret.spec / uop.spec",
+        "MetricExpr": "topdown.retiring.rate * inst.brjmp.ret.spec / uop.spec",
         "PublicDescription": "Function return operations L3 topdown metric",
         "BriefDescription": "Function return operations L3 topdown metric",
         "MetricGroup": "TopdownL3",
         "MetricName": "topdown.retiring.brjmp.ret.rate"
     },
     {
-        "MetricExpr": "inst.brjmp.uncond_branch.spec / uop.spec",
+        "MetricExpr": "topdown.retiring.rate * inst.brjmp.uncond_branch.spec / uop.spec",
         "PublicDescription": "Unconditional branch operations L3 topdown metric",
         "BriefDescription": "Unconditional branch operations L3 topdown metric",
         "MetricGroup": "TopdownL3",
         "MetricName": "topdown.retiring.brjmp.uncond_branch.rate"
     },
     {
-        "MetricExpr": "inst.ldst.load.spec / uop.spec",
+        "MetricExpr": "topdown.retiring.rate * inst.ldst.load.spec / uop.spec",
         "PublicDescription": "Load operations L3 topdown metric",
         "BriefDescription": "Load operations L3 topdown metric",
         "MetricGroup": "TopdownL3",
         "MetricName": "topdown.retiring.ldst.load.rate"
     },
     {
-        "MetricExpr": "inst.ldst.store.spec / uop.spec",
+        "MetricExpr": "topdown.retiring.rate * inst.ldst.store.spec / uop.spec",
         "PublicDescription": "Store operations L3 topdown metric",
         "BriefDescription": "Store operations L3 topdown metric",
         "MetricGroup": "TopdownL3",
         "MetricName": "topdown.retiring.ldst.store.rate"
     },
     {
-        "MetricExpr": "inst.ldst.float_load.spec / uop.spec",
+        "MetricExpr": "topdown.retiring.rate * inst.ldst.float_load.spec / uop.spec",
         "PublicDescription": "Float load operations L3 topdown metric",
         "BriefDescription": "Float laod operations L3 topdown metric",
         "MetricGroup": "TopdownL3",
         "MetricName": "topdown.retiring.ldst.float_load.rate"
     },
     {
-        "MetricExpr": "inst.ldst.float_store.spec / uop.spec",
+        "MetricExpr": "topdown.retiring.rate * inst.ldst.float_store.spec / uop.spec",
         "PublicDescription": "Float store operations L3 topdown metric",
         "BriefDescription": "Float store operations L3 topdown metric",
         "MetricGroup": "TopdownL3",
         "MetricName": "topdown.retiring.ldst.float_store.rate"
     },
     {
-        "MetricExpr": "inst.ldst.vec_load.spec / uop.spec",
+        "MetricExpr": "topdown.retiring.rate * inst.ldst.vec_load.spec / uop.spec",
         "PublicDescription": "Vector load operations L3 topdown metric",
         "BriefDescription": "Vector load operations L3 topdown metric",
         "MetricGroup": "TopdownL3",
         "MetricName": "topdown.retiring.ldst.vec_load.rate"
     },
     {
-        "MetricExpr": "inst.ldst.vec_store.spec / uop.spec",
+        "MetricExpr": "topdown.retiring.rate * inst.ldst.vec_store.spec / uop.spec",
         "PublicDescription": "Vector store operations L3 topdown metric",
         "BriefDescription": "Vector store operations L3 topdown metric",
         "MetricGroup": "TopdownL3",
@@ -436,6 +436,13 @@
         "BriefDescription": "l1 dcache access misses per 1000 instructions",
         "MetricGroup": "Common;Per-instruction",
         "MetricName": "cache.l1d.rd.data.mpki"
+    },
+    {
+        "MetricExpr": "cache.l1d.wr.miss * 1000 / uop.ret",
+        "PublicDescription": "l1 dcache write access misses per 1000 instructions",
+        "BriefDescription": "l1 dcache write access misses per 1000 instructions",
+        "MetricGroup": "Common;Per-instruction",
+        "MetricName": "cache.l1d.wr.data.mpki"
     },
     {
         "MetricExpr": "cache.l1i.rd.miss * 1000 / uop.ret",
