@@ -15,6 +15,7 @@
 #include <linux/dax.h>
 #include <linux/slab.h>
 #include <linux/log2.h>
+#include <linux/overflow.h>
 
 static struct workqueue_struct *dm_stripe_wq;
 
@@ -456,10 +457,13 @@ static void stripe_io_hints(struct dm_target *ti,
 			    struct queue_limits *limits)
 {
 	struct stripe_c *sc = ti->private;
-	unsigned int chunk_size = sc->chunk_size << SECTOR_SHIFT;
+	unsigned int io_min, io_opt;
 
-	blk_limits_io_min(limits, chunk_size);
-	blk_limits_io_opt(limits, chunk_size * sc->stripes);
+	if (!check_shl_overflow(sc->chunk_size, SECTOR_SHIFT, &io_min) &&
+	    !check_mul_overflow(io_min, sc->stripes, &io_opt)) {
+		blk_limits_io_min(limits, io_min);
+		blk_limits_io_opt(limits, io_opt);
+	}
 }
 
 static struct target_type stripe_target = {
