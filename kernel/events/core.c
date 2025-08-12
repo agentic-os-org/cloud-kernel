@@ -2672,6 +2672,9 @@ static void perf_log_itrace_start(struct perf_event *event);
 
 static void perf_event_unthrottle(struct perf_event *event, bool start)
 {
+	if (event->state != PERF_EVENT_STATE_ACTIVE)
+		return;
+
 	event->hw.interrupts = 0;
 	if (start)
 		event->pmu->start(event, 0);
@@ -2681,6 +2684,9 @@ static void perf_event_unthrottle(struct perf_event *event, bool start)
 
 static void perf_event_throttle(struct perf_event *event)
 {
+	if (event->state != PERF_EVENT_STATE_ACTIVE)
+		return;
+
 	event->hw.interrupts = MAX_INTERRUPTS;
 	event->pmu->stop(event, 0);
 	if (event == event->group_leader)
