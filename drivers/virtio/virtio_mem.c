@@ -1914,8 +1914,12 @@ static int virtio_mem_sbm_plug_request(struct virtio_mem *vm, uint64_t diff)
 			 * Deferred free pages to buddy allocator.
 			 */
 			rc = deferred_online_memory(vm->nid, addr, size);
-			if (rc)
+			if (rc) {
+				dev_err(&vm->vdev->dev,
+					"failed to online deferred memory: addr 0x%llx, size %llx, sid %lu, eid %lu, rc %d\n",
+					addr, size, sid, eid, rc);
 				goto out_free;
+			}
 
 			/* Deferred send plug requests */
 			for (mb_id = sid; mb_id <= eid; mb_id++) {
@@ -1927,8 +1931,12 @@ static int virtio_mem_sbm_plug_request(struct virtio_mem *vm, uint64_t diff)
 					size = memory_block_size_bytes();
 
 				rc = virtio_mem_send_plug_request(vm, addr, size);
-				if (rc)
+				if (rc) {
+					dev_err(&vm->vdev->dev,
+						"failed to send plug request: addr 0x%llx, size %llx, sid %lu, eid %lu, mb_id %lu, rc %d\n",
+						addr, size, sid, eid, mb_id, rc);
 					goto out_free;
+				}
 			}
 		}
 		dev_info(&vm->vdev->dev, "deferred time: %ums",
