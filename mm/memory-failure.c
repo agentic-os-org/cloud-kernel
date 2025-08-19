@@ -863,9 +863,9 @@ static const struct mm_walk_ops hwpoison_walk_ops = {
  * is proper in most cases, but it could be wrong when the application
  * process has multiple entries mapping the error page.
  */
-static int kill_accessing_process(unsigned long pfn, int flags)
+int kill_accessing_process(unsigned long pfn, int flags, bool force_kill)
 {
-	int ret;
+	int ret, ret_kill = -EINVAL;
 	struct task_struct *p = current;
 	struct hwpoison_walk priv = {
 		.pfn = pfn,
@@ -885,7 +885,14 @@ static int kill_accessing_process(unsigned long pfn, int flags)
 	 * SIGBUS is needed.
 	 */
 	if (ret == 1 && priv.tk.addr)
-		kill_proc(&priv.tk, pfn, flags);
+		ret_kill = kill_proc(&priv.tk, pfn, flags);
+
+	if (force_kill && (ret_kill < 0)) {
+		pr_err("%#lx: Sending force SIGBUS to %s:%d due to hardware memory corruption\n",
+				pfn, p->comm, task_pid_nr(p));
+		force_sig(SIGBUS);
+	}
+
 	mmap_read_unlock(p->mm);
 
 	return ret > 0 ? -EHWPOISON : 0;
@@ -2116,7 +2123,7 @@ retry:
 		res = -EHWPOISON;
 		if (flags & MF_ACTION_REQUIRED) {
 			folio = page_folio(p);
-			res = kill_accessing_process(folio_pfn(folio), flags);
+			res = kill_accessing_process(folio_pfn(folio), flags, false);
 		}
 		action_result(pfn, MF_MSG_ALREADY_POISONED, MF_FAILED);
 		return res;
@@ -2457,7 +2464,7 @@ try_again:
 	if (TestSetPageHWPoison(p)) {
 		res = -EHWPOISON;
 		if (flags & MF_ACTION_REQUIRED)
-			res = kill_accessing_process(pfn, flags);
+			res = kill_accessing_process(pfn, flags, false);
 		if (flags & MF_COUNT_INCREASED)
 			put_page(p);
 		action_result(pfn, MF_MSG_ALREADY_POISONED, MF_FAILED);
