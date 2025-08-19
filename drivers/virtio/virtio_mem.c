@@ -1429,9 +1429,6 @@ static int virtio_mem_send_plug_request(struct virtio_mem *vm, uint64_t addr,
 	};
 	int rc = -ENOMEM;
 
-	if (atomic_read(&vm->config_changed))
-		return -EAGAIN;
-
 	dev_dbg(&vm->vdev->dev, "plugging memory: 0x%llx - 0x%llx\n", addr,
 		addr + size - 1);
 
@@ -1530,6 +1527,9 @@ static int virtio_mem_sbm_plug_sb(struct virtio_mem *vm, unsigned long mb_id,
 	const uint64_t size = count * vm->sbm.sb_size;
 	int rc = 0;
 
+	if (atomic_read(&vm->config_changed))
+		return -EAGAIN;
+
 	/* memory not onlined yet, so we also need defer the request. */
 	if (!skip_send_req)
 		rc = virtio_mem_send_plug_request(vm, addr, size);
@@ -1578,6 +1578,9 @@ static int virtio_mem_bbm_plug_bb(struct virtio_mem *vm, unsigned long bb_id)
 {
 	const uint64_t addr = virtio_mem_bb_id_to_phys(vm, bb_id);
 	const uint64_t size = vm->bbm.bb_size;
+
+	if (atomic_read(&vm->config_changed))
+		return -EAGAIN;
 
 	return virtio_mem_send_plug_request(vm, addr, size);
 }
