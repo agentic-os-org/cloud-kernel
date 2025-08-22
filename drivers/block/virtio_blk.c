@@ -788,9 +788,6 @@ static blk_status_t virtblk_setup_cmd_rpair(struct virtio_device *vdev,
 	/* for ring_pair, tag is used and occupied high 16bit of ioprio*/
 	vbr->out_hdr.rpair.tag = cpu_to_virtio16(vdev, req->tag);
 
-	if (!IS_ENABLED(CONFIG_BLK_DEV_ZONED) && op_is_zone_mgmt(req_op(req)))
-		return BLK_STS_NOTSUPP;
-
 	switch (req_op(req)) {
 	case REQ_OP_READ:
 		type = VIRTIO_BLK_T_IN;
@@ -812,30 +809,6 @@ static blk_status_t virtblk_setup_cmd_rpair(struct virtio_device *vdev,
 		break;
 	case REQ_OP_SECURE_ERASE:
 		type = VIRTIO_BLK_T_SECURE_ERASE;
-		break;
-	case REQ_OP_ZONE_OPEN:
-		type = VIRTIO_BLK_T_ZONE_OPEN;
-		sector = blk_rq_pos(req);
-		break;
-	case REQ_OP_ZONE_CLOSE:
-		type = VIRTIO_BLK_T_ZONE_CLOSE;
-		sector = blk_rq_pos(req);
-		break;
-	case REQ_OP_ZONE_FINISH:
-		type = VIRTIO_BLK_T_ZONE_FINISH;
-		sector = blk_rq_pos(req);
-		break;
-	case REQ_OP_ZONE_APPEND:
-		type = VIRTIO_BLK_T_ZONE_APPEND;
-		sector = blk_rq_pos(req);
-		in_hdr_len = sizeof(vbr->in_hdr.zone_append);
-		break;
-	case REQ_OP_ZONE_RESET:
-		type = VIRTIO_BLK_T_ZONE_RESET;
-		sector = blk_rq_pos(req);
-		break;
-	case REQ_OP_ZONE_RESET_ALL:
-		type = VIRTIO_BLK_T_ZONE_RESET_ALL;
 		break;
 	case REQ_OP_DRV_IN:
 	case REQ_OP_DRV_OUT:
