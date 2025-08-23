@@ -58,7 +58,7 @@ bool f2fs_space_for_roll_forward(struct f2fs_sb_info *sbi)
 		return false;
 	if (NM_I(sbi)->max_rf_node_blocks &&
 		percpu_counter_sum_positive(&sbi->rf_node_block_count) >=
-						NM_I(sbi)->max_rf_node_blocks)
+					NM_I(sbi)->max_rf_node_blocks)
 		return false;
 	return true;
 }
