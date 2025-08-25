@@ -23,6 +23,7 @@
 #include <linux/gfp.h>
 #include <linux/cpufeature.h>
 #include <linux/psp-csv.h>
+#include <linux/crash_dump.h>
 #ifdef CONFIG_HYGON_CSV
 #include <asm/csv.h>
 #endif
@@ -479,6 +480,15 @@ static int __sev_platform_init_locked(int *error)
 
 	if (!psp || !psp->sev_data)
 		return -ENODEV;
+
+	/*
+	 * Skip SNP/SEV initialization under a kdump kernel as SEV/SNP
+	 * may already be initialized in the previous kernel. Since no
+	 * SNP/SEV guests are run under a kdump kernel, there is no
+	 * need to initialize SNP or SEV during kdump boot.
+	 */
+	if (is_kdump_kernel())
+		return 0;
 
 	sev = psp->sev_data;
 
