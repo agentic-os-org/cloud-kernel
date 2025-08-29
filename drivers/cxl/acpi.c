@@ -306,7 +306,6 @@ static const struct cxl_root_ops acpi_root_ops = {
 static int __cxl_parse_cfmws(struct acpi_cedt_cfmws *cfmws,
 			     struct cxl_cfmws_context *ctx)
 {
-	int target_map[CXL_DECODER_MAX_INTERLEAVE];
 	struct cxl_port *root_port = ctx->root_port;
 	struct resource *cxl_res = ctx->cxl_res;
 	struct cxl_cxims_context cxims_ctx;
@@ -331,8 +330,6 @@ static int __cxl_parse_cfmws(struct acpi_cedt_cfmws *cfmws,
 	rc = eig_to_granularity(cfmws->granularity, &ig);
 	if (rc)
 		return rc;
-	for (i = 0; i < ways; i++)
-		target_map[i] = cfmws->interleave_targets[i];
 
 	res = kzalloc(sizeof(*res), GFP_KERNEL);
 	if (!res)
@@ -363,6 +360,8 @@ static int __cxl_parse_cfmws(struct acpi_cedt_cfmws *cfmws,
 		.end = res->end,
 	};
 	cxld->interleave_ways = ways;
+	for (i = 0; i < ways; i++)
+		cxld->target_map[i] = cfmws->interleave_targets[i];
 	/*
 	 * Minimize the x1 granularity to advertise support for any
 	 * valid region granularity
@@ -380,11 +379,10 @@ static int __cxl_parse_cfmws(struct acpi_cedt_cfmws *cfmws,
 			rc = acpi_table_parse_cedt(ACPI_CEDT_TYPE_CXIMS,
 						   cxl_parse_cxims, &cxims_ctx);
 			if (rc < 0)
-				goto err_xormap;
+				return rc;
 			if (!cxlrd->platform_data) {
 				dev_err(dev, "No CXIMS for HBIG %u\n", ig);
-				rc = -EINVAL;
-				goto err_xormap;
+				return -EINVAL;
 			}
 		}
 	}
@@ -400,8 +398,7 @@ static int __cxl_parse_cfmws(struct acpi_cedt_cfmws *cfmws,
 		cxlrd->ops->spa_to_hpa = cxl_apply_xor_maps;
 	}
 
-	rc = cxl_decoder_add(cxld, target_map);
-err_xormap:
+	rc = cxl_decoder_add(cxld);
 	if (rc)
 		put_device(&cxld->dev);
 	else
