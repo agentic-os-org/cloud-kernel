@@ -424,7 +424,7 @@ static noinstr u64 mce_rdmsrl(u32 msr)
 	return EAX_EDX_VAL(val, low, high);
 }
 
-static noinstr void mce_wrmsrl(u32 msr, u64 v)
+noinstr void mce_wrmsrl(u32 msr, u64 v)
 {
 	u32 low, high;
 
@@ -745,6 +745,14 @@ static bool should_log_poll_error(enum mcp_flags flags, struct mce *m)
 	return true;
 }
 
+static void clear_bank(struct mce *m)
+{
+	if (m->cpuvendor == X86_VENDOR_AMD)
+		return amd_clear_bank(m);
+
+	mce_wrmsrl(mca_msr_reg(m->bank, MCA_STATUS), 0);
+}
+
 /*
  * Poll for corrected events or events that happened before reset.
  * Those are just logged through /dev/mcelog.
@@ -824,10 +832,7 @@ void machine_check_poll(enum mcp_flags flags, mce_banks_t *b)
 			mce_log(&m);
 
 clear_it:
-		/*
-		 * Clear state for this bank.
-		 */
-		mce_wrmsrl(mca_msr_reg(i, MCA_STATUS), 0);
+		clear_bank(&m);
 	}
 
 	/*
