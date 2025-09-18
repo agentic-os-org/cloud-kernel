@@ -1,0 +1,2 @@
+# Basic UB bus code compiled into the kernel
+CONFIG_UB_UBUS=y
