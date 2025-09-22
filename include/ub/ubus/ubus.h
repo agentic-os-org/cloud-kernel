@@ -388,6 +388,7 @@ struct ub_bus_controller {
 	struct ub_bus_instance *cluster_bi;
 
 	void *data;
+	struct dentry *debug_root;
 };
 
 struct ub_bus_instance_info {
