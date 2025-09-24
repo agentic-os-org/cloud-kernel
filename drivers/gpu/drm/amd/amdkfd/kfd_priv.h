@@ -319,6 +319,8 @@ struct kfd_dev {
 	unsigned int max_doorbell_slices;
 
 	int noretry;
+
+	atomic_t kfd_processes_count;
 };
 
 enum kfd_mempool {
