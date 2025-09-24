@@ -584,6 +584,7 @@ struct kfd_dev *kgd2kfd_probe(struct kgd_dev *kgd,
 	atomic_set(&kfd->sram_ecc_flag, 0);
 
 	ida_init(&kfd->doorbell_ida);
+	atomic_set(&kfd->kfd_processes_count, 0);
 
 	return kfd;
 }
