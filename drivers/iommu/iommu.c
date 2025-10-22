@@ -3696,6 +3696,9 @@ iommu_sva_bind_device(struct device *dev, struct mm_struct *mm, void *drvdata)
 	if (!ops || !ops->sva_bind)
 		return ERR_PTR(-ENODEV);
 
+	if (IS_ENABLED(CONFIG_X86))
+		return ERR_PTR(-EOPNOTSUPP);
+
 	group = iommu_group_get(dev);
 	if (!group)
 		return ERR_PTR(-ENODEV);
