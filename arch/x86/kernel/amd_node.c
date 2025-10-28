@@ -277,51 +277,21 @@ DEFINE_SHOW_STORE_ATTRIBUTE(smn_node);
 DEFINE_SHOW_STORE_ATTRIBUTE(smn_address);
 DEFINE_SHOW_STORE_ATTRIBUTE(smn_value);
 
-static int amd_cache_roots(void)
+static struct pci_dev *get_next_root(struct pci_dev *root)
 {
-	u16 node, num_nodes = amd_num_nodes();
-
-	amd_roots = kcalloc(num_nodes, sizeof(*amd_roots), GFP_KERNEL);
-	if (!amd_roots)
-		return -ENOMEM;
-
-	for (node = 0; node < num_nodes; node++)
-		amd_roots[node] = amd_node_get_root(node);
-
-	return 0;
-}
-
-static int reserve_root_config_spaces(void)
-{
-	struct pci_dev *root = NULL;
-	struct pci_bus *bus = NULL;
-
-	while ((bus = pci_find_next_bus(bus))) {
-		/* Root device is Device 0 Function 0 on each Primary Bus. */
-		root = pci_get_slot(bus, 0);
-		if (!root)
+	while ((root = pci_get_class(PCI_CLASS_BRIDGE_HOST << 8, root))) {
+		/* Root device is Device 0 Function 0. */
+		if (root->devfn)
 			continue;
 
 		if (root->vendor != PCI_VENDOR_ID_AMD &&
 		    root->vendor != PCI_VENDOR_ID_HYGON)
 			continue;
 
-		pci_dbg(root, "Reserving PCI config space\n");
-
-		/*
-		 * There are a few SMN index/data pairs and other registers
-		 * that shouldn't be accessed by user space.
-		 * So reserve the entire PCI config space for simplicity rather
-		 * than covering specific registers piecemeal.
-		 */
-		if (!pci_request_config_region_exclusive(root, 0, PCI_CFG_SPACE_SIZE, NULL)) {
-			pci_err(root, "Failed to reserve config space\n");
-			return -EEXIST;
-		}
+		break;
 	}
 
-	smn_exclusive = true;
-	return 0;
+	return root;
 }
 
 static bool enable_dfs;
@@ -335,7 +305,8 @@ __setup("amd_smn_debugfs_enable", amd_smn_enable_dfs);
 
 static int __init amd_smn_init(void)
 {
-	int err;
+	u16 count, num_roots, roots_per_node, node, num_nodes;
+	struct pci_dev *root;
 
 	if (!cpu_feature_enabled(X86_FEATURE_ZEN))
 		return 0;
@@ -345,13 +316,48 @@ static int __init amd_smn_init(void)
 	if (amd_roots)
 		return 0;
 
-	err = amd_cache_roots();
-	if (err)
-		return err;
+	num_roots = 0;
+	root = NULL;
+	while ((root = get_next_root(root))) {
+		pci_dbg(root, "Reserving PCI config space\n");
 
-	err = reserve_root_config_spaces();
-	if (err)
-		return err;
+		/*
+		 * There are a few SMN index/data pairs and other registers
+		 * that shouldn't be accessed by user space. So reserve the
+		 * entire PCI config space for simplicity rather than covering
+		 * specific registers piecemeal.
+		 */
+		if (!pci_request_config_region_exclusive(root, 0, PCI_CFG_SPACE_SIZE, NULL)) {
+			pci_err(root, "Failed to reserve config space\n");
+			return -EEXIST;
+		}
+
+		num_roots++;
+	}
+
+	pr_debug("Found %d AMD root devices\n", num_roots);
+
+	if (!num_roots)
+		return -ENODEV;
+
+	num_nodes = amd_num_nodes();
+	amd_roots = kcalloc(num_nodes, sizeof(*amd_roots), GFP_KERNEL);
+	if (!amd_roots)
+		return -ENOMEM;
+
+	roots_per_node = num_roots / num_nodes;
+
+	count = 0;
+	node = 0;
+	root = NULL;
+	while (node < num_nodes && (root = get_next_root(root))) {
+		/* Use one root for each node and skip the rest. */
+		if (count++ % roots_per_node)
+			continue;
+
+		pci_dbg(root, "is root for AMD node %u\n", node);
+		amd_roots[node++] = root;
+	}
 
 	if (enable_dfs) {
 		debugfs_dir = debugfs_create_dir("amd_smn", arch_debugfs_dir);
@@ -360,6 +366,8 @@ static int __init amd_smn_init(void)
 		debugfs_create_file("address",	0600, debugfs_dir, NULL, &smn_address_fops);
 		debugfs_create_file("value",	0600, debugfs_dir, NULL, &smn_value_fops);
 	}
+
+	smn_exclusive = true;
 
 	return 0;
 }
