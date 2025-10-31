@@ -246,4 +246,5 @@ source "drivers/cdx/Kconfig"
 
 source "drivers/resctrl/Kconfig"
 
+source "drivers/ubios_uvb/Kconfig"
 endmenu
