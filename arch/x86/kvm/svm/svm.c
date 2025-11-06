@@ -3535,6 +3535,29 @@ static void svm_set_irq(struct kvm_vcpu *vcpu)
 		SVM_EVTINJ_VALID | SVM_EVTINJ_TYPE_INTR;
 }
 
+void svm_complete_interrupt_delivery(struct kvm_vcpu *vcpu, int delivery_mode,
+				     int trig_mode, int vector)
+{
+	/*
+	 * vcpu->arch.apicv_active must be read after vcpu->mode.
+	 * Pairs with the smp_mb_*() after setting vcpu->mode in
+	 * vcpu_enter_guest().
+	 */
+	bool in_guest_mode = (smp_load_acquire(&vcpu->mode) == IN_GUEST_MODE);
+
+	if (!READ_ONCE(vcpu->arch.apicv_active)) {
+		kvm_make_request(KVM_REQ_EVENT, vcpu);
+		kvm_vcpu_kick(vcpu);
+		return;
+	}
+
+	trace_kvm_apic_accept_irq(vcpu->vcpu_id, delivery_mode, trig_mode, vector);
+	if (in_guest_mode)
+		avic_ring_doorbell(vcpu);
+	else
+		kvm_vcpu_wake_up(vcpu);
+}
+
 static void svm_update_cr8_intercept(struct kvm_vcpu *vcpu, int tpr, int irr)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
