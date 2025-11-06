@@ -295,7 +295,7 @@ static int avic_init_backing_page(struct kvm_vcpu *vcpu)
 	return 0;
 }
 
-static void avic_ring_doorbell(struct kvm_vcpu *vcpu)
+void avic_ring_doorbell(struct kvm_vcpu *vcpu)
 {
 	/*
 	 * Note, the vCPU could get migrated to a different pCPU at any point,
@@ -309,6 +309,31 @@ static void avic_ring_doorbell(struct kvm_vcpu *vcpu)
 	if (cpu != get_cpu())
 		wrmsrl(SVM_AVIC_DOORBELL, kvm_cpu_get_apicid(cpu));
 	put_cpu();
+}
+
+static void avic_kick_target_vcpus(struct kvm *kvm, struct kvm_lapic *source,
+				   u32 icrl, u32 icrh)
+{
+	struct kvm_vcpu *vcpu;
+	int i;
+
+	/*
+	 * Wake any target vCPUs that are blocking, i.e. waiting for a wake
+	 * event.  There's no need to signal doorbells, as hardware has handled
+	 * vCPUs that were in guest at the time of the IPI, and vCPUs that have
+	 * since entered the guest will have processed pending IRQs at VMRUN.
+	 */
+	kvm_for_each_vcpu(i, vcpu, kvm) {
+		if (kvm_apic_match_dest(vcpu, source, icrl & APIC_SHORT_MASK,
+					GET_XAPIC_DEST_FIELD(icrh),
+					icrl & APIC_DEST_MASK)) {
+			vcpu->arch.apic->irr_pending = true;
+			svm_complete_interrupt_delivery(vcpu,
+							icrl & APIC_MODE_MASK,
+							icrl & APIC_INT_LEVELTRIG,
+							icrl & APIC_VECTOR_MASK);
+		}
+	}
 }
 
 int avic_incomplete_ipi_interception(struct vcpu_svm *svm)
@@ -338,9 +363,6 @@ int avic_incomplete_ipi_interception(struct vcpu_svm *svm)
 		kvm_lapic_reg_write(apic, APIC_ICR, icrl);
 		break;
 	case AVIC_IPI_FAILURE_TARGET_NOT_RUNNING: {
-		int i;
-		struct kvm_vcpu *vcpu;
-		struct kvm *kvm = svm->vcpu.kvm;
 		struct kvm_lapic *apic = svm->vcpu.arch.apic;
 
 		/*
@@ -348,15 +370,7 @@ int avic_incomplete_ipi_interception(struct vcpu_svm *svm)
 		 * set the appropriate IRR bits on the valid target
 		 * vcpus. So, we just need to kick the appropriate vcpu.
 		 */
-		kvm_for_each_vcpu(i, vcpu, kvm) {
-			bool m = kvm_apic_match_dest(vcpu, apic,
-						     icrl & APIC_SHORT_MASK,
-						     GET_XAPIC_DEST_FIELD(icrh),
-						     icrl & APIC_DEST_MASK);
-
-			if (m && !avic_vcpu_is_running(vcpu))
-				kvm_vcpu_wake_up(vcpu);
-		}
+		avic_kick_target_vcpus(svm->vcpu.kvm, apic, icrl, icrh);
 		break;
 	}
 	case AVIC_IPI_FAILURE_INVALID_TARGET:
@@ -671,16 +685,10 @@ void svm_refresh_apicv_exec_ctrl(struct kvm_vcpu *vcpu)
 
 int svm_deliver_avic_intr(struct kvm_vcpu *vcpu, int vec)
 {
-	if (!vcpu->arch.apicv_active)
-		return -1;
-
 	kvm_lapic_set_irr(vec, vcpu->arch.apic);
 	smp_mb__after_atomic();
 
-	if (avic_vcpu_is_running(vcpu)) {
-		avic_ring_doorbell(vcpu);
-	} else
-		kvm_vcpu_wake_up(vcpu);
+	svm_complete_interrupt_delivery(vcpu, APIC_DM_FIXED, 0, vec);
 
 	return 0;
 }
