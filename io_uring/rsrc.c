@@ -1358,8 +1358,11 @@ static int io_estimate_bvec_size(struct iovec *iov, unsigned nr_iovs,
 	size_t max_segs = 0;
 	unsigned i;
 
-	for (i = 0; i < nr_iovs; i++)
+	for (i = 0; i < nr_iovs; i++) {
 		max_segs += (iov[i].iov_len >> shift) + 2;
+		if (max_segs > INT_MAX)
+			return -EOVERFLOW;
+	}
 	return max_segs;
 }
 
@@ -1371,6 +1374,7 @@ int io_import_reg_vec(int ddir, struct iov_iter *iter,
 	unsigned iovec_off;
 	struct iovec *iov;
 	unsigned nr_segs;
+	int ret;
 
 	/*
 	 * 6.6 has no registered-resource node table; io_uring_cmd_prep()
@@ -1392,7 +1396,11 @@ int io_import_reg_vec(int ddir, struct iov_iter *iter,
 
 	iovec_off = vec->nr - nr_iovs;
 	iov = vec->iovec + iovec_off;
-	nr_segs = io_estimate_bvec_size(iov, nr_iovs, imu);
+
+	ret = io_estimate_bvec_size(iov, nr_iovs, imu);
+	if (ret < 0)
+		return ret;
+	nr_segs = ret;
 
 	if (sizeof(struct bio_vec) > sizeof(struct iovec)) {
 		size_t bvec_bytes;
@@ -1404,7 +1412,6 @@ int io_import_reg_vec(int ddir, struct iov_iter *iter,
 
 	if (nr_segs > vec->nr) {
 		struct iou_vec tmp_vec = {};
-		int ret;
 
 		ret = io_vec_realloc(&tmp_vec, nr_segs);
 		if (ret)
