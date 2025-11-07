@@ -2,3 +2,4 @@
 
 obj-y += ubus/
 obj-y += ubfi/
+obj-y += obmm/
