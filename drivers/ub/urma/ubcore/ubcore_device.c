@@ -18,11 +18,11 @@
 #include <linux/vmalloc.h>
 #include "ub/urma/ubcore_uapi.h"
 #include <net/netns/generic.h>
-
+#include <ub/urma/ubcore_uapi.h>
+#include <ub/urma/ubcore_jetty.h>
 #include "ubcore_log.h"
 #include "ubcore_device.h"
 #include "ubcore_tp_table.h"
-#include "ub/urma/ubcore_jetty.h"
 #include "ubcore_workqueue.h"
 #include "ubcore_main.h"
 #include "ubcore_cdev_file.h"
