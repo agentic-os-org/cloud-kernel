@@ -246,7 +246,7 @@ static int cxl_region_invalidate_memregion(struct cxl_region *cxlr)
 		}
 	}
 
-	cpu_cache_invalidate_memregion(IORES_DESC_CXL);
+	cpu_cache_invalidate_memregion();
 	return 0;
 }
 
