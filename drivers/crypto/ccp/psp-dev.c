@@ -889,7 +889,6 @@ int psp_dev_init(struct sp_device *sp)
 
 	if (pdev->vendor == PCI_VENDOR_ID_HYGON) {
 		is_hygon_psp = 1;
-		psp_mutex_enabled = 0;
 		ret = hygon_psp_additional_setup(sp);
 		if (ret) {
 			dev_err(dev, "psp: unable to do additional setup\n");
