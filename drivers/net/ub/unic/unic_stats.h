@@ -12,6 +12,8 @@
 #include <ub/ubase/ubase_comm_cmd.h>
 #include <ub/ubase/ubase_comm_ctrlq.h>
 
+struct unic_dev;
+
 #define UNIC_ETH_MAC_STATS_CAP_1	95
 
 #define UNIC_ETH_MAC_STATS_FIELD_OFF(fld) offsetof(struct ubase_eth_mac_stats, fld)
