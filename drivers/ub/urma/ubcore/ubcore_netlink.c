@@ -709,4 +709,3 @@ static int ubcore_insert_nl_msg_queue_pop_task(uint32_t wait_time)
 	}
 	return 0;
 }
-

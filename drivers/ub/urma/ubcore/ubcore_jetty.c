@@ -2487,4 +2487,3 @@ int ubcore_unbind_jetty_async(struct ubcore_jetty *jetty, int timeout,
 	return 0;
 }
 EXPORT_SYMBOL(ubcore_unbind_jetty_async);
-

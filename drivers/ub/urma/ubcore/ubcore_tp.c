@@ -38,4 +38,3 @@ int ubcore_get_tp_list(struct ubcore_device *dev, struct ubcore_get_tp_cfg *cfg,
 	return ret;
 }
 EXPORT_SYMBOL(ubcore_get_tp_list);
-

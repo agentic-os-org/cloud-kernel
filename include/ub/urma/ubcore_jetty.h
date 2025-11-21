@@ -30,4 +30,3 @@ void ubcore_put_jetty(struct ubcore_jetty *jetty);
 void ubcore_jetty_get(void *obj);
 
 #endif
-

@@ -2159,4 +2159,3 @@ struct ubcore_device *ubcore_get_device_by_eid(union ubcore_eid *eid,
 	return target;
 }
 EXPORT_SYMBOL(ubcore_get_device_by_eid);
-
