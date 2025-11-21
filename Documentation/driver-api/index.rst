@@ -117,6 +117,7 @@ available subsections can be seen below.
    wmi
    coco/index
    crypto/index
+   ub/index
 
 .. only::  subproject and html
 
