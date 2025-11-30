@@ -2131,6 +2131,7 @@ static void iommu_domain_init(struct iommu_domain *domain, unsigned int type,
 {
 	domain->type = type;
 	domain->owner = ops;
+	atomic_set(&domain->attach_count, 0);
 	if (!domain->ops)
 		domain->ops = ops->default_domain_ops;
 
@@ -2190,8 +2191,20 @@ struct iommu_domain *iommu_paging_domain_alloc_flags(struct device *dev,
 }
 EXPORT_SYMBOL_GPL(iommu_paging_domain_alloc_flags);
 
+bool iommu_domain_has_attachments(struct iommu_domain *domain)
+{
+	return atomic_read(&domain->attach_count) != 0;
+}
+EXPORT_SYMBOL_GPL(iommu_domain_has_attachments);
+
 void iommu_domain_free(struct iommu_domain *domain)
 {
+	if (WARN_ON_ONCE(iommu_domain_has_attachments(domain))) {
+		pr_err("Attempt to free an iommu_domain that has attachments: %d\n",
+		       atomic_read(&domain->attach_count));
+		return;
+	}
+
 	switch (domain->cookie_type) {
 	case IOMMU_COOKIE_DMA_IOVA:
 		iommu_put_dma_cookie(domain);
@@ -2237,6 +2250,10 @@ static int __iommu_attach_device(struct iommu_domain *domain,
 	ret = domain->ops->attach_dev(domain, dev, old);
 	if (ret)
 		return ret;
+
+	atomic_inc(&domain->attach_count);
+	if (old)
+		atomic_dec(&old->attach_count);
 
 #ifdef CONFIG_IOMMU_LIVEUPDATE
 	/* The associated state can be unset once restored. */
