@@ -249,6 +249,8 @@ struct iommu_domain {
 			struct list_head next;
 		};
 	};
+
+	atomic_t attach_count;
 #ifdef CONFIG_IOMMU_LIVEUPDATE
 	struct iommu_domain_ser *preserved_state;
 #endif
@@ -954,6 +956,7 @@ static inline struct iommu_domain *iommu_paging_domain_alloc(struct device *dev)
 {
 	return iommu_paging_domain_alloc_flags(dev, 0);
 }
+extern bool iommu_domain_has_attachments(struct iommu_domain *domain);
 extern void iommu_domain_free(struct iommu_domain *domain);
 extern int iommu_attach_device(struct iommu_domain *domain,
 			       struct device *dev);
