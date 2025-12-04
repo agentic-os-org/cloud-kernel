@@ -317,7 +317,7 @@ int uvb_poll_window(void *data)
 			for (j = 0; j < uvb->window_count; j++)
 				uvb_polling_window(&uvb->wd[j]);
 		}
-		schedule();
+		msleep(1);
 	}
 
 	return 0;
