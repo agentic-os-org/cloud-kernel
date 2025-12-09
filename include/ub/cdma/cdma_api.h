@@ -5,6 +5,7 @@
 #define _UB_CDMA_CDMA_API_H_
 
 #include <linux/atomic.h>
+#include <linux/ck_kabi.h>
 #include <uapi/ub/cdma/cdma_abi.h>
 
 /**
@@ -19,8 +20,6 @@ struct dma_device {
 	struct cdma_device_attr attr;
 	atomic_t ref_cnt;
 	void *private_data;
-	u32 rsv_bitmap;
-	u32 rsvd[4];
 };
 
 enum dma_cr_opcode {
@@ -68,8 +67,7 @@ struct dma_cr {
 	u32 local_id;
 	u32 remote_id;
 	u32 tpn;
-	u32 rsv_bitmap;
-	u32 rsvd[4];
+
 };
 
 /**
@@ -89,8 +87,6 @@ struct queue_cfg {
 	u32 dcna;
 	struct dev_eid rmt_eid;
 	u32 trans_mode;
-	u32 rsv_bitmap;
-	u32 rsvd[6];
 };
 
 /**
@@ -111,8 +107,6 @@ struct dma_seg {
 	u32 tid; /* data valid only in bit 0-19 */
 	u32 token_value;
 	bool token_value_valid;
-	u32 rsv_bitmap;
-	u32 rsvd[4];
 };
 
 struct dma_seg_cfg {
@@ -120,8 +114,6 @@ struct dma_seg_cfg {
 	u64 len;
 	u32 token_value;
 	bool token_value_valid;
-	u32 rsv_bitmap;
-	u32 rsvd[4];
 };
 
 /**
@@ -149,8 +141,6 @@ enum dma_status {
 struct dma_cas_data {
 	u64 compare_data;
 	u64 swap_data;
-	u32 rsv_bitmap;
-	u32 rsvd[4];
 };
 
 /**
@@ -163,8 +153,6 @@ struct dma_cas_data {
 struct dma_notify_data {
 	struct dma_seg *notify_seg;
 	u64 notify_data;
-	u32 rsv_bitmap;
-	u32 rsvd[4];
 };
 
 /**
@@ -183,8 +171,6 @@ struct dma_client {
 	int (*add)(u32 eid);
 	void (*remove)(u32 eid);
 	void (*stop)(u32 eid);
-	u32 rsv_bitmap;
-	u32 rsvd[4];
 };
 
 struct dma_device *dma_get_device_list(u32 *num_devices);
