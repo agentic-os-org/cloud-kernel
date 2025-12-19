@@ -330,7 +330,7 @@ const char *vfio_pci_get_cdev_path(const char *bdf)
 	return cdev_path;
 }
 
-static void vfio_device_bind_iommufd(int device_fd, int iommufd)
+int vfio_device_bind_iommufd(int device_fd, int iommufd)
 {
 	struct vfio_device_bind_iommufd args = {
 		.argsz = sizeof(args),
@@ -338,6 +338,7 @@ static void vfio_device_bind_iommufd(int device_fd, int iommufd)
 	};
 
 	ioctl_assert(device_fd, VFIO_DEVICE_BIND_IOMMUFD, &args);
+	return args.out_devid;
 }
 
 static void vfio_device_attach_iommufd_pt(int device_fd, u32 *pt_id)
@@ -378,10 +379,25 @@ static void vfio_pci_iommufd_setup(struct vfio_pci_device *device,
 		free((void *)cdev_path);
 	}
 
-	vfio_device_bind_iommufd(device->fd, device->iommu->iommufd);
+	device->dev_id = vfio_device_bind_iommufd(device->fd, device->iommu->iommufd);
 	pt_id = device->iommu->ioas_id;
 	vfio_device_attach_iommufd_pt(device->fd, &pt_id);
 	vfio_device_iommufd_pt_mark_preserve(device->iommu->iommufd, pt_id, hwpt_token);
+}
+
+void vfio_pci_device_attach_iommu(struct vfio_pci_device *device, struct iommu *iommu)
+{
+	u32 pt_id = iommu->ioas_id;
+
+	/* Only iommufd supports changing struct iommu attachments */
+	VFIO_ASSERT_TRUE(iommu->iommufd);
+
+	if (iommu->hwpt_id)
+		pt_id = iommu->hwpt_id;
+
+	VFIO_ASSERT_NE(pt_id, 0);
+	vfio_device_attach_iommufd_pt(device->fd, &pt_id);
+	device->iommu = iommu;
 }
 
 struct vfio_pci_device *vfio_pci_device_alloc(const char *bdf, struct iommu *iommu)
@@ -426,12 +442,9 @@ struct vfio_pci_device *__vfio_pci_device_no_bind_init(const char *bdf,
 	device = vfio_pci_device_alloc(bdf, iommu);
 
 	device->fd = device_id;
-	device->iommu = NULL;
 
-	device->info.argsz = sizeof(device->info);
-
-	if (ioctl(device->fd, VFIO_DEVICE_GET_INFO, &device->info) == 0 || errno != EINVAL)
-		fail_exit("device VFIO_DEVICE_GET_INFO ioctl should return EINVAL due to no iommufd bind");
+	vfio_pci_device_setup(device);
+	vfio_pci_driver_probe(device);
 
 	return device;
 }
