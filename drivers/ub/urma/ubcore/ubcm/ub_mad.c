@@ -150,6 +150,9 @@ static int ubmad_check_eid_in_dev(struct ubcore_device *dev,
 {
 	int i;
 
+	if (IS_ERR_OR_NULL(eid_info) || IS_ERR_OR_NULL(dev->eid_table.eid_entries))
+		return -1;
+
 	spin_lock(&dev->eid_table.lock);
 	for (i = 0; i < dev->eid_table.eid_cnt; i++) {
 		if (memcmp(&dev->eid_table.eid_entries[i].eid, &eid_info->eid,
@@ -1053,7 +1056,7 @@ static void ubmad_release_device_priv(struct kref *kref)
 		container_of(kref, struct ubmad_device_priv, kref);
 
 	/* retransmission */
-	flush_workqueue(dev_priv->rt_wq);
+	drain_workqueue(dev_priv->rt_wq);
 	destroy_workqueue(dev_priv->rt_wq);
 
 	/* rsrc */
@@ -1271,7 +1274,7 @@ static void ubmad_release_agent_priv(struct kref *kref)
 	struct ubmad_agent_priv *agent_priv =
 		container_of(kref, struct ubmad_agent_priv, kref);
 
-	flush_workqueue(agent_priv->jfce_wq);
+	drain_workqueue(agent_priv->jfce_wq);
 	destroy_workqueue(agent_priv->jfce_wq);
 
 	kfree(agent_priv);
