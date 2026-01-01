@@ -1711,9 +1711,9 @@ static int bpf_fd_pass(struct file *file, u32 sid);
    has the same SID as the process.  If av is zero, then
    access to the file is not checked, e.g. for cases
    where only the descriptor is affected like seek. */
-static int file_has_perm(const struct cred *cred,
-			 struct file *file,
-			 u32 av)
+static int __file_has_perm(const struct cred *cred,
+			   struct file *file,
+			   u32 av, bool ovl_user_file)
 {
 	struct file_security_struct *fsec = selinux_file(file);
 	struct inode *inode = file_inode(file);
@@ -1721,10 +1721,37 @@ static int file_has_perm(const struct cred *cred,
 	u32 sid = cred_sid(cred);
 	int rc;
 
-	ad.type = LSM_AUDIT_DATA_FILE;
-	ad.u.file = file;
+	/* real file opened by overlayfs via open_with_fake_path():
+	 * f_path is the user (overlay) path, f_inode is the real
+	 * (backing) inode, f_cred holds the mounter's credentials.
+	 * Check the user file with the caller's creds, as the overlay
+	 * file has already been checked at open/mmap time under those
+	 * creds.  Audit with LSM_AUDIT_DATA_PATH so that dev=/ino=
+	 * come from d_backing_inode() of the printed (overlay) path -
+	 * the same inode checked here - instead of file_inode(), which
+	 * is the backing inode on a different filesystem.
+	 */
+	if (ovl_user_file) {
+		inode = d_backing_inode(file->f_path.dentry);
+		ad.type = LSM_AUDIT_DATA_PATH;
+		ad.u.path = file->f_path;
+	} else {
+		ad.type = LSM_AUDIT_DATA_FILE;
+		ad.u.file = file;
+	}
 
-	if (sid != fsec->sid) {
+	/* The FD__USE check compares the caller's SID against the SID of
+	 * the task that opened the file.  For an overlayfs real file that
+	 * is the mounter's SID, which would wrongly require every caller
+	 * mprotect()ing an overlayfs mapping to have fd:use against the
+	 * mounter's domain.  Upstream instead checks against the user
+	 * file's SID, saved in the backing_file LSM blob at open time;
+	 * 5.10 has no such state.  The user file's descriptor was already
+	 * authorized with the caller's credentials at open()/mmap() time
+	 * (file_has_perm() on the user file), so skip the re-check here
+	 * rather than testing against the mounter's SID.
+	 */
+	if (!ovl_user_file && sid != fsec->sid) {
 		rc = avc_has_perm(&selinux_state,
 				  sid, fsec->sid,
 				  SECCLASS_FD,
@@ -1747,6 +1774,28 @@ static int file_has_perm(const struct cred *cred,
 
 out:
 	return rc;
+}
+
+static int file_has_perm(const struct cred *cred,
+			 struct file *file,
+			 u32 av)
+{
+	return __file_has_perm(cred, file, av, false);
+}
+
+/* Is @file an overlayfs real file, opened via open_with_fake_path()
+ * for an mmap()ed overlay file?  Such a file carries the user
+ * (overlay) path in f_path but the real (backing) inode in f_inode,
+ * and was opened with the mounter's credentials so that the caller
+ * could not have opened it directly.
+ */
+static bool is_overlayfs_real_file(const struct file *file)
+{
+	if (!file)
+		return false;
+
+	return file_inode(file) != d_backing_inode(file->f_path.dentry) &&
+	       !strcmp(file->f_path.dentry->d_sb->s_type->name, "overlay");
 }
 
 /*
@@ -3664,14 +3713,20 @@ static int selinux_file_ioctl(struct file *file, unsigned int cmd,
 
 static int default_noexec __ro_after_init;
 
-static int file_map_prot_check(struct file *file, unsigned long prot, int shared)
+static int __file_map_prot_check(const struct cred *cred,
+				 struct file *file, unsigned long prot,
+				 bool shared, bool ovl_user_file)
 {
-	const struct cred *cred = current_cred();
+	struct inode *inode = NULL;
 	u32 sid = cred_sid(cred);
 	int rc = 0;
 
+	if (file)
+		inode = ovl_user_file ?
+			d_backing_inode(file->f_path.dentry) : file_inode(file);
+
 	if (default_noexec &&
-	    (prot & PROT_EXEC) && (!file || IS_PRIVATE(file_inode(file)) ||
+	    (prot & PROT_EXEC) && (!file || IS_PRIVATE(inode) ||
 				   (!shared && (prot & PROT_WRITE)))) {
 		/*
 		 * We are making executable an anonymous mapping or a
@@ -3696,11 +3751,17 @@ static int file_map_prot_check(struct file *file, unsigned long prot, int shared
 		if (prot & PROT_EXEC)
 			av |= FILE__EXECUTE;
 
-		return file_has_perm(cred, file, av);
+		return __file_has_perm(cred, file, av, ovl_user_file);
 	}
 
 error:
 	return rc;
+}
+
+static int file_map_prot_check(struct file *file, unsigned long prot, int shared)
+{
+	return __file_map_prot_check(current_cred(), file, prot,
+				     shared, false);
 }
 
 static int selinux_mmap_addr(unsigned long addr)
@@ -3745,26 +3806,30 @@ static int selinux_file_mprotect(struct vm_area_struct *vma,
 {
 	const struct cred *cred = current_cred();
 	u32 sid = cred_sid(cred);
+	struct file *file = vma->vm_file;
+	bool ovl_file = is_overlayfs_real_file(file);
+	bool shared = vma->vm_flags & VM_SHARED;
+	int rc;
 
 	if (checkreqprot_get(&selinux_state))
 		prot = reqprot;
 
 	if (default_noexec &&
 	    (prot & PROT_EXEC) && !(vma->vm_flags & VM_EXEC)) {
-		int rc = 0;
+		rc = 0;
 		if (vma->vm_start >= vma->vm_mm->start_brk &&
 		    vma->vm_end <= vma->vm_mm->brk) {
 			rc = avc_has_perm(&selinux_state,
 					  sid, sid, SECCLASS_PROCESS,
 					  PROCESS__EXECHEAP, NULL);
-		} else if (!vma->vm_file &&
+		} else if (!file &&
 			   ((vma->vm_start <= vma->vm_mm->start_stack &&
 			     vma->vm_end >= vma->vm_mm->start_stack) ||
 			    vma_is_stack_for_current(vma))) {
 			rc = avc_has_perm(&selinux_state,
 					  sid, sid, SECCLASS_PROCESS,
 					  PROCESS__EXECSTACK, NULL);
-		} else if (vma->vm_file && vma->anon_vma) {
+		} else if (file && vma->anon_vma) {
 			/*
 			 * We are making executable a file mapping that has
 			 * had some COW done. Since pages might have been
@@ -3772,13 +3837,41 @@ static int selinux_file_mprotect(struct vm_area_struct *vma,
 			 * modified content.  This typically should only
 			 * occur for text relocations.
 			 */
-			rc = file_has_perm(cred, vma->vm_file, FILE__EXECMOD);
+			rc = __file_has_perm(cred, file, FILE__EXECMOD,
+					     ovl_file);
+			if (rc)
+				return rc;
+			if (ovl_file) {
+				/* mounter check against the real file */
+				rc = file_has_perm(file->f_cred, file,
+						   FILE__EXECMOD);
+				if (rc)
+					return rc;
+			}
 		}
 		if (rc)
 			return rc;
 	}
 
-	return file_map_prot_check(vma->vm_file, prot, vma->vm_flags&VM_SHARED);
+	/* user-file check with the caller's creds; for an overlayfs real
+	 * file the user (overlay) inode is the check target
+	 */
+	rc = __file_map_prot_check(cred, file, prot, shared, ovl_file);
+	if (rc)
+		return rc;
+
+	if (ovl_file) {
+		/* mounter check against the real file, mirroring the
+		 * mmap() path where ovl_mmap() calls the real file's
+		 * mmap under the mounter's credentials
+		 */
+		rc = __file_map_prot_check(file->f_cred, file, prot, shared,
+					   false);
+		if (rc)
+			return rc;
+	}
+
+	return 0;
 }
 
 static int selinux_file_lock(struct file *file, unsigned int cmd)
