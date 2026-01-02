@@ -5,6 +5,6 @@
 
 ccflags-y := -Werror
 
-obj-y	:= init.o fault.o
+obj-y	:= init.o fault.o tlbflush.o
 
 obj-$(CONFIG_DISCONTIGMEM) += numa.o
