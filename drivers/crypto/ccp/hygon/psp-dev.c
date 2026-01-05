@@ -17,6 +17,7 @@
 #include <linux/delay.h>
 #include <linux/rwlock.h>
 #include <linux/pgtable.h>
+#include <linux/vmalloc.h>
 
 #include "psp-dev.h"
 #include "vpsp.h"
@@ -42,6 +43,7 @@ enum HYGON_PSP_OPCODE {
 	HYGON_VPSP_CTRL_OPT,
 	HYGON_PSP_OP_PIN_USER_PAGE,
 	HYGON_PSP_OP_UNPIN_USER_PAGE,
+	HYGON_PSP_OP_GET_PATCH_FLAGS,
 	HYGON_PSP_OPCODE_MAX_NR,
 };
 
@@ -50,6 +52,48 @@ enum HYGON_PSP_RESOURCE2_OPCODE {
 	HYGON_RESOURCE2_OP_GET_PCI_BAR_RANGE = 1,
 	HYGON_RESOURCE2_OPCODE_MAX_NR,
 };
+
+#define FORMAT_PATCH_BUFFER_SIZE		4096
+static const char * const psp_patch_flags[] = {
+	"cap_user_psp_mutex",
+	"cap_vtkm_basic",
+	"cap_vtkm_key_isolated",
+	"cap_vtkm_csv",
+	"cap_vtkm_overcommit",
+	"cap_vtkm_nodep_csv",
+	"cap_vtkm_live_mig",
+
+	"bug_memmove",
+	"bug_longtime_csv",
+	"bug_panic_nohg",
+	"bug_highque_cmd",
+	"bug_mutex_softlockup",
+};
+
+static int psp_format_patch_flags(char *buf)
+{
+	int i, n = ARRAY_SIZE(psp_patch_flags);
+	int total_written = 0;
+
+	for (i = 0; i < n; ++i) {
+		int written;
+
+		written = snprintf(buf + total_written,
+				FORMAT_PATCH_BUFFER_SIZE - total_written,
+				"%s%s", i ? " " : "", psp_patch_flags[i]);
+		if (written < 0)
+			return -EINVAL;
+
+		if (total_written + written >= FORMAT_PATCH_BUFFER_SIZE) {
+			pr_warn_once("psp_patch_flags too long\n");
+			return -ENOMEM;
+		}
+
+		total_written += written;
+	}
+
+	return 0;
+}
 
 uint64_t atomic64_exchange(uint64_t *dst, uint64_t val)
 {
@@ -222,6 +266,7 @@ static int psp_unpin_user_page(u64 vaddr)
 
 static long ioctl_psp(struct file *file, unsigned int ioctl, unsigned long arg)
 {
+	char *patch_flags = NULL;
 	unsigned int opcode = 0;
 	struct vpsp_dev_ctrl vpsp_ctrl_op;
 	int ret = -EFAULT;
@@ -277,6 +322,20 @@ static long ioctl_psp(struct file *file, unsigned int ioctl, unsigned long arg)
 		ret = psp_unpin_user_page((u64)arg);
 		break;
 
+	case HYGON_PSP_OP_GET_PATCH_FLAGS:
+		patch_flags = vzalloc(FORMAT_PATCH_BUFFER_SIZE);
+		if (!patch_flags) {
+			ret = -ENOMEM;
+			break;
+		}
+
+		ret = psp_format_patch_flags(patch_flags);
+		if (!ret && copy_to_user((void __user *)arg, patch_flags,
+				FORMAT_PATCH_BUFFER_SIZE))
+			ret = -EFAULT;
+
+		vfree(patch_flags);
+		break;
 	default:
 		printk(KERN_INFO "%s: invalid ioctl number: %d\n", __func__, opcode);
 		return -EINVAL;
