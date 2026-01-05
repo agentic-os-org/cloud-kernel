@@ -42,6 +42,7 @@ enum HYGON_PSP_OPCODE {
 	HYGON_VPSP_CTRL_OPT,
 	HYGON_PSP_OP_PIN_USER_PAGE,
 	HYGON_PSP_OP_UNPIN_USER_PAGE,
+	HYGON_PSP_OP_GET_PATCH_FLAGS,
 	HYGON_PSP_OPCODE_MAX_NR,
 };
 
@@ -57,6 +58,46 @@ static int psp_cmd_timeout = 100;
 static bool psp_dead;
 unsigned int psp_int_rcvd;
 wait_queue_head_t psp_int_queue;
+
+#define FORMAT_PATCH_BUFFER_SIZE		4096
+static const char * const psp_patch_flags[] = {
+	"cap_user_psp_mutex",
+	"cap_vtkm_basic",
+	"cap_vtkm_key_isolated",
+	"cap_vtkm_csv",
+	"cap_vtkm_overcommit",
+	"cap_vtkm_nodep_csv",
+	"cap_vtkm_live_mig",
+
+	"bug_memmove",
+	"bug_longtime_csv",
+	"bug_panic_nohg",
+	"bug_highque_cmd",
+	"bug_mutex_softlockup",
+};
+
+/*
+ * Format the patch flags into a space-separated string.
+ * Returns the length of the formatted string including the
+ * trailing '\0', or a negative errno.
+ */
+static int psp_format_patch_flags(char *buf)
+{
+	int i, total_written = 0;
+	int n = ARRAY_SIZE(psp_patch_flags);
+
+	for (i = 0; i < n; ++i) {
+		if (total_written + strlen(psp_patch_flags[i]) + 1 >= FORMAT_PATCH_BUFFER_SIZE) {
+			pr_warn_once("psp_patch_flags too long\n");
+			return -E2BIG;
+		}
+
+		total_written += sprintf(buf + total_written, "%s%c",
+				psp_patch_flags[i], i == n - 1 ? '\0' : ' ');
+	}
+
+	return total_written;
+}
 
 uint64_t atomic64_exchange(uint64_t *dst, uint64_t val)
 {
@@ -648,6 +689,7 @@ static int psp_unpin_user_page(u64 vaddr)
 
 static long ioctl_psp(struct file *file, unsigned int ioctl, unsigned long arg)
 {
+	char *patch_flags = NULL;
 	unsigned int opcode = 0;
 	struct vpsp_dev_ctrl vpsp_ctrl_op;
 	int ret = -EFAULT;
@@ -700,6 +742,24 @@ static long ioctl_psp(struct file *file, unsigned int ioctl, unsigned long arg)
 		ret = psp_unpin_user_page((u64)arg);
 		break;
 
+	case HYGON_PSP_OP_GET_PATCH_FLAGS:
+		patch_flags = vmalloc(FORMAT_PATCH_BUFFER_SIZE);
+		if (!patch_flags) {
+			ret = -ENOMEM;
+			break;
+		}
+
+		ret = psp_format_patch_flags(patch_flags);
+		if (ret >= 0) {
+			/* copy the string including the trailing '\0' */
+			if (copy_to_user((void __user *)arg, patch_flags, ret))
+				ret = -EFAULT;
+			else
+				ret = 0;
+		}
+
+		vfree(patch_flags);
+		break;
 	default:
 		printk(KERN_ERR "%s: invalid ioctl number: %d\n", __func__, opcode);
 		return -EINVAL;
