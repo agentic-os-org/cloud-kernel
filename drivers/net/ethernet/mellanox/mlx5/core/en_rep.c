@@ -1450,17 +1450,16 @@ mlx5e_vport_uplink_rep_load(struct mlx5_core_dev *dev, struct mlx5_eswitch_rep *
 {
 	struct mlx5e_rep_priv *rpriv = mlx5e_rep_to_rep_priv(rep);
 	struct net_device *netdev;
-	struct mlx5e_priv *priv;
 	int err;
 
 	netdev = mlx5_uplink_netdev_get(dev);
 	if (!netdev)
 		return 0;
 
-	priv = netdev_priv(netdev);
-	rpriv->netdev = priv->netdev;
-	err = mlx5e_netdev_change_profile(priv, &mlx5e_uplink_rep_profile,
-					  rpriv);
+	/* must not use netdev_priv(netdev), it might not be initialized yet */
+	rpriv->netdev = netdev;
+	err = mlx5e_netdev_change_profile(netdev, dev,
+					  &mlx5e_uplink_rep_profile, rpriv);
 	mlx5_uplink_netdev_put(dev, netdev);
 	return err;
 }
@@ -1473,7 +1472,22 @@ mlx5e_vport_uplink_rep_unload(struct mlx5e_rep_priv *rpriv)
 
 	priv = netdev_priv(netdev);
 
-	mlx5e_netdev_attach_nic_profile(priv);
+	/* This bit is set when using devlink to change eswitch mode from
+	 * switchdev to legacy. As need to keep uplink netdev ifindex, we
+	 * detach uplink representor profile and attach NIC profile only.
+	 * The netdev will be unregistered later when unload NIC auxiliary
+	 * driver for this case.
+	 * We explicitly block devlink eswitch mode change if any IPSec rules
+	 * offloaded, but can't block other cases, such as driver unload
+	 * and devlink reload. We have to unregister netdev before profile
+	 * change for those cases. This is to avoid resource leak because
+	 * the offloaded rules don't have the chance to be unoffloaded before
+	 * cleanup which is triggered by detach uplink representor profile.
+	 */
+	if (!(priv->mdev->priv.flags & MLX5_PRIV_FLAGS_SWITCH_LEGACY))
+		unregister_netdev(netdev);
+
+	mlx5e_netdev_attach_nic_profile(netdev, priv->mdev);
 }
 
 static int
