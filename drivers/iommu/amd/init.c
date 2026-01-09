@@ -827,16 +827,11 @@ static void iommu_enable_command_buffer(struct amd_iommu *iommu)
 
 	BUG_ON(iommu->cmd_buf == NULL);
 
-	if (!is_kdump_kernel()) {
-		/*
-		 * Command buffer is re-used for kdump kernel and setting
-		 * of MMIO register is not required.
-		 */
-		entry = iommu_virt_to_phys(iommu->cmd_buf);
-		entry |= MMIO_CMD_SIZE_512;
-		memcpy_toio(iommu->mmio_base + MMIO_CMD_BUF_OFFSET,
-			    &entry, sizeof(entry));
-	}
+	entry = iommu_virt_to_phys(iommu->cmd_buf);
+	entry |= MMIO_CMD_SIZE_512;
+
+	memcpy_toio(iommu->mmio_base + MMIO_CMD_BUF_OFFSET,
+		    &entry, sizeof(entry));
 
 	amd_iommu_reset_cmd_buffer(iommu);
 }
@@ -896,18 +891,12 @@ static void iommu_enable_event_buffer(void)
 	for_each_iommu(iommu) {
 		BUG_ON(iommu->evt_buf == NULL);
 
-		if (!is_kdump_kernel()) {
-			/*
-			 * Event buffer is re-used for kdump kernel and setting
-			 * of MMIO register is not required.
-			 */
-			entry = iommu_virt_to_phys(iommu->evt_buf);
-			entry |= (amd_iommu_evtlog_size == EVTLOG_SIZE_DEF) ?
-				EVTLOG_LEN_MASK_DEF : EVTLOG_LEN_MASK_MAX;
+		entry = iommu_virt_to_phys(iommu->evt_buf);
+		entry |= (amd_iommu_evtlog_size == EVTLOG_SIZE_DEF) ?
+			EVTLOG_LEN_MASK_DEF : EVTLOG_LEN_MASK_MAX;
 
-			memcpy_toio(iommu->mmio_base + MMIO_EVT_BUF_OFFSET,
-				    &entry, sizeof(entry));
-		}
+		memcpy_toio(iommu->mmio_base + MMIO_EVT_BUF_OFFSET,
+			    &entry, sizeof(entry));
 
 		/* set head and tail to zero manually */
 		writel(0x00, iommu->mmio_base + MMIO_EVT_HEAD_OFFSET);
