@@ -215,7 +215,7 @@ static int nsim_dev_debugfs_init(struct nsim_dev *nsim_dev)
 						      0200,
 						      nsim_dev->ddir,
 						      nsim_dev,
-						&nsim_dev_take_snapshot_fops);
+					&nsim_dev_take_snapshot_fops);
 	debugfs_create_bool("dont_allow_reload", 0600, nsim_dev->ddir,
 			    &nsim_dev->dont_allow_reload);
 	debugfs_create_bool("fail_reload", 0600, nsim_dev->ddir,
@@ -1036,7 +1036,7 @@ static int nsim_dev_reload_create(struct nsim_dev *nsim_dev,
 						      0200,
 						      nsim_dev->ddir,
 						      nsim_dev,
-						&nsim_dev_take_snapshot_fops);
+					&nsim_dev_take_snapshot_fops);
 	return 0;
 
 err_health_exit:
@@ -1071,6 +1071,7 @@ int nsim_dev_probe(struct nsim_bus_dev *nsim_bus_dev)
 	nsim_dev->max_macs = NSIM_DEV_MAX_MACS_DEFAULT;
 	nsim_dev->test1 = NSIM_DEV_TEST1_DEFAULT;
 	spin_lock_init(&nsim_dev->fa_cookie_lock);
+	mutex_init(&nsim_dev->progs_list_lock);
 
 	dev_set_drvdata(&nsim_bus_dev->dev, nsim_dev);
 
@@ -1176,6 +1177,8 @@ void nsim_dev_remove(struct nsim_bus_dev *nsim_bus_dev)
 				  ARRAY_SIZE(nsim_devlink_params));
 	devlink_unregister(devlink);
 	devlink_resources_unregister(devlink, NULL);
+	kfree(nsim_dev->fa_cookie);
+	mutex_destroy(&nsim_dev->progs_list_lock);
 	devlink_free(devlink);
 }
 
