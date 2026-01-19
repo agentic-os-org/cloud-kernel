@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <linux/compiler.h>
+#include <linux/bitmap.h>
 #include <sys/types.h>
 #ifndef __cplusplus
 #include <internal/cpumap.h>
@@ -51,6 +52,8 @@ int fetch_kernel_version(unsigned int *puint,
 #define KVER_PARAM(x)	KVER_VERSION(x), KVER_PATCHLEVEL(x), KVER_SUBLEVEL(x)
 
 int perf_tip(char **strp, const char *dirpath);
+
+void cpumask_to_cpulist(char *cpumask, char *cpulist);
 
 #ifndef HAVE_SCHED_GETCPU_SUPPORT
 int sched_getcpu(void);
