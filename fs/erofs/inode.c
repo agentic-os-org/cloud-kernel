@@ -236,29 +236,7 @@ static int erofs_fill_inode(struct inode *inode)
 		return 0;
 	}
 
-	if (erofs_inode_is_data_compressed(vi->datalayout)) {
-		err = -EOPNOTSUPP;
-#ifdef CONFIG_EROFS_FS_ZIP
-		if (!erofs_is_fscache_mode(inode->i_sb) &&
-		    !erofs_is_fileio_mode(EROFS_SB(inode->i_sb))) {
-			inode->i_mapping->a_ops = &z_erofs_aops;
-			err = 0;
-		}
-#endif
-	} else if (erofs_is_rafsv6_mode(inode->i_sb)) {
-		erofs_rafsv6_set_aops(inode);
-	} else {
-		inode->i_mapping->a_ops = &erofs_aops;
-#ifdef CONFIG_EROFS_FS_ONDEMAND
-		if (erofs_is_fscache_mode(inode->i_sb))
-			inode->i_mapping->a_ops = &erofs_fscache_access_aops;
-#endif
-#ifdef CONFIG_EROFS_FS_BACKED_BY_FILE
-		if (erofs_is_fileio_mode(EROFS_SB(inode->i_sb)))
-			inode->i_mapping->a_ops = &erofs_fileio_aops;
-#endif
-	}
-	return err;
+	return erofs_inode_set_aops(inode, inode, false);
 }
 
 /*
