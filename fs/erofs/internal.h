@@ -484,7 +484,43 @@ static inline void *erofs_vm_map_ram(struct page **pages, unsigned int count)
 	return NULL;
 }
 
-/* sysfs.c */
+extern const struct address_space_operations erofs_fscache_access_aops;
+
+#ifdef CONFIG_EROFS_FS_RAFS_V6
+void erofs_rafsv6_set_fops(struct inode *inode);
+void erofs_rafsv6_set_aops(struct inode *inode);
+#else
+static inline void erofs_rafsv6_set_fops(struct inode *inode) {}
+static inline void erofs_rafsv6_set_aops(struct inode *inode) {}
+#endif
+
+static inline int erofs_inode_set_aops(struct inode *inode,
+				       struct inode *realinode, bool no_fscache)
+{
+	if (erofs_inode_is_data_compressed(EROFS_I(realinode)->datalayout)) {
+		if (!IS_ENABLED(CONFIG_EROFS_FS_ZIP))
+			return -EOPNOTSUPP;
+		if (erofs_is_fscache_mode(realinode->i_sb) ||
+		    erofs_is_fileio_mode(EROFS_SB(realinode->i_sb)))
+			return -EOPNOTSUPP;
+		inode->i_mapping->a_ops = &z_erofs_aops;
+		return 0;
+	} else if (erofs_is_rafsv6_mode(realinode->i_sb)) {
+		if (inode != realinode)
+			return -EFAULT;
+		erofs_rafsv6_set_aops(inode);
+	} else {
+		inode->i_mapping->a_ops = &erofs_aops;
+		if (IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && !no_fscache &&
+		    erofs_is_fscache_mode(realinode->i_sb))
+			inode->i_mapping->a_ops = &erofs_fscache_access_aops;
+		if (IS_ENABLED(CONFIG_EROFS_FS_BACKED_BY_FILE) &&
+		    erofs_is_fileio_mode(EROFS_SB(realinode->i_sb)))
+			inode->i_mapping->a_ops = &erofs_fileio_aops;
+	}
+	return 0;
+}
+
 int erofs_register_sysfs(struct super_block *sb);
 void erofs_unregister_sysfs(struct super_block *sb);
 int __init erofs_init_sysfs(void);
@@ -559,7 +595,6 @@ void erofs_fscache_unregister_fs(struct super_block *sb);
 struct erofs_fscache *erofs_fscache_register_cookie(struct super_block *sb,
 						     char *name, bool need_inode);
 void erofs_fscache_unregister_cookie(struct erofs_fscache *fscache);
-extern const struct address_space_operations erofs_fscache_access_aops;
 #else
 static inline int erofs_fscache_register(void)
 {
@@ -582,14 +617,6 @@ struct erofs_fscache *erofs_fscache_register_cookie(struct super_block *sb,
 static inline void erofs_fscache_unregister_cookie(struct erofs_fscache *fscache)
 {
 }
-#endif
-
-#ifdef CONFIG_EROFS_FS_RAFS_V6
-void erofs_rafsv6_set_fops(struct inode *inode);
-void erofs_rafsv6_set_aops(struct inode *inode);
-#else
-static inline void erofs_rafsv6_set_fops(struct inode *inode) {}
-static inline void erofs_rafsv6_set_aops(struct inode *inode) {}
 #endif
 
 #define EFSCORRUPTED    EUCLEAN         /* Filesystem is corrupted */
