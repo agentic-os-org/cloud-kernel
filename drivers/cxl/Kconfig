@@ -190,4 +190,10 @@ config CXL_ALISCM
 	  Say 'y/m' to enable support for DOE interfaces and custom features of AliSCM.
 
 	  If unsure say 'm'.
+
+config CXL_ATL
+	def_bool y
+	depends on CXL_REGION
+	depends on ACPI_PRMT && AMD_NB
+
 endif
