@@ -5023,6 +5023,7 @@ int btrfs_shrink_device(struct btrfs_device *device, u64 new_size)
 	u64 old_size = btrfs_device_get_total_bytes(device);
 	u64 diff;
 	u64 start;
+	u64 free_diff = 0;
 	u64 pending_start, pending_end;
 
 	new_size = round_down(new_size, fs_info->sectorsize);
