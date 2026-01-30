@@ -26,22 +26,21 @@ static void erofs_fileio_ki_complete(struct kiocb *iocb, long ret, long res2)
 	struct bio_vec *bvec;
 	struct bvec_iter_all iter_all;
 
-	if (ret > 0) {
-		if (ret != rq->bio.bi_iter.bi_size) {
-			bio_advance(&rq->bio, ret);
-			zero_fill_bio(&rq->bio);
-		}
-		ret = 0;
+	if (ret >= 0 && ret != rq->bio.bi_iter.bi_size) {
+		bio_advance(&rq->bio, ret);
+		zero_fill_bio(&rq->bio);
 	}
-	if (rq->bio.bi_end_io) {
-		rq->bio.bi_end_io(&rq->bio);
-	} else {
+	if (!rq->bio.bi_end_io) {
 		bio_for_each_segment_all(bvec, &rq->bio, iter_all) {
 			struct page *page = bvec->bv_page;
 
 			DBG_BUGON(PageUptodate(page));
 			erofs_onlinepage_end(page, ret);
 		}
+	} else {
+		if (ret < 0 && !rq->bio.bi_status)
+			rq->bio.bi_status = errno_to_blk_status(ret);
+		rq->bio.bi_end_io(&rq->bio);
 	}
 	bio_uninit(&rq->bio);
 	kfree(rq);
@@ -51,7 +50,7 @@ static void erofs_fileio_rq_submit(struct erofs_fileio_rq *rq)
 {
 	const struct cred *old_cred;
 	struct iov_iter iter;
-	int ret;
+	ssize_t ret;
 
 	if (!rq)
 		return;
