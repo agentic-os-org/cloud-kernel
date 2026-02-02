@@ -40,13 +40,13 @@ static void __activate_cptr_traps(struct kvm_vcpu *vcpu)
 {
 	u64 val = CPTR_EL2_TAM;	/* Same bit irrespective of E2H */
 
-	if (!guest_owns_fp_regs(vcpu))
+	if (!guest_owns_fp_regs())
 		__activate_traps_fpsimd32(vcpu);
 
 	if (has_hvhe()) {
 		val |= CPACR_ELx_TTA;
 
-		if (guest_owns_fp_regs(vcpu)) {
+		if (guest_owns_fp_regs()) {
 			val |= CPACR_ELx_FPEN;
 			if (vcpu_has_sve(vcpu))
 				val |= CPACR_ELx_ZEN;
@@ -62,10 +62,10 @@ static void __activate_cptr_traps(struct kvm_vcpu *vcpu)
 		 */
 		val |= CPTR_EL2_TSM;
 
-		if (!vcpu_has_sve(vcpu) || !guest_owns_fp_regs(vcpu))
+		if (!vcpu_has_sve(vcpu) || !guest_owns_fp_regs())
 			val |= CPTR_EL2_TZ;
 
-		if (!guest_owns_fp_regs(vcpu))
+		if (!guest_owns_fp_regs())
 			val |= CPTR_EL2_TFP;
 
 		write_sysreg(val, cptr_el2);
