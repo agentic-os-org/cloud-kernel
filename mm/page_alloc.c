@@ -2528,9 +2528,11 @@ static inline bool check_new_pcp(struct page *page, unsigned int order)
 inline void post_alloc_hook(struct page *page, unsigned int order,
 				gfp_t gfp_flags)
 {
+	bool inited;
+	int i;
+
 	WARN_ON_ONCE(page_private(page) & ~PAGE_ZEROED);
 	set_page_refcounted(page);
-	int i;
 
 	arch_alloc_page(page, order);
 	if (debug_pagealloc_enabled_static())
@@ -2539,12 +2541,13 @@ inline void post_alloc_hook(struct page *page, unsigned int order,
 	kernel_poison_pages(page, 1 << order, 1);
 	set_page_owner(page, order, gfp_flags);
 
+	inited = PageInited(page);
 	for (i = 0; i < (1 << order); ++i) {
-		if (unlikely(PageInited(page + i))) {
+		if (unlikely(PageInited(page + i)))
 			__ClearPageInited(page + i);
-			atomic_long_sub(1, &page_zone(page)->inited_pages);
-		}
 	}
+	if (unlikely(inited))
+		atomic_long_sub(1 << order, &page_zone(page)->inited_pages);
 }
 
 static void prep_new_page(struct page *page, unsigned int order, gfp_t gfp_flags,
@@ -2607,7 +2610,10 @@ struct page *__rmqueue_smallest(struct zone *zone, unsigned int order,
 			continue;
 
 		if (unlikely(PageInited(page))) {
-			__ClearPageInited(page);
+			unsigned int i;
+
+			for (i = 0; i < (1 << current_order); ++i)
+				__ClearPageInited(page + i);
 			atomic_long_sub(1 << current_order, &page_zone(page)->inited_pages);
 		}
 
