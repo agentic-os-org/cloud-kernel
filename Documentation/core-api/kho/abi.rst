@@ -16,6 +16,12 @@ vmalloc preservation ABI
 .. kernel-doc:: include/linux/kho/abi/kexec_handover.h
    :doc: Kexec Handover ABI for vmalloc Preservation
 
+KHO persistent memory tracker ABI
+=================================
+
+.. kernel-doc:: include/linux/kho/abi/kexec_handover.h
+  :doc: KHO persistent memory tracker
+
 See Also
 ========
 
