@@ -12,6 +12,7 @@
 #include <linux/idr.h>
 #include <linux/memory-tiers.h>
 #include <linux/string_choices.h>
+#include <cxl/cxl.h>
 #include <cxlmem.h>
 #include <cxl.h>
 #include "core.h"
@@ -4058,6 +4059,12 @@ bool cxl_region_contains_resource(const struct resource *res)
 	return !!dev;
 }
 EXPORT_SYMBOL_FOR_MODULES(cxl_region_contains_resource, "dax_hmem");
+
+bool cxl_region_contains_soft_reserve(struct resource *res)
+{
+	return cxl_region_contains_resource(res);
+}
+EXPORT_SYMBOL_GPL(cxl_region_contains_soft_reserve);
 
 static int cxl_region_can_probe(struct cxl_region *cxlr)
 {
