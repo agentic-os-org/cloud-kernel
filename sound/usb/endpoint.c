@@ -193,8 +193,8 @@ static void retire_inbound_urb(struct snd_usb_endpoint *ep,
 		ep->retire_data_urb(ep->data_subs, urb);
 }
 
-static void prepare_silent_urb(struct snd_usb_endpoint *ep,
-			       struct snd_urb_ctx *ctx)
+static int prepare_silent_urb(struct snd_usb_endpoint *ep,
+			      struct snd_urb_ctx *ctx)
 {
 	struct urb *urb = ctx->urb;
 	unsigned int offs = 0;
@@ -220,6 +220,8 @@ static void prepare_silent_urb(struct snd_usb_endpoint *ep,
 
 		length = counts * ep->stride; /* number of silent bytes */
 		offset = offs * ep->stride + extra * i;
+		if (offset + extra + length > ctx->buffer_size)
+			break;
 		urb->iso_frame_desc[i].offset = offset;
 		urb->iso_frame_desc[i].length = length + extra;
 		if (extra) {
@@ -232,8 +234,12 @@ static void prepare_silent_urb(struct snd_usb_endpoint *ep,
 		offs += counts;
 	}
 
-	urb->number_of_packets = ctx->packets;
-	urb->transfer_buffer_length = offs * ep->stride + ctx->packets * extra;
+	if (!i)
+		return -EPIPE;
+
+	urb->number_of_packets = i;
+	urb->transfer_buffer_length = offs * ep->stride + i * extra;
+	return 0;
 }
 
 /*
@@ -1433,4 +1439,3 @@ void snd_usb_handle_sync_urb(struct snd_usb_endpoint *ep,
 		ep->freqshift = INT_MIN;
 	}
 }
-
