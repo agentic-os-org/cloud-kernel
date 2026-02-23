@@ -271,6 +271,8 @@ __iowrite64_copy(void __iomem *to, const void *from, size_t count)
 
 #define _PAGE_IOREMAP PROT_DEVICE_nGnRE
 
+#define ioremap(addr, size)	\
+	ioremap_prot((addr), (size), PROT_DEVICE_nGnRE)
 #define ioremap_wc(addr, size)	\
 	ioremap_prot((addr), (size), PROT_NORMAL_NC)
 #define ioremap_np(addr, size)	\
