@@ -27,10 +27,8 @@ static void erofs_fileio_ki_complete(struct kiocb *iocb, long ret, long res2)
 	struct bio_vec *bvec;
 	struct bvec_iter_all iter_all;
 
-	if (ret >= 0 && ret != rq->bio.bi_iter.bi_size) {
-		bio_advance(&rq->bio, ret);
-		zero_fill_bio(&rq->bio);
-	}
+	if (ret >= 0 && ret != rq->bio.bi_iter.bi_size)
+		ret = -EIO;
 	if (!rq->bio.bi_end_io) {
 		bio_for_each_segment_all(bvec, &rq->bio, iter_all) {
 			struct page *page = bvec->bv_page;
