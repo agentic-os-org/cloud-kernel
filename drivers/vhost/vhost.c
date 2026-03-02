@@ -5,7 +5,7 @@
  * Author: Michael S. Tsirkin <mst@redhat.com>
  *
  * Inspiration, some code, and most witty comments come from
- * Documentation/virtual/lguest/lguest.c, by Rusty Russell
+ * Documentation/virtual/lguest/lguest.c, by Rusty Russell.
  *
  * Generic code for virtio server in host kernel.
  */
@@ -588,7 +588,7 @@ EXPORT_SYMBOL_GPL(vhost_dev_init);
 /* Caller should have device mutex */
 long vhost_dev_check_owner(struct vhost_dev *dev)
 {
-	/* Are you the owner? If not, I don't think you mean to do that */
+	/* Are you the owner? If not, I don't think you mean that */
 	return dev->mm == current->mm ? 0 : -EPERM;
 }
 EXPORT_SYMBOL_GPL(vhost_dev_check_owner);
@@ -1283,7 +1283,7 @@ static inline void __user *__vhost_get_user(struct vhost_virtqueue *vq,
 	} else { \
 		__typeof__(ptr) to = \
 			(__typeof__(ptr)) __vhost_get_user(vq, ptr,	\
-					  sizeof(*ptr), VHOST_ADDR_USED); \
+							  sizeof(*ptr), VHOST_ADDR_USED); \
 		if (to != NULL) \
 			ret = __put_user(x, to); \
 		else \
@@ -1548,7 +1548,7 @@ done:
 EXPORT_SYMBOL(vhost_chr_write_iter);
 
 __poll_t vhost_chr_poll(struct file *file, struct vhost_dev *dev,
-			    poll_table *wait)
+			poll_table *wait)
 {
 	__poll_t mask = 0;
 
@@ -2920,18 +2920,17 @@ bool vhost_enable_notify(struct vhost_dev *dev, struct vhost_virtqueue *vq)
 		return false;
 	}
 
-	vq->avail_idx = vhost16_to_cpu(vq, avail_idx);
-	if (vq->avail_idx != vq->last_avail_idx) {
-		/* Since we have updated avail_idx, the following
-		 * call to vhost_get_vq_desc() will read available
-		 * ring entries. Make sure that read happens after
-		 * the avail_idx read.
-		 */
-		smp_rmb();
-		return true;
-	}
+	/* Compare against cached vq->avail_idx, not last_avail_idx,
+	 * to correctly detect whether new entries have been added.
+	 * This prevents a livelock when entries exist in the ring
+	 * but no new ones were added since the last check.
+	 */
+	if (vhost16_to_cpu(vq, avail_idx) == vq->avail_idx)
+		return false;
 
-	return false;
+	vq->avail_idx = vhost16_to_cpu(vq, avail_idx);
+	smp_rmb();
+	return true;
 }
 EXPORT_SYMBOL_GPL(vhost_enable_notify);
 
