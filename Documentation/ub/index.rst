@@ -13,3 +13,4 @@ UnifiedBus Subsystem
    ubase/index
    ubfi/index
    ubus/index
+   urma/ipourma/index
