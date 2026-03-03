@@ -821,8 +821,7 @@ static int do_sea(unsigned long far, unsigned long esr, struct pt_regs *regs)
 	if (do_apei_claim_sea(esr, regs, siaddr, inf->sig, inf->code))
 		return 0;
 
-	if (!arm64_do_kernel_sea(siaddr, esr, regs, inf->sig, inf->code))
-		arm64_notify_die(inf->name, regs, inf->sig, inf->code, siaddr, esr);
+	arm64_notify_die(inf->name, regs, inf->sig, inf->code, siaddr, esr);
 
 	return 0;
 }
