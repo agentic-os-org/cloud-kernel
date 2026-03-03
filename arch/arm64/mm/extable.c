@@ -84,6 +84,26 @@ bool fixup_exception_me(struct pt_regs *regs)
 	const struct exception_table_entry *ex;
 
 	ex = search_exception_tables(instruction_pointer(regs));
+	if (!ex) {
+		pr_warn_ratelimited("fixup search failed\n");
+		return false;
+	}
+
+	switch (ex->type) {
+	case EX_TYPE_UACCESS_ERR_ZERO:
+	case EX_TYPE_KACCESS_ERR_ZERO_ME_SAFE:
+		return ex_handler_uaccess_err_zero(ex, regs);
+	}
+
+	pr_warn_ratelimited("fixup type: %d invalid\n", ex->type);
+	return false;
+}
+
+bool fixup_exception_mc(struct pt_regs *regs)
+{
+	const struct exception_table_entry *ex;
+
+	ex = search_exception_tables(instruction_pointer(regs));
 	if (!ex)
 		return false;
 
