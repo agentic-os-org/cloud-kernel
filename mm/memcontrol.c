@@ -368,6 +368,67 @@ static inline struct obj_cgroup *__memcg_reparent_objcgs(struct mem_cgroup *memc
 	return objcg;
 }
 
+static void reparent_memcg_state_local(struct mem_cgroup *memcg,
+				       struct mem_cgroup *parent, int idx);
+static void reparent_memcg_lruvec_state_local(struct mem_cgroup *memcg,
+					      struct mem_cgroup *parent, int idx);
+
+static void reparent_memcg1_state_local(struct mem_cgroup *memcg, struct mem_cgroup *parent);
+
+static void reparent_memcg1_lruvec_state_local(struct mem_cgroup *memcg, struct mem_cgroup *parent)
+{
+	int i;
+
+	for (i = 0; i < NR_LRU_LISTS; i++)
+		reparent_memcg_lruvec_state_local(memcg, parent, i);
+}
+
+static void do_flush_stats(struct mem_cgroup *memcg);
+
+static inline void reparent_state_local(struct mem_cgroup *memcg, struct mem_cgroup *parent)
+{
+	unsigned long flags;
+
+	if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
+		return;
+
+	/*
+	 * Reparent stats exposed non-hierarchically. Flush @memcg's stats first
+	 * to read its stats accurately , and conservatively flush @parent's
+	 * stats after reparenting to avoid hiding a potentially large stat
+	 * update (e.g. from callers of mem_cgroup_flush_stats_ratelimited()).
+	 *
+	 * Use do_flush_stats() rather than mem_cgroup_flush_stats() to force a
+	 * flush regardless of the pending-update threshold, matching upstream's
+	 * __mem_cgroup_flush_stats(memcg, true). Otherwise a below-threshold
+	 * delta on a dying memcg would be reparented stale.
+	 */
+	do_flush_stats(memcg);
+
+	/*
+	 * The following counts are all non-hierarchical and need to be reparented.
+	 *
+	 * reparent_memcg1_{,lruvec_}state_local() fold per-cpu stats via the
+	 * lockless __mod_memcg_{,lruvec_}state() variants, which require the
+	 * caller to have IRQs (and hence preemption) disabled -- normal update
+	 * paths (rmap, charge, fault) always are.  We are called from
+	 * css_killed_work_fn with IRQs enabled, so disable them across the fold,
+	 * otherwise __this_cpu_add() can race an interrupt and corrupt the per-cpu
+	 * counter (and CONFIG_DEBUG_VM trips memcg_stats_lock()'s assertions).
+	 *
+	 * Upstream commit c7163535cdaf ("memcg: move preempt disable to callers
+	 * of memcg_rstat_updated", v6.16) made these updaters irq-safe and dropped
+	 * the requirement; this base predates it, so honor the old invariant here.
+	 * Keep do_flush_stats() outside the region -- it may sleep.
+	 */
+	local_irq_save(flags);
+	reparent_memcg1_state_local(memcg, parent);
+	reparent_memcg1_lruvec_state_local(memcg, parent);
+	local_irq_restore(flags);
+
+	do_flush_stats(parent);
+}
+
 static inline void reparent_locks(struct mem_cgroup *memcg, struct mem_cgroup *parent)
 {
 	spin_lock_irq(&objcg_lock);
@@ -625,6 +686,28 @@ mem_cgroup_largest_soft_limit_node(struct mem_cgroup_tree_per_node *mctz)
 	return mz;
 }
 
+void __mod_memcg_lruvec_state(struct mem_cgroup_per_node *pn,
+			      enum node_stat_item idx, int val);
+
+static void reparent_memcg_lruvec_state_local(struct mem_cgroup *memcg,
+					      struct mem_cgroup *parent, int idx)
+{
+	int nid;
+
+	for_each_node(nid) {
+		struct lruvec *child_lruvec = mem_cgroup_lruvec(memcg, NODE_DATA(nid));
+		struct lruvec *parent_lruvec = mem_cgroup_lruvec(parent, NODE_DATA(nid));
+		unsigned long value = lruvec_page_state_local(child_lruvec, idx);
+		struct mem_cgroup_per_node *child_pn, *parent_pn;
+
+		child_pn = container_of(child_lruvec, struct mem_cgroup_per_node, lruvec);
+		parent_pn = container_of(parent_lruvec, struct mem_cgroup_per_node, lruvec);
+
+		__mod_memcg_lruvec_state(child_pn, idx, -value);
+		__mod_memcg_lruvec_state(parent_pn, idx, value);
+	}
+}
+
 /* Subset of vm_event_item to report for memcg event stats */
 static const unsigned int memcg_vm_event_stat[] = {
 	PGPGIN,
@@ -864,6 +947,31 @@ static int memcg_state_val_in_pages(int idx, int val)
 		return max(val * unit / PAGE_SIZE, 1UL);
 }
 
+/*
+ * Used in mod_memcg_state() and mod_memcg_lruvec_state() to avoid race with
+ * reparenting of non-hierarchical state_locals.
+ */
+static inline struct mem_cgroup *get_non_dying_memcg_start(struct mem_cgroup *memcg)
+{
+	if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
+		return memcg;
+
+	rcu_read_lock();
+
+	while (memcg_is_dying(memcg))
+		memcg = parent_mem_cgroup(memcg);
+
+	return memcg;
+}
+
+static inline void get_non_dying_memcg_end(void)
+{
+	if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
+		return;
+
+	rcu_read_unlock();
+}
+
 /**
  * __mod_memcg_state - update cgroup memory statistics
  * @memcg: the memory cgroup
@@ -886,6 +994,15 @@ static unsigned long memcg_page_state_local(struct mem_cgroup *memcg, int idx)
 		x = 0;
 #endif
 	return x;
+}
+
+static void reparent_memcg_state_local(struct mem_cgroup *memcg,
+				       struct mem_cgroup *parent, int idx)
+{
+	unsigned long value = memcg_page_state_local(memcg, idx);
+
+	__mod_memcg_state(memcg, idx, -value);
+	__mod_memcg_state(parent, idx, value);
 }
 
 void __mod_memcg_lruvec_state(struct mem_cgroup_per_node *pn, enum node_stat_item idx,
@@ -4832,6 +4949,14 @@ static const unsigned int memcg1_events[] = {
 	PGFAULT,
 	PGMAJFAULT,
 };
+
+static void reparent_memcg1_state_local(struct mem_cgroup *memcg, struct mem_cgroup *parent)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(memcg1_stats); i++)
+		reparent_memcg_state_local(memcg, parent, memcg1_stats[i]);
+}
 
 static void memcg1_stat_format(struct mem_cgroup *memcg, struct seq_buf *s)
 {
