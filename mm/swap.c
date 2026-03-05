@@ -312,6 +312,7 @@ void lru_note_cost(struct lruvec *lruvec, bool file,
 		 *    rcu lock, so would be safe even if the page was on the LRU
 		 *    and could move simultaneously to a new lruvec).
 		 */
+		rcu_read_lock();
 		spin_lock_irq(&lruvec->lru_lock);
 		/* Record cost event */
 		if (file)
@@ -337,6 +338,7 @@ void lru_note_cost(struct lruvec *lruvec, bool file,
 			lruvec->anon_cost /= 2;
 		}
 		spin_unlock_irq(&lruvec->lru_lock);
+		rcu_read_unlock();
 	} while ((lruvec = parent_lruvec(lruvec)));
 }
 
