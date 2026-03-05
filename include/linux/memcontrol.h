@@ -172,6 +172,16 @@ struct mem_cgroup_per_node {
 
 	struct mem_cgroup_reclaim_iter	iter;
 
+	/*
+	 * objcg is wiped out as a part of the objcg repaprenting process.
+	 * orig_objcg preserves a pointer (and a reference) to the original
+	 * objcg until the end of live of memcg.
+	 */
+	struct obj_cgroup __rcu	*objcg;
+	struct obj_cgroup	*orig_objcg;
+	/* list of inherited objcgs, protected by objcg_lock */
+	struct list_head objcg_list;
+
 	struct shrinker_info __rcu	*shrinker_info;
 
 	struct rb_node		tree_node;	/* RB tree node */
@@ -283,6 +293,7 @@ struct obj_cgroup {
 		struct list_head list; /* protected by objcg_lock */
 		struct rcu_head rcu;
 	};
+	bool is_root;
 };
 
 /*
@@ -400,19 +411,6 @@ struct mem_cgroup {
 	struct work_struct	wmark_work;
 	unsigned int		wmark_scale_factor;
 
-#ifdef CONFIG_MEMCG_KMEM
-	int kmemcg_id;
-	/*
-	 * memcg->objcg is wiped out as a part of the objcg repaprenting
-	 * process. memcg->orig_objcg preserves a pointer (and a reference)
-	 * to the original objcg until the end of live of memcg.
-	 */
-	struct obj_cgroup __rcu	*objcg;
-	struct obj_cgroup	*orig_objcg;
-	/* list of inherited objcgs, protected by objcg_lock */
-	struct list_head objcg_list;
-#endif
-
 	CACHELINE_PADDING(_pad2_);
 
 	/*
@@ -420,6 +418,10 @@ struct mem_cgroup {
 	 */
 	atomic_t		moving_account;
 	struct task_struct	*move_lock_task;
+
+#ifdef CONFIG_MEMCG_KMEM
+	int kmemcg_id;
+#endif
 
 	struct memcg_vmstats_percpu __percpu *vmstats_percpu;
 
@@ -529,7 +531,6 @@ struct mem_cgroup {
 #endif
 
 extern struct mem_cgroup *root_mem_cgroup;
-extern struct obj_cgroup *root_obj_cgroup;
 
 enum page_memcg_data_flags {
 	/* page->memcg_data is a pointer to an slabobj_ext vector */
@@ -778,7 +779,7 @@ static inline bool mem_cgroup_is_root(struct mem_cgroup *memcg)
 
 static inline bool obj_cgroup_is_root(const struct obj_cgroup *objcg)
 {
-	return objcg == root_obj_cgroup;
+	return objcg->is_root;
 }
 
 static inline bool mem_cgroup_disabled(void)
