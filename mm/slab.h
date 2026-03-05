@@ -832,7 +832,7 @@ static inline bool memcg_slab_pre_alloc_hook(struct kmem_cache *s,
 	 * obj_cgroup_get() is used to get a permanent reference.
 	 */
 	objcg = current_obj_cgroup();
-	if (!objcg)
+	if (!objcg || obj_cgroup_is_root(objcg))
 		return true;
 
 	if (lru) {
@@ -863,7 +863,7 @@ static inline void memcg_slab_post_alloc_hook(struct kmem_cache *s,
 	unsigned long off;
 	size_t i;
 
-	if (!memcg_kmem_online() || !objcg)
+	if (!memcg_kmem_online() || !objcg || obj_cgroup_is_root(objcg))
 		return;
 
 	for (i = 0; i < size; i++) {
