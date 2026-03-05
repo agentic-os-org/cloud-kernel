@@ -872,9 +872,6 @@ static int memcg_state_val_in_pages(int idx, int val)
  */
 void __mod_memcg_state(struct mem_cgroup *memcg, int idx, int val)
 {
-	if (mem_cgroup_disabled())
-		return;
-
 	__this_cpu_add(memcg->vmstats_percpu->state[idx], val);
 	memcg_rstat_updated(memcg, memcg_state_val_in_pages(idx, val));
 }
@@ -891,14 +888,10 @@ static unsigned long memcg_page_state_local(struct mem_cgroup *memcg, int idx)
 	return x;
 }
 
-void __mod_memcg_lruvec_state(struct lruvec *lruvec, enum node_stat_item idx,
+void __mod_memcg_lruvec_state(struct mem_cgroup_per_node *pn, enum node_stat_item idx,
 			      int val)
 {
-	struct mem_cgroup_per_node *pn;
-	struct mem_cgroup *memcg;
-
-	pn = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
-	memcg = pn->memcg;
+	struct mem_cgroup *memcg = pn->memcg;
 
 	/*
 	 * The caller from rmap relay on disabled preemption becase they never
@@ -949,7 +942,7 @@ void __mod_lruvec_state(struct lruvec *lruvec, enum node_stat_item idx,
 
 	/* Update memcg and lruvec */
 	if (!mem_cgroup_disabled())
-		__mod_memcg_lruvec_state(lruvec, idx, val);
+		mod_memcg_lruvec_state(lruvec, idx, val);
 }
 
 void __mod_lruvec_page_state(struct page *page, enum node_stat_item idx,
