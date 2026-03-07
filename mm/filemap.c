@@ -1046,10 +1046,14 @@ struct folio *filemap_alloc_folio_noprof(gfp_t gfp, unsigned int order,
 {
 	int n;
 	struct folio *folio;
+	ilemap_prepare_alloc(&gfp);
 
 	if (policy)
 		return folio_alloc_mpol_noprof(gfp, order, policy,
 				NO_INTERLEAVE_INDEX, numa_node_id());
+
+	if (filemap_alloc_local_enabled())
+		return filemap_try_alloc_local(gfp, order);
 
 	if (cpuset_do_page_mem_spread()) {
 		unsigned int cpuset_mems_cookie;

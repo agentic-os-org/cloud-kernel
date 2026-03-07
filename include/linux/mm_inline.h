@@ -9,6 +9,7 @@
 #include <linux/userfaultfd_k.h>
 #include <linux/swapops.h>
 #include <linux/kidled.h>
+#include <linux/mem_reliable.h>
 
 /**
  * folio_is_file_lru - Should the folio be on a file LRU or anon LRU?
