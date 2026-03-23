@@ -521,14 +521,16 @@ static void memory_failure_cb(struct callback_head *twork)
 	if (!ret && pfn_to_online_page(twcb->pfn))
 		set_memory_np((unsigned long)page_to_virt(pfn_to_page(twcb->pfn)), 1);
 #endif
-	gen_pool_free(ghes_estatus_pool, (unsigned long)twcb, sizeof(*twcb));
 
-	if (!ret || ret == -EHWPOISON || ret == -EOPNOTSUPP)
+	if (!ret || ret == -EHWPOISON || ret == -EOPNOTSUPP) {
+		gen_pool_free(ghes_estatus_pool, (unsigned long)twcb, sizeof(*twcb));
 		return;
+	}
 
 	pr_err("%#llx: Sending SIGBUS to %s:%d due to hardware memory corruption\n",
 			twcb->pfn, current->comm, task_pid_nr(current));
 	force_sig(SIGBUS);
+	gen_pool_free(ghes_estatus_pool, (unsigned long)twcb, sizeof(*twcb));
 }
 
 static bool ghes_do_memory_failure(u64 physical_addr, int flags)
