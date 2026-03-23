@@ -477,19 +477,6 @@ static void ghes_clear_estatus(struct ghes *ghes,
 		ghes_ack_error(ghes->generic_v2);
 }
 
-/*
- * Tasks can handle task_work:
- *
- * - All user task: run task work before return to user.
- */
-static bool should_add_task_work(struct task_struct *task)
-{
-	if (task->mm)
-		return true;
-
-	return false;
-}
-
 /**
  * This function is utilized in both virtualized and non-virtualized environments.
  *

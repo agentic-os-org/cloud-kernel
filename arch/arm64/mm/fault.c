@@ -783,22 +783,6 @@ static bool do_apei_claim_sea(unsigned long esr, struct pt_regs *regs,
 	return true;
 }
 
-static bool arm64_do_kernel_sea(unsigned long addr, unsigned int esr,
-				     struct pt_regs *regs, int sig, int code)
-{
-	if (user_mode(regs)) {
-		if (!apei_claim_sea(regs))
-			return true;
-	} else if (IS_ENABLED(CONFIG_ARCH_HAS_COPY_MC)) {
-		if (sysctl_machine_check_safe &&
-		    fixup_exception_me(regs) &&
-		    !apei_claim_sea(regs))
-			return true;
-	}
-
-	return false;
-}
-
 static int do_sea(unsigned long far, unsigned long esr, struct pt_regs *regs)
 {
 	const struct fault_info *inf;
