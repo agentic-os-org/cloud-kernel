@@ -10,6 +10,7 @@
 #include <linux/acpi.h>
 
 struct apei_exec_context;
+struct cper_sec_proc_arm;
 
 typedef int (*apei_exec_ins_func_t)(struct apei_exec_context *ctx,
 				    struct acpi_whea_header *entry);
@@ -146,6 +147,15 @@ int einj_validate_error_type(u64 type);
 #define ACPI_EINJ_CXL_MEM_CORRECTABLE       BIT(15)
 #define ACPI_EINJ_CXL_MEM_UNCORRECTABLE     BIT(16)
 #define ACPI_EINJ_CXL_MEM_FATAL             BIT(17)
+#endif
+
+#ifdef CONFIG_ACPI_APEI_MEMORY_FAILURE
+bool apei_page_should_offline(unsigned long pfn);
+#else
+static inline bool apei_page_should_offline(unsigned long pfn)
+{
+	return true;
+}
 #endif
 
 #ifdef CONFIG_ACPI_APEI_GHES_ARMP_VENDOR_INFO

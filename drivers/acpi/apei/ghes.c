@@ -55,6 +55,7 @@
 #include <asm/tlbflush.h>
 #include <cxl/event.h>
 #include <ras/ras_event.h>
+#include <linux/numa_remote.h>
 
 #include "apei-internal.h"
 
@@ -490,7 +491,47 @@ static bool should_add_task_work(struct task_struct *task)
 }
 
 /**
- * struct ghes_task_work - for synchronous RAS event
+ * This function is utilized in both virtualized and non-virtualized environments.
+ *
+ * In standard non-virtualized (bare-metal) mode, it triggers the termination of the
+ * process accessing the faulty memory.
+ *
+ * In virtualized scenarios (KVM):
+ * - For Synchronous External Aborts (SEA), this function is invoked via
+ *   apei_claim_sea() from within kvm_handle_guest_sea().
+ * - If the error is successfully handled by the host, KVM injects the fault into
+ *   the guest OS using kvm_inject_vabt().
+ * - In exceptional cases where the guest cannot handle the injected exception,
+ *   terminating the corresponding host process (e.g., the VMM/QEMU task) is the
+ *   expected behavior to ensure system stability.
+ */
+static void ghes_handle_critical_ras(unsigned long pfn, unsigned long flags)
+{
+	struct mm_struct *mm = current->mm;
+	struct page *p;
+	int nid;
+
+	if (!IS_ENABLED(CONFIG_ACPI_APEI_RAS_CRITICAL))
+		return;
+
+	p = pfn_to_online_page(pfn);
+	if (!p)
+		return;
+
+	nid = page_to_nid(p);
+	if (!numa_is_remote_node(nid))
+		return;
+
+	if (test_bit(MMF_CRITICAL_ERR, &mm->flags))
+		return;
+
+	set_bit(MMF_CRITICAL_ERR, &mm->flags);
+	pr_warn_ratelimited(GHES_PFX "detected critical ras on pfn: %#lx, nid: %d, comm: %s, pid: %d, tgid: %d\n",
+		pfn, nid, current->comm, current->pid, current->tgid);
+}
+
+/*
+ * struct sync_task_work - for synchronous RAS event
  *
  * @twork:                callback_head for task work
  * @pfn:                  page frame number of corrupted page
@@ -499,7 +540,7 @@ static bool should_add_task_work(struct task_struct *task)
  * Structure to pass task work to be handled before
  * returning to user-space via task_work_add().
  */
-struct ghes_task_work {
+struct sync_task_work {
 	struct callback_head twork;
 	u64 pfn;
 	int flags;
@@ -507,8 +548,9 @@ struct ghes_task_work {
 
 static void memory_failure_cb(struct callback_head *twork)
 {
-	struct ghes_task_work *twcb = container_of(twork, struct ghes_task_work, twork);
 	int ret;
+	struct sync_task_work *twcb =
+		container_of(twork, struct sync_task_work, twork);
 
 	ret = memory_failure(twcb->pfn, twcb->flags);
 #ifdef CONFIG_ARM64
@@ -533,17 +575,26 @@ static void memory_failure_cb(struct callback_head *twork)
 	gen_pool_free(ghes_estatus_pool, (unsigned long)twcb, sizeof(*twcb));
 }
 
-static bool ghes_do_memory_failure(u64 physical_addr, int flags)
+static bool ghes_do_memory_failure(u64 physical_addr, int flags, bool critical)
 {
-	struct ghes_task_work *twcb;
 	unsigned long pfn;
+	struct sync_task_work *twcb;
 
 	if (!IS_ENABLED(CONFIG_ACPI_APEI_MEMORY_FAILURE))
 		return false;
 
 	pfn = PHYS_PFN(physical_addr);
+	if (!pfn_valid(pfn) && !arch_is_platform_page(physical_addr)) {
+		pr_warn_ratelimited(FW_WARN GHES_PFX
+		"Invalid address in generic error data: %#llx\n",
+		physical_addr);
+		return false;
+	}
 
-	if (flags == MF_ACTION_REQUIRED && should_add_task_work(current)) {
+	if (critical)
+		ghes_handle_critical_ras(pfn, flags);
+
+	if (flags == MF_ACTION_REQUIRED && current->mm) {
 		twcb = (void *)gen_pool_alloc(ghes_estatus_pool, sizeof(*twcb));
 		if (!twcb)
 			return false;
@@ -555,8 +606,10 @@ static bool ghes_do_memory_failure(u64 physical_addr, int flags)
 		return true;
 	}
 
-	memory_failure_queue(pfn, flags);
+	if (flags == MF_SOFT_OFFLINE && !apei_page_should_offline(pfn))
+		return false;
 
+	memory_failure_queue(pfn, flags);
 	return true;
 }
 
@@ -578,7 +631,7 @@ static bool ghes_handle_memory_failure(struct acpi_hest_generic_data *gdata,
 		flags = sync ? MF_ACTION_REQUIRED : 0;
 
 	if (flags != -1)
-		return ghes_do_memory_failure(mem_err->physical_addr, flags);
+		return ghes_do_memory_failure(mem_err->physical_addr, flags, false);
 
 	return false;
 }
@@ -591,6 +644,7 @@ static bool ghes_handle_arm_hw_error(struct acpi_hest_generic_data *gdata,
 	char error_type[120];
 	bool queued = false;
 	int sec_sev, i;
+	bool critical;
 	char *p;
 
 	log_arm_hw_error(err);
@@ -600,6 +654,7 @@ static bool ghes_handle_arm_hw_error(struct acpi_hest_generic_data *gdata,
 		return false;
 
 	p = (char *)(err + 1);
+	critical = ghes_armp_vendor_critical_error(err, sync);
 	for (i = 0; i < err->err_info_num; i++) {
 		struct cper_arm_err_info *err_info = (struct cper_arm_err_info *)p;
 		bool is_cache = err_info->type & CPER_ARM_CACHE_ERROR;
@@ -612,7 +667,7 @@ static bool ghes_handle_arm_hw_error(struct acpi_hest_generic_data *gdata,
 		 * and don't filter out 'corrected' error here.
 		 */
 		if (is_cache && has_pa) {
-			queued = ghes_do_memory_failure(err_info->physical_fault_addr, flags);
+			queued = ghes_do_memory_failure(err_info->physical_fault_addr, flags, critical);
 			p += err_info->length;
 			continue;
 		}
