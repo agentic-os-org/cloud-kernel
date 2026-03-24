@@ -557,10 +557,46 @@ ubcore_get_all_mue_device(enum ubcore_transport_type type, uint32_t *dev_cnt)
 	return dev_list;
 }
 
-static void ubcore_free_driver_obj(void *obj)
+static void ubcore_free_driver_obj(void *obj,
+	enum ubcore_hash_table_type type)
 {
 	// obj alloced by driver, should not free by ubcore
-	ubcore_log_err("obj was not free correctly!");
+	ubcore_log_err("obj was not free correctly, type: %d.", type);
+}
+
+static void ubcore_free_jfs_obj(void *obj)
+{
+	ubcore_free_driver_obj(obj, UBCORE_HT_JFS);
+}
+
+static void ubcore_free_jfr_obj(void *obj)
+{
+	ubcore_free_driver_obj(obj, UBCORE_HT_JFR);
+}
+
+static void ubcore_free_jfc_obj(void *obj)
+{
+	ubcore_free_driver_obj(obj, UBCORE_HT_JFC);
+}
+
+static void ubcore_free_jetty_obj(void *obj)
+{
+	ubcore_free_driver_obj(obj, UBCORE_HT_JETTY);
+}
+
+static void ubcore_free_cp_vtpn_obj(void *obj)
+{
+	ubcore_free_driver_obj(obj, UBCORE_HT_CP_VTPN);
+}
+
+static void ubcore_free_ex_tp_obj(void *obj)
+{
+	ubcore_free_driver_obj(obj, UBCORE_HT_EX_TP);
+}
+
+static void ubcore_free_rc_tp_id_obj(void *obj)
+{
+	ubcore_free_driver_obj(obj, UBCORE_HT_RC_TP_ID);
 }
 
 static struct ubcore_ht_param g_ht_params[] = {
@@ -568,42 +604,42 @@ static struct ubcore_ht_param g_ht_params[] = {
 			    offsetof(struct ubcore_jfs, hnode),
 			    offsetof(struct ubcore_jfs, jfs_id) +
 				    offsetof(struct ubcore_jetty_id, id),
-			    sizeof(uint32_t), NULL, ubcore_free_driver_obj,
+			    sizeof(uint32_t), NULL, ubcore_free_jfs_obj,
 			    ubcore_jfs_get },
 
 	[UBCORE_HT_JFR] = { UBCORE_HASH_TABLE_SIZE,
 			    offsetof(struct ubcore_jfr, hnode),
 			    offsetof(struct ubcore_jfr, jfr_id) +
 				    offsetof(struct ubcore_jetty_id, id),
-			    sizeof(uint32_t), NULL, ubcore_free_driver_obj,
+			    sizeof(uint32_t), NULL, ubcore_free_jfr_obj,
 			    ubcore_jfr_get },
 	[UBCORE_HT_JFC] = { UBCORE_HASH_TABLE_SIZE,
 			    offsetof(struct ubcore_jfc, hnode),
 			    offsetof(struct ubcore_jfc, id), sizeof(uint32_t),
-			    NULL, ubcore_free_driver_obj, NULL },
+			    NULL, ubcore_free_jfc_obj, NULL },
 
 	[UBCORE_HT_JETTY] = { UBCORE_HASH_TABLE_SIZE,
 			      offsetof(struct ubcore_jetty, hnode),
 			      offsetof(struct ubcore_jetty, jetty_id) +
 				      offsetof(struct ubcore_jetty_id, id),
-			      sizeof(uint32_t), NULL, ubcore_free_driver_obj,
+			      sizeof(uint32_t), NULL, ubcore_free_jetty_obj,
 			      ubcore_jetty_get },
 	/* key: currently tp_handle */
 	[UBCORE_HT_CP_VTPN] = { UBCORE_HASH_TABLE_SIZE,
 				offsetof(struct ubcore_vtpn, hnode),
 				offsetof(struct ubcore_vtpn, tp_handle),
-				sizeof(uint64_t), NULL, ubcore_free_driver_obj,
+				sizeof(uint64_t), NULL, ubcore_free_cp_vtpn_obj,
 				ubcore_vtpn_get },
 	[UBCORE_HT_EX_TP] = { UBCORE_HASH_TABLE_SIZE,
 			      offsetof(struct ubcore_ex_tp_info, hnode),
 			      offsetof(struct ubcore_ex_tp_info, tp_handle),
-			      sizeof(uint64_t), NULL, ubcore_free_driver_obj,
+			      sizeof(uint64_t), NULL, ubcore_free_ex_tp_obj,
 			      NULL },
 	[UBCORE_HT_RC_TP_ID] = { UBCORE_HASH_TABLE_SIZE,
 			      offsetof(struct ubcore_tpid_ctx, hnode),
 			      offsetof(struct ubcore_tpid_ctx, key),
 			      sizeof(struct ubcore_tpid_key), NULL,
-			      ubcore_free_driver_obj, ubcore_tpid_get },
+			      ubcore_free_rc_tp_id_obj, ubcore_tpid_get },
 };
 
 static inline void ubcore_set_vtpn_hash_table_size(uint32_t vtpn_size)
