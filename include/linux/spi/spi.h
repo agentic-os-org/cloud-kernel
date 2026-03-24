@@ -122,7 +122,7 @@ struct spi_delay {
 extern int spi_delay_to_ns(struct spi_delay *_delay, struct spi_transfer *xfer);
 extern int spi_delay_exec(struct spi_delay *_delay, struct spi_transfer *xfer);
 extern void spi_transfer_cs_change_delay_exec(struct spi_message *msg,
-						  struct spi_transfer *xfer);
+					      struct spi_transfer *xfer);
 
 /**
  * struct spi_device - Controller side proxy for an SPI slave device
@@ -153,10 +153,6 @@ extern void spi_transfer_cs_change_delay_exec(struct spi_message *msg,
  * @modalias: Name of the driver to use with this device, or an alias
  *	for that name.  This appears in the sysfs "modalias" attribute
  *	for driver coldplugging, and in uevents used for hotplugging
- * @driver_override: If the name of a driver is written to this attribute, then
- *	the device will bind to the named driver and only the named driver.
- *	Do not set directly, because core frees it; use driver_set_override() to
- *	set or clear it.
  * @cs_gpiod: GPIO descriptor of the chipselect line (optional, NULL when
  *	not using a GPIO line)
  * @word_delay: delay to be inserted between consecutive
@@ -212,7 +208,6 @@ struct spi_device {
 	void			*controller_state;
 	void			*controller_data;
 	char			modalias[SPI_NAME_SIZE];
-	const char		*driver_override;
 	struct gpio_desc	*cs_gpiod;	/* Chip select GPIO descriptor */
 	struct spi_delay	word_delay; /* Inter-word delay */
 	/* CS delays */
@@ -796,7 +791,7 @@ void spi_take_timestamp_post(struct spi_controller *ctlr,
 
 /* The SPI driver core manages memory for the spi_controller classdev */
 extern struct spi_controller *__spi_alloc_controller(struct device *host,
-						unsigned int size, bool slave);
+					unsigned int size, bool slave);
 
 static inline struct spi_controller *spi_alloc_master(struct device *host,
 						      unsigned int size)
@@ -864,7 +859,7 @@ static inline struct spi_controller *devm_spi_alloc_target(struct device *dev,
 
 extern int spi_register_controller(struct spi_controller *ctlr);
 extern int devm_spi_register_controller(struct device *dev,
-					struct spi_controller *ctlr);
+				struct spi_controller *ctlr);
 extern void spi_unregister_controller(struct spi_controller *ctlr);
 
 #if IS_ENABLED(CONFIG_ACPI)
