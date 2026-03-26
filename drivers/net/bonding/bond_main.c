@@ -4632,9 +4632,16 @@ static netdev_tx_t bond_xmit_broadcast(struct sk_buff *skb,
 {
 	struct bonding *bond = netdev_priv(bond_dev);
 	struct slave *slave = NULL;
+	struct slave *last_slave;
 	struct list_head *iter;
 	bool xmit_suc = false;
 	bool skb_used = false;
+
+	/* Snapshot the last slave before iterating: concurrent enslave can
+	 * change which slave is last mid-loop, causing the original skb to
+	 * be consumed twice.
+	 */
+	last_slave = bond_last_slave(bond);
 
 	bond_for_each_slave_rcu(bond, slave, iter) {
 		struct sk_buff *skb2;
@@ -4642,7 +4649,7 @@ static netdev_tx_t bond_xmit_broadcast(struct sk_buff *skb,
 		if (!(bond_slave_is_up(slave) && slave->link == BOND_LINK_UP))
 			continue;
 
-		if (bond_is_last_slave(bond, slave)) {
+		if (slave == last_slave) {
 			skb2 = skb;
 			skb_used = true;
 		} else {
