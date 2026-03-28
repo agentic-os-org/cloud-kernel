@@ -32,6 +32,8 @@
 
 #include <linux/atomic.h>
 
+#include <asm/runtime-const.h>
+
 #include "internal.h"
 
 /* sysctl tunables... */
@@ -40,7 +42,8 @@ static struct files_stat_struct files_stat = {
 };
 
 /* SLAB cache for file structures */
-static struct kmem_cache *filp_cachep __ro_after_init;
+static struct kmem_cache *__filp_cache __ro_after_init;
+#define filp_cache runtime_const_ptr(__filp_cache)
 
 static struct percpu_counter nr_files __cacheline_aligned_in_smp;
 
@@ -69,7 +72,7 @@ static void file_free_rcu(struct rcu_head *head)
 	if (unlikely(f->f_mode & FMODE_BACKING))
 		kfree(backing_file(f));
 	else
-		kmem_cache_free(filp_cachep, f);
+		kmem_cache_free(filp_cache, f);
 }
 
 static inline void file_free(struct file *f)
@@ -90,7 +93,7 @@ void release_empty_file(struct file *f)
 		put_cred(f->f_cred);
 		if (likely(!(f->f_mode & FMODE_NOACCOUNT)))
 			percpu_counter_dec(&nr_files);
-		kmem_cache_free(filp_cachep, f);
+		kmem_cache_free(filp_cache, f);
 	}
 }
 
@@ -215,13 +218,13 @@ struct file *alloc_empty_file(int flags, const struct cred *cred)
 			goto over;
 	}
 
-	f = kmem_cache_zalloc(filp_cachep, GFP_KERNEL);
+	f = kmem_cache_zalloc(filp_cache, GFP_KERNEL);
 	if (unlikely(!f))
 		return ERR_PTR(-ENOMEM);
 
 	error = init_file(f, flags, cred);
 	if (unlikely(error)) {
-		kmem_cache_free(filp_cachep, f);
+		kmem_cache_free(filp_cache, f);
 		return ERR_PTR(error);
 	}
 
@@ -249,13 +252,13 @@ struct file *alloc_empty_file_noaccount(int flags, const struct cred *cred)
 	struct file *f;
 	int error;
 
-	f = kmem_cache_zalloc(filp_cachep, GFP_KERNEL);
+	f = kmem_cache_zalloc(filp_cache, GFP_KERNEL);
 	if (unlikely(!f))
 		return ERR_PTR(-ENOMEM);
 
 	error = init_file(f, flags, cred);
 	if (unlikely(error)) {
-		kmem_cache_free(filp_cachep, f);
+		kmem_cache_free(filp_cache, f);
 		return ERR_PTR(error);
 	}
 
@@ -483,8 +486,10 @@ EXPORT_SYMBOL(__fput_sync);
 
 void __init files_init(void)
 {
-	filp_cachep = kmem_cache_create("filp", sizeof(struct file), 0,
+	__filp_cache = kmem_cache_create("filp", sizeof(struct file), 0,
 			SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_ACCOUNT, NULL);
+	runtime_const_init(ptr, __filp_cache);
+
 	percpu_counter_init(&nr_files, 0, GFP_KERNEL);
 }
 
