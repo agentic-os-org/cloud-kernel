@@ -305,4 +305,13 @@ int cxl_get_hdm_info(struct cxl_dev_state *cxlds, u8 *count,
 
 #endif /* CONFIG_CXL_BUS */
 
+/* f951acc: split from media-ready wait */
+struct cxl_dev_state;
+int cxl_await_range_active(struct cxl_dev_state *cxlds);
+
+/* a6a063d: exported reset helpers for VFIO */
+int cxl_dev_reset(struct pci_dev *pdev, int dvsec, bool mem_clr_en);
+int cxl_dev_reset_locked(struct pci_dev *pdev, int dvsec, bool mem_clr_en);
+bool pci_cxl_reset_capable(struct pci_dev *pdev);
+
 #endif /* __CXL_CXL_H__ */
