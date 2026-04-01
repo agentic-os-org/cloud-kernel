@@ -274,4 +274,8 @@ static inline bool cxl_region_contains_soft_reserve(struct resource *res)
 	return false;
 }
 #endif
+struct cxl_component_reg_map;
+void cxl_probe_component_regs(struct device *dev, void __iomem *base,
+			      struct cxl_component_reg_map *map);
+
 #endif /* __CXL_CXL_H__ */
