@@ -93,6 +93,7 @@ struct cxl_reg_map {
 	int id;
 	unsigned long offset;
 	unsigned long size;
+	u8 count;
 };
 
 struct cxl_component_reg_map {
@@ -289,5 +290,19 @@ void cxl_probe_component_regs(struct device *dev, void __iomem *base,
 
 int cxl_regblock_get_bar_info(const struct cxl_register_map *map, u8 *bar_index,
 			      resource_size_t *bar_offset);
+
+#ifdef CONFIG_CXL_BUS
+
+int cxl_get_hdm_info(struct cxl_dev_state *cxlds, u8 *count,
+		     resource_size_t *offset, resource_size_t *size);
+
+#else
+
+static inline
+int cxl_get_hdm_info(struct cxl_dev_state *cxlds, u8 *count,
+		     resource_size_t *offset, resource_size_t *size)
+{ return -EOPNOTSUPP; }
+
+#endif /* CONFIG_CXL_BUS */
 
 #endif /* __CXL_CXL_H__ */
