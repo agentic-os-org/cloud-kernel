@@ -77,6 +77,7 @@
 #include <errno.h>
 #include <getopt.h>
 #include <linux/if_link.h>
+#include <linux/align.h>
 #include <linux/if_ether.h>
 #include <linux/mman.h>
 #include <linux/netdev.h>
@@ -2293,6 +2294,7 @@ static bool is_xdp_supported(int ifindex)
 int main(int argc, char **argv)
 {
 	struct pkt_stream *rx_pkt_stream_default;
+	u32 cache_line_size, max_frags, umem_tailroom;
 	struct pkt_stream *tx_pkt_stream_default;
 	struct ifobject *ifobj_tx, *ifobj_rx;
 	int modes = TEST_MODE_SKB + 1;
@@ -2311,6 +2313,27 @@ int main(int argc, char **argv)
 		exit_with_error(ENOMEM);
 
 	setlocale(LC_ALL, "");
+
+	cache_line_size = read_procfs_val(SMP_CACHE_BYTES_PATH);
+	if (!cache_line_size) {
+		ksft_print_msg("Can't get SMP_CACHE_BYTES from system, using default (64)\n");
+		cache_line_size = 64;
+	}
+
+	max_frags = read_procfs_val(MAX_SKB_FRAGS_PATH);
+	if (!max_frags) {
+		ksft_print_msg("Can't get MAX_SKB_FRAGS from system, using default (17)\n");
+		max_frags = 17;
+	}
+	ifobj_tx->max_skb_frags = max_frags;
+	ifobj_rx->max_skb_frags = max_frags;
+
+	/* 48 bytes is a part of skb_shared_info w/o frags array;
+	 * 16 bytes is sizeof(skb_frag_t)
+	 */
+	umem_tailroom = ALIGN(48 + (max_frags * 16), cache_line_size);
+	ifobj_tx->umem_tailroom = umem_tailroom;
+	ifobj_rx->umem_tailroom = umem_tailroom;
 
 	parse_command_line(ifobj_tx, ifobj_rx, argc, argv);
 
