@@ -1759,15 +1759,17 @@ static int testapp_headroom(struct test_spec *test)
 
 static int testapp_stats_rx_dropped(struct test_spec *test)
 {
+	u32 umem_tr = test->ifobj_tx->umem_tailroom;
+
 	test_spec_set_name(test, "STAT_RX_DROPPED");
 	if (test->mode == TEST_MODE_ZC) {
 		ksft_test_result_skip("Can not run RX_DROPPED test for ZC mode\n");
 		return TEST_SKIP;
 	}
 
-	pkt_stream_replace_half(test, MIN_PKT_SIZE * 4, 0);
+	pkt_stream_replace_half(test, MIN_PKT_SIZE * 3 + umem_tr, 0);
 	test->ifobj_rx->umem->frame_headroom = test->ifobj_rx->umem->frame_size -
-		XDP_PACKET_HEADROOM - MIN_PKT_SIZE * 3;
+		XDP_PACKET_HEADROOM - MIN_PKT_SIZE * 2 - umem_tr;
 	pkt_stream_receive_half(test);
 	test->ifobj_rx->validation_func = validate_rx_dropped;
 	return testapp_validate_traffic(test);
