@@ -5,6 +5,8 @@
 #ifndef XSKXCEIVER_H_
 #define XSKXCEIVER_H_
 
+#include <stdio.h>
+#include "../kselftest.h"
 #include "xsk_xdp_progs.skel.h"
 
 #ifndef SOL_XDP
@@ -26,6 +28,9 @@
 #ifndef SO_PREFER_BUSY_POLL
 #define SO_PREFER_BUSY_POLL 69
 #endif
+
+#define MAX_SKB_FRAGS_PATH "/proc/sys/net/core/max_skb_frags"
+#define SMP_CACHE_BYTES_PATH "/sys/devices/system/cpu/cpu0/cache/index0/coherency_line_size"
 
 #define TEST_PASS 0
 #define TEST_FAILURE -1
@@ -142,6 +147,24 @@ struct ifobject;
 typedef int (*validation_func_t)(struct ifobject *ifobj);
 typedef void *(*thread_func_t)(void *arg);
 
+static inline unsigned int read_procfs_val(const char *path)
+{
+	unsigned int read_val = 0;
+	FILE *file;
+
+	file = fopen(path, "r");
+	if (!file) {
+		ksft_print_msg("Error opening %s\n", path);
+		return 0;
+	}
+
+	if (fscanf(file, "%u", &read_val) != 1)
+		ksft_print_msg("Error reading %s\n", path);
+
+	fclose(file);
+	return read_val;
+}
+
 struct ifobject {
 	char ifname[MAX_INTERFACE_NAME_CHARS];
 	struct xsk_socket_info *xsk;
@@ -158,6 +181,8 @@ struct ifobject {
 	int mtu;
 	u32 bind_flags;
 	u32 xdp_zc_max_segs;
+	u32 umem_tailroom;
+	u32 max_skb_frags;
 	bool tx_on;
 	bool rx_on;
 	bool use_poll;
