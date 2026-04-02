@@ -9,6 +9,7 @@
 #ifndef __ASSEMBLY__
 
 #include <linux/types.h>
+#include <linux/const.h>
 
 #define PTRACE_GETFDPIC		33
 
