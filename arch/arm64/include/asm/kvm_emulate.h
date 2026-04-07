@@ -63,7 +63,7 @@ static __always_inline bool vcpu_el1_is_32bit(struct kvm_vcpu *vcpu)
 #else
 static __always_inline bool vcpu_el1_is_32bit(struct kvm_vcpu *vcpu)
 {
-	return test_bit(KVM_ARM_VCPU_EL1_32BIT, vcpu->arch.features);
+	return vcpu_has_feature(vcpu, KVM_ARM_VCPU_EL1_32BIT);
 }
 #endif
 
