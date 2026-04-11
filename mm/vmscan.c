@@ -6373,6 +6373,13 @@ again:
 		 */
 		if (sc->nr.immediate)
 			reclaim_throttle(pgdat, VMSCAN_THROTTLE_WRITEBACK);
+	} else if (current_may_throttle() && !sc->hibernation_mode &&
+		(!sc->nr_reclaimed && sc->nr.dirty > sc->nr.taken / 2)) {
+		/*
+		 * Throttle if direct reclaim cannot make progress due to
+		 * a large number of dirty and writeback folios.
+		 */
+		reclaim_throttle(pgdat, VMSCAN_THROTTLE_WRITEBACK);
 	}
 
 	/*
