@@ -227,6 +227,7 @@ static int sctp_v6_xmit(struct sk_buff *skb, struct sctp_transport *t)
 	struct ipv6_pinfo *np = inet6_sk(sk);
 	__u8 tclass = np->tclass;
 	__be32 label;
+	int res;
 
 	pr_debug("%s: skb:%p, len:%d, src:%pI6 dst:%pI6\n", __func__, skb,
 		 skb->len, &fl6->saddr, &fl6->daddr);
@@ -243,8 +244,6 @@ static int sctp_v6_xmit(struct sk_buff *skb, struct sctp_transport *t)
 	SCTP_INC_STATS(sock_net(sk), SCTP_MIB_OUTSCTPPACKS);
 
 	if (!t->encap_port || !sctp_sk(sk)->udp_port) {
-		int res;
-
 		skb_dst_set(skb, dst);
 		rcu_read_lock();
 		res = ip6_xmit(sk, skb, fl6, sk->sk_mark,
@@ -263,9 +262,12 @@ static int sctp_v6_xmit(struct sk_buff *skb, struct sctp_transport *t)
 	skb_set_inner_ipproto(skb, IPPROTO_SCTP);
 	label = ip6_make_flowlabel(sock_net(sk), skb, fl6->flowlabel, true, fl6);
 
-	return udp_tunnel6_xmit_skb(dst, sk, skb, NULL, &fl6->saddr,
-				    &fl6->daddr, tclass, ip6_dst_hoplimit(dst),
-				    label, sctp_sk(sk)->udp_port, t->encap_port, false);
+	local_bh_disable();
+	res = udp_tunnel6_xmit_skb(dst, sk, skb, NULL, &fl6->saddr,
+				   &fl6->daddr, tclass, ip6_dst_hoplimit(dst),
+				   label, sctp_sk(sk)->udp_port, t->encap_port, false);
+	local_bh_enable();
+	return res;
 }
 
 /* Returns the dst cache entry for the given source and destination ip
