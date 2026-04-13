@@ -490,6 +490,12 @@ static void process_inode_switch_wbs(struct bdi_writeback *new_wb,
 	struct inode **inodep;
 
 	/*
+	 * Grab our own reference to @new_wb so that it cannot get freed under
+	 * us while we are switching the inodes over to it.
+	 */
+	wb_get(new_wb);
+
+	/*
 	 * If @inode switches cgwb membership while sync_inodes_sb() is
 	 * being issued, sync_inodes_sb() might miss it.  Synchronize.
 	 */
@@ -547,6 +553,8 @@ relock:
 	wb_put(new_wb);
 	kfree(isw);
 	atomic_dec(&isw_nr_in_flight);
+	/* Drop the reference grabbed at the beginning of this function. */
+	wb_put(new_wb);
 }
 
 void inode_switch_wbs_work_fn(struct work_struct *work)
