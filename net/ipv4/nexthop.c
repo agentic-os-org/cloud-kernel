@@ -1026,10 +1026,10 @@ static int replace_nexthop_single(struct net *net, struct nexthop *old,
 	rcu_assign_pointer(old->nh_info, newi);
 	rcu_assign_pointer(new->nh_info, oldi);
 
-	/* When replacing an IPv4 nexthop with an IPv6 nexthop, potentially
+	/* When replacing a nexthop with one of a different family, potentially
 	 * update IPv4 indication in all the groups using the nexthop.
 	 */
-	if (oldi->family == AF_INET && newi->family == AF_INET6) {
+	if (oldi->family != newi->family) {
 		struct nh_grp_entry *nhge;
 
 		list_for_each_entry(nhge, &old->grp_list, nh_list) {
