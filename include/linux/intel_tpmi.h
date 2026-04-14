@@ -22,6 +22,7 @@ enum intel_tpmi_id {
 	TPMI_ID_RAPL = 0,	/* Running Average Power Limit */
 	TPMI_ID_PEM = 1,	/* Power and Perf excursion Monitor */
 	TPMI_ID_UNCORE = 2,	/* Uncore Frequency Scaling */
+	TPMI_ID_DRC = 4,	/* Hardware Dynamic Resource Controller (DRC) */
 	TPMI_ID_SST = 5,	/* Speed Select Technology */
 	TPMI_ID_PLR = 0xc,	/* Performance Limit Reasons */
 	TPMI_CONTROL_ID = 0x80,	/* Special ID for getting feature status */
