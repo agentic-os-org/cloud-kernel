@@ -514,11 +514,12 @@ int luo_session_deserialize(void)
 {
 	struct luo_session_header *sh = &luo_session_global.incoming;
 	static bool is_deserialized;
-	static int err;
+	static int saved_err;
+	int err;
 
 	/* If has been deserialized, always return the same error code */
 	if (is_deserialized)
-		return err;
+		return saved_err;
 
 	is_deserialized = true;
 	if (!sh->active)
@@ -548,7 +549,7 @@ int luo_session_deserialize(void)
 				(int)sizeof(sh->ser[i].name),
 				sh->ser[i].name, session);
 			err = PTR_ERR(session);
-			return err;
+			goto save_err;
 		}
 
 		err = luo_session_insert(sh, session);
@@ -556,7 +557,7 @@ int luo_session_deserialize(void)
 			pr_warn("Failed to insert session [%s] %pe\n",
 				session->name, ERR_PTR(err));
 			luo_session_free(session);
-			return err;
+			goto save_err;
 		}
 
 		scoped_guard(mutex, &session->mutex) {
@@ -566,7 +567,7 @@ int luo_session_deserialize(void)
 		if (err) {
 			pr_warn("Failed to deserialize files for session [%s] %pe\n",
 				session->name, ERR_PTR(err));
-			return err;
+			goto save_err;
 		}
 	}
 
@@ -575,6 +576,9 @@ int luo_session_deserialize(void)
 	sh->ser = NULL;
 
 	return 0;
+save_err:
+	saved_err = err;
+	return err;
 }
 
 int luo_session_serialize(void)
