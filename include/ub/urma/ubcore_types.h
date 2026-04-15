@@ -1500,6 +1500,7 @@ struct ubcore_share_tp_cfg {
 	uint64_t stag;
 	uint64_t dtag;
 	int local_import;
+	uint32_t tx_psn;
 };
 
 struct ubcore_tjetty_cfg {
