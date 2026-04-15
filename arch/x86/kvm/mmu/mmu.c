@@ -2891,6 +2891,24 @@ static int __direct_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 			if (is_tdp && huge_page_disallowed &&
 			    req_level >= it.level)
 				account_huge_nx_page(vcpu->kvm, sp);
+		} else {
+			struct kvm_mmu_page *existing_sp;
+			struct kvm_mmu_page *parent_sp = sptep_to_sp(it.sptep);
+
+			/*
+			 * If the existing shadow page was created for a different
+			 * GFN (e.g. a large page was split from outside the guest),
+			 * zap it to avoid a use-after-free when the page is later
+			 * freed but rmap entries survive under the wrong GFN.
+			 */
+			existing_sp = to_shadow_page(*it.sptep & PT64_BASE_ADDR_MASK);
+			if (existing_sp->gfn != base_gfn) {
+				drop_parent_pte(existing_sp, it.sptep);
+				kvm_flush_remote_tlbs_with_address(vcpu->kvm,
+								   parent_sp->gfn,
+								   KVM_PAGES_PER_HPAGE(parent_sp->role.level));
+				return RET_PF_RETRY;
+			}
 		}
 	}
 
