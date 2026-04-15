@@ -2068,8 +2068,12 @@ static int __init vivid_init(void)
 
 	ret = platform_driver_register(&vivid_pdrv);
 	if (ret)
-		platform_device_unregister(&vivid_pdev);
+		goto unreg_device;
 
+	return 0;
+
+unreg_device:
+	platform_device_unregister(&vivid_pdev);
 	return ret;
 }
 
