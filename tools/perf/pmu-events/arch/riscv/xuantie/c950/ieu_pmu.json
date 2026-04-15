@@ -7,7 +7,7 @@
     {
         "EventName": "topdown.backend_bound.core.highload",
         "EventCode": "0x0000003d",
-        "BriefDescription": "Stall cycles caused by high load (ptag full, etc.) at Rename"
+        "BriefDescription": "Stall cycles caused by high load at Rename"
     },
     {
         "EventName": "topdown.backend_bound.core.rob_full",
