@@ -13,7 +13,6 @@
 #include <linux/io.h>
 #include <linux/range.h>
 #include <cxl/cxl.h>
-#include <cxl/pci.h>
 
 extern const struct nvdimm_security_ops *cxl_security_ops;
 
@@ -240,6 +239,7 @@ struct cxl_decoder {
 enum cxl_decoder_state {
 	CXL_DECODER_STATE_MANUAL,
 	CXL_DECODER_STATE_AUTO,
+	CXL_DECODER_STATE_AUTO_STAGED,
 };
 
 /**
@@ -663,6 +663,7 @@ DEFINE_FREE(put_cxl_root, struct cxl_root *, if (_T) put_device(&_T->port.dev))
 DEFINE_FREE(put_cxl_port, struct cxl_port *, if (!IS_ERR_OR_NULL(_T)) put_device(&_T->dev))
 DEFINE_FREE(put_cxl_root_decoder, struct cxl_root_decoder *, if (!IS_ERR_OR_NULL(_T)) put_device(&_T->cxlsd.cxld.dev))
 DEFINE_FREE(put_cxl_region, struct cxl_region *, if (!IS_ERR_OR_NULL(_T)) put_device(&_T->dev))
+DEFINE_FREE(put_cxl_dax_region, struct cxl_dax_region *, if (!IS_ERR_OR_NULL(_T)) put_device(&_T->dev))
 
 int devm_cxl_enumerate_ports(struct cxl_memdev *cxlmd);
 void cxl_bus_rescan(void);

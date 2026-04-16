@@ -320,19 +320,6 @@ void cxl_probe_component_regs(struct device *dev, void __iomem *base,
 int cxl_regblock_get_bar_info(const struct cxl_register_map *map, u8 *bar_index,
 			      resource_size_t *bar_offset);
 
-#ifdef CONFIG_CXL_BUS
-
-int cxl_get_hdm_info(struct cxl_dev_state *cxlds, u8 *count,
-		     resource_size_t *offset, resource_size_t *size);
-
-#else
-
-static inline
-int cxl_get_hdm_info(struct cxl_dev_state *cxlds, u8 *count,
-		     resource_size_t *offset, resource_size_t *size)
-{ return -EOPNOTSUPP; }
-
-#endif /* CONFIG_CXL_BUS */
 
 /* f951acc: split from media-ready wait */
 struct cxl_dev_state;
@@ -342,5 +329,16 @@ int cxl_await_range_active(struct cxl_dev_state *cxlds);
 int cxl_dev_reset(struct pci_dev *pdev, int dvsec, bool mem_clr_en);
 int cxl_dev_reset_locked(struct pci_dev *pdev, int dvsec, bool mem_clr_en);
 bool pci_cxl_reset_capable(struct pci_dev *pdev);
+
+/* register map helpers moved from cxlpci.h */
+struct pci_dev;
+enum cxl_regloc_type;
+int cxl_find_regblock(struct pci_dev *pdev, enum cxl_regloc_type type,
+		      struct cxl_register_map *map);
+int cxl_setup_regs(struct cxl_register_map *map);
+
+/* region resource containment */
+struct resource;
+bool cxl_region_contains_resource(const struct resource *res);
 
 #endif /* __CXL_CXL_H__ */

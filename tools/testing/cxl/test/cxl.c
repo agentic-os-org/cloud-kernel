@@ -1116,7 +1116,7 @@ static int third_decoder(struct device *dev, const void *data)
 	return 0;
 }
 
-static void mock_init_hdm_decoder(struct cxl_decoder *cxld)
+static bool mock_init_hdm_decoder(struct cxl_decoder *cxld)
 {
 	struct acpi_cedt_cfmws *window = mock_cfmws[0];
 	struct platform_device *pdev = NULL;
@@ -1181,7 +1181,7 @@ static void mock_init_hdm_decoder(struct cxl_decoder *cxld)
 		size_zero_mock_decoder_ep(cxld, base);
 		/* Commit the zero-sized decoder */
 		port->commit_end = cxld->id;
-		return;
+		return false;
 	}
 
 	/*
