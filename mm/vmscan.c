@@ -907,6 +907,11 @@ static enum folio_references folio_check_references(struct folio *folio,
 	 */
 	if (referenced_ptes == -1)
 		return FOLIOREF_KEEP;
+	/*
+	 * Activate file-backed executable folios if min_cache_kbytes is enabled.
+	 */
+	if ((vm_flags & VM_EXEC) && folio_is_file_lru(folio) && sc->file_is_reserved)
+		return FOLIOREF_ACTIVATE;
 
 	if (lru_gen_enabled()) {
 		if (!referenced_ptes)
@@ -2337,7 +2342,7 @@ static void prepare_scan_control(pg_data_t *pgdat, struct scan_control *sc)
 	struct lruvec *target_lruvec;
 
 	if (lru_gen_enabled())
-		return;
+		goto file_reserved;
 
 	target_lruvec = mem_cgroup_lruvec(sc->target_mem_cgroup, pgdat);
 
@@ -2398,6 +2403,7 @@ static void prepare_scan_control(pg_data_t *pgdat, struct scan_control *sc)
 	else
 		sc->cache_trim_mode = 0;
 
+file_reserved:
 	/*
 	 * Prevent the reclaimer from falling into the cache trap: as
 	 * cache pages start out inactive, every cache fault will tip
@@ -2440,8 +2446,13 @@ static void prepare_scan_control(pg_data_t *pgdat, struct scan_control *sc)
 		 * given watermark.
 		 */
 		min_cache_kbytes = READ_ONCE(sysctl_min_cache_kbytes);
-		if (min_cache_kbytes)
+		if (min_cache_kbytes && !sc->file_is_reserved) {
+			unsigned long f_dirty;
+
+			f_dirty = node_page_state(pgdat, NR_FILE_DIRTY);
+			file = (file > f_dirty) ? file - f_dirty : 0;
 			sc->file_is_reserved = file <= pgdat->min_cache_pages;
+		}
 	}
 }
 
@@ -2662,9 +2673,6 @@ out:
 			/* Look ma, no brain */
 			BUG();
 		}
-
-		if (sc->file_is_reserved && file)
-			scan = 0;
 
 		nr[lru] = scan;
 	}
@@ -6241,6 +6249,7 @@ static void shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 
 	if (lru_gen_enabled() && root_reclaim(sc)) {
 		memset(&sc->nr, 0, sizeof(sc->nr));
+		prepare_scan_control(pgdat, sc);
 		lru_gen_shrink_node(pgdat, sc);
 		return;
 	}
