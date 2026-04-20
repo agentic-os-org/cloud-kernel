@@ -344,7 +344,7 @@ int ubcore_register_client(struct ubcore_client *new_client)
 
 	up_write(&g_device_rwsem);
 
-	ubcore_log_info("ubcore client: %s register success.\n",
+	ubcore_log_notice_rl("ubcore client: %s register success.\n",
 			new_client->client_name);
 	return 0;
 }
@@ -391,7 +391,7 @@ void ubcore_unregister_client(struct ubcore_client *rm_client)
 	}
 
 	up_read(&g_device_rwsem);
-	ubcore_log_info("ubcore client: %s unregister success.\n",
+	ubcore_log_notice_rl("ubcore client: %s unregister success.\n",
 			rm_client->client_name);
 }
 EXPORT_SYMBOL(ubcore_unregister_client);
@@ -1277,8 +1277,8 @@ int ubcore_register_device(struct ubcore_device *dev)
 	list_add_tail(&dev->list_node, &g_device_list);
 	up_write(&g_device_rwsem);
 
-	ubcore_log_info_rl("ubcore device: %s register success.\n",
-			   dev->dev_name);
+	ubcore_log_notice_rl("ubcore device: %s register success.\n",
+		dev->dev_name);
 	return 0;
 
 err:
@@ -1328,8 +1328,8 @@ void ubcore_unregister_device(struct ubcore_device *dev)
 	uninit_ubcore_device(
 		dev); /* Protect eid table access security based on ref cnt */
 
-	ubcore_log_info_rl("ubcore device: %s unregister success.\n",
-			   dev->dev_name);
+	ubcore_log_notice_rl("ubcore device: %s unregister success.\n",
+		dev->dev_name);
 }
 EXPORT_SYMBOL(ubcore_unregister_device);
 
@@ -1348,7 +1348,7 @@ void ubcore_stop_requests(struct ubcore_device *dev)
 			ctx->client->stop(dev, ctx->data);
 	}
 	up_read(&dev->client_ctx_rwsem);
-	ubcore_log_info("ubcore device: %s stop success.\n", dev->dev_name);
+	ubcore_log_notice("ubcore device: %s stop success.\n", dev->dev_name);
 }
 EXPORT_SYMBOL(ubcore_stop_requests);
 
