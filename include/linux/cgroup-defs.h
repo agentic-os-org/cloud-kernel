@@ -21,6 +21,7 @@
 #include <linux/workqueue.h>
 #include <linux/bpf-cgroup-defs.h>
 #include <linux/psi_types.h>
+#include <linux/ck_kabi.h>
 
 #ifdef CONFIG_CGROUPS
 
@@ -167,6 +168,9 @@ struct cgroup_file {
 	struct kernfs_node *kn;
 	unsigned long notified_at;
 	struct timer_list notify_timer;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 };
 
 /*
@@ -260,6 +264,11 @@ struct cgroup_subsys_state {
 	 * Protected by css->ss->rstat_ss_lock otherwise.
 	 */
 	struct cgroup_subsys_state *rstat_flush_next;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 /*
@@ -357,6 +366,11 @@ struct css_set {
 
 	/* For RCU-protected deletion */
 	struct rcu_head rcu_head;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 struct cgroup_base_stat {
@@ -431,6 +445,11 @@ struct cgroup_rstat_base_cpu {
 	 * deltas to propagate to the per-cpu subtree_bstat.
 	 */
 	struct cgroup_base_stat last_subtree_bstat;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 struct cgroup_freezer_state {
@@ -628,6 +647,11 @@ struct cgroup {
 	struct bpf_local_storage __rcu  *bpf_cgrp_storage;
 #endif
 
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+
 	/* All ancestors including self */
 	union {
 		DECLARE_FLEX_ARRAY(struct cgroup *, ancestors);
@@ -674,6 +698,11 @@ struct cgroup_root {
 	 * of struct cgroup.
 	 */
 	struct cgroup cgrp;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 /*
@@ -763,6 +792,8 @@ struct cftype {
 			 struct poll_table_struct *pt);
 
 	struct lock_class_key	lockdep_key;
+
+	CK_KABI_RESERVE(1)
 };
 
 /*
@@ -858,6 +889,11 @@ struct cgroup_subsys {
 
 	spinlock_t rstat_ss_lock;
 	struct llist_head __percpu *lhead; /* lockless update list head */
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 extern struct percpu_rw_semaphore cgroup_threadgroup_rwsem;
@@ -929,6 +965,8 @@ struct sock_cgroup_data {
 #ifdef CONFIG_CGROUP_NET_PRIO
 	u16		prioidx; /* v1 */
 #endif
+
+	CK_KABI_RESERVE(1)
 };
 
 static inline u16 sock_cgroup_prioidx(const struct sock_cgroup_data *skcd)

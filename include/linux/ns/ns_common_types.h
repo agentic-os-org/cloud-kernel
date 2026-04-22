@@ -7,6 +7,7 @@
 #include <linux/rbtree.h>
 #include <linux/refcount.h>
 #include <linux/types.h>
+#include <linux/ck_kabi.h>
 
 struct cgroup_namespace;
 struct dentry;
@@ -119,6 +120,8 @@ struct ns_common {
 		struct ns_tree;
 		struct rcu_head ns_rcu;
 	};
+
+	CK_KABI_RESERVE(1)
 };
 
 #define to_ns_common(__ns)                                    \

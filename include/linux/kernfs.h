@@ -19,6 +19,7 @@
 #include <linux/wait.h>
 #include <linux/rwsem.h>
 #include <linux/cache.h>
+#include <linux/ck_kabi.h>
 
 struct file;
 struct dentry;
@@ -171,6 +172,8 @@ struct kernfs_elem_dir {
 	 * node has changed during negative dentry revalidation.
 	 */
 	unsigned long		rev;
+
+	CK_KABI_RESERVE(1)
 };
 
 struct kernfs_elem_symlink {
@@ -250,6 +253,11 @@ struct kernfs_syscall_ops {
 		      const char *new_name);
 	int (*show_path)(struct seq_file *sf, struct kernfs_node *kn,
 			 struct kernfs_root *root);
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
 };
 
 struct kernfs_node *kernfs_root_to_node(struct kernfs_root *root);
@@ -325,6 +333,9 @@ struct kernfs_ops {
 
 	int (*mmap)(struct kernfs_open_file *of, struct vm_area_struct *vma);
 	loff_t (*llseek)(struct kernfs_open_file *of, loff_t offset, int whence);
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 };
 
 /*
