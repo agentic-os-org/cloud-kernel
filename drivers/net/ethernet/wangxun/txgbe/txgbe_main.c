@@ -10709,6 +10709,10 @@ static int txgbe_probe(struct pci_dev *pdev,
 
 	adapter->etrack_id = etrack_id;
 
+	if (hw->mac.type == txgbe_mac_sp &&
+	    ((etrack_id & 0xfffff) < 0x20010))
+		dev_warn(&pdev->dev, "Please upgrade the firmware to 0x20010 or above.\n");
+
 	if (strcmp(adapter->eeprom_id, adapter->fl_version) == 0) {
 		memcpy(adapter->fw_version, adapter->eeprom_id, sizeof(adapter->eeprom_id));
 
