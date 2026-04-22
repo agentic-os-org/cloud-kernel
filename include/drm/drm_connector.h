@@ -33,6 +33,7 @@
 #include <drm/drm_property.h>
 
 #include <uapi/drm/drm_mode.h>
+#include <linux/ck_kabi.h>
 
 struct drm_connector_helper_funcs;
 struct drm_modeset_acquire_ctx;
@@ -332,6 +333,9 @@ struct drm_hdmi_info {
 
 	/** @dsc_cap: DSC capabilities of the sink */
 	struct drm_hdmi_dsc_cap dsc_cap;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 };
 
 /**
@@ -420,6 +424,8 @@ drm_hdmi_connector_get_output_format_name(enum hdmi_colorspace fmt);
 struct drm_monitor_range_info {
 	u16 min_vfreq;
 	u16 max_vfreq;
+
+	CK_KABI_RESERVE(1)
 };
 
 /**
@@ -861,6 +867,9 @@ struct drm_display_info {
 	 * Defaults to CEC_PHYS_ADDR_INVALID (0xffff).
 	 */
 	u16 source_physical_address;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 };
 
 int drm_display_info_set_bus_formats(struct drm_display_info *info,
@@ -1652,6 +1661,9 @@ struct drm_connector_funcs {
 	 * Allows connectors to create connector-specific debugfs files.
 	 */
 	void (*debugfs_init)(struct drm_connector *connector, struct dentry *root);
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
 };
 
 /**
@@ -2350,6 +2362,19 @@ struct drm_connector {
 	 * @cec: CEC-related data.
 	 */
 	struct drm_connector_cec cec;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+	CK_KABI_RESERVE(5)
+	CK_KABI_RESERVE(6)
+	CK_KABI_RESERVE(7)
+	CK_KABI_RESERVE(8)
+	CK_KABI_RESERVE(9)
+	CK_KABI_RESERVE(10)
+	CK_KABI_RESERVE(11)
+	CK_KABI_RESERVE(12)
 };
 
 #define obj_to_connector(x) container_of(x, struct drm_connector, base)

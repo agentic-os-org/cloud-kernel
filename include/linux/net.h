@@ -25,6 +25,7 @@
 #include <linux/sockptr.h>
 
 #include <uapi/linux/net.h>
+#include <linux/ck_kabi.h>
 
 struct poll_table_struct;
 struct pipe_inode_info;
@@ -223,6 +224,15 @@ struct proto_ops {
 	int		(*sendmsg_locked)(struct sock *sk, struct msghdr *msg,
 					  size_t size);
 	int		(*set_rcvlowat)(struct sock *sk, int val);
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+	CK_KABI_RESERVE(5)
+	CK_KABI_RESERVE(6)
+	CK_KABI_RESERVE(7)
+	CK_KABI_RESERVE(8)
 };
 
 #define DECLARE_SOCKADDR(type, dst, src)	\

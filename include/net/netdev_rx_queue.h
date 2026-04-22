@@ -8,6 +8,7 @@
 #include <net/xdp.h>
 #include <net/page_pool/types.h>
 #include <net/netdev_queues.h>
+#include <linux/ck_kabi.h>
 
 /* This structure contains an instance of an RX queue. */
 struct netdev_rx_queue {
@@ -30,6 +31,15 @@ struct netdev_rx_queue {
 	struct napi_struct		*napi;
 	struct netdev_queue_config	qcfg;
 	struct pp_memory_provider_params mp_params;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+	CK_KABI_RESERVE(5)
+	CK_KABI_RESERVE(6)
+	CK_KABI_RESERVE(7)
+	CK_KABI_RESERVE(8)
 } ____cacheline_aligned_in_smp;
 
 /*

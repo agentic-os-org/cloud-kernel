@@ -4,6 +4,7 @@
 
 #include <linux/types.h>
 #include <linux/timerqueue_types.h>
+#include <linux/ck_kabi.h>
 
 struct hrtimer_clock_base;
 
@@ -45,6 +46,10 @@ struct hrtimer {
 	u8				is_rel;
 	u8				is_soft;
 	u8				is_hard;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
 };
 
 #endif /* _LINUX_HRTIMER_TYPES_H */
