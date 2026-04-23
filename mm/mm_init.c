@@ -730,6 +730,12 @@ static void __meminit __init_reserved_page(unsigned long pfn, int nid)
 			break;
 	}
 	__init_single_page(pfn_to_page(pfn), pfn, zid, nid);
+
+	if (pageblock_aligned(pfn)) {
+		enum migratetype mt =
+			kho_scratch_migratetype(pfn, MIGRATE_MOVABLE);
+		set_pageblock_migratetype(pfn_to_page(pfn), mt);
+	}
 }
 #else
 static inline void pgdat_set_deferred_range(pg_data_t *pgdat) {}
@@ -924,7 +930,8 @@ void __meminit memmap_init_range(unsigned long size, int nid, unsigned long zone
 static void __init memmap_init_zone_range(struct zone *zone,
 					  unsigned long start_pfn,
 					  unsigned long end_pfn,
-					  unsigned long *hole_pfn)
+					  unsigned long *hole_pfn,
+					  enum migratetype mt)
 {
 	unsigned long zone_start_pfn = zone->zone_start_pfn;
 	unsigned long zone_end_pfn = zone_start_pfn + zone->spanned_pages;
@@ -937,7 +944,7 @@ static void __init memmap_init_zone_range(struct zone *zone,
 		return;
 
 	memmap_init_range(end_pfn - start_pfn, nid, zone_id, start_pfn,
-			  zone_end_pfn, MEMINIT_EARLY, NULL, MIGRATE_MOVABLE);
+			  zone_end_pfn, MEMINIT_EARLY, NULL, mt);
 
 	if (*hole_pfn < start_pfn)
 		init_unavailable_range(*hole_pfn, start_pfn, zone_id, nid);
@@ -953,6 +960,8 @@ static void __init memmap_init(void)
 
 	for_each_mem_pfn_range(i, MAX_NUMNODES, &start_pfn, &end_pfn, &nid) {
 		struct pglist_data *node = NODE_DATA(nid);
+		enum migratetype mt =
+			kho_scratch_migratetype(start_pfn, MIGRATE_MOVABLE);
 
 		for (j = 0; j < MAX_NR_ZONES; j++) {
 			struct zone *zone = node->node_zones + j;
@@ -961,7 +970,7 @@ static void __init memmap_init(void)
 				continue;
 
 			memmap_init_zone_range(zone, start_pfn, end_pfn,
-					       &hole_pfn);
+					       &hole_pfn, mt);
 			zone_id = j;
 		}
 	}
@@ -1983,7 +1992,8 @@ unsigned long __init node_map_pfn_alignment(void)
 
 #ifdef CONFIG_DEFERRED_STRUCT_PAGE_INIT
 static void __init deferred_free_range(unsigned long pfn,
-				       unsigned long nr_pages)
+				       unsigned long nr_pages,
+				       enum migratetype mt)
 {
 	struct page *page;
 	unsigned long i;
@@ -1996,7 +2006,7 @@ static void __init deferred_free_range(unsigned long pfn,
 	/* Free a large naturally-aligned chunk if possible */
 	if (nr_pages == MAX_ORDER_NR_PAGES && IS_MAX_ORDER_ALIGNED(pfn)) {
 		for (i = 0; i < nr_pages; i += pageblock_nr_pages)
-			set_pageblock_migratetype(page + i, MIGRATE_MOVABLE);
+			set_pageblock_migratetype(page + i, mt);
 		__free_pages_core(page, MAX_ORDER);
 		return;
 	}
@@ -2006,7 +2016,7 @@ static void __init deferred_free_range(unsigned long pfn,
 
 	for (i = 0; i < nr_pages; i++, page++, pfn++) {
 		if (pageblock_aligned(pfn))
-			set_pageblock_migratetype(page, MIGRATE_MOVABLE);
+			set_pageblock_migratetype(page, mt);
 		__free_pages_core(page, 0);
 	}
 }
@@ -2039,23 +2049,24 @@ static inline bool __init deferred_pfn_valid(unsigned long pfn)
  * MAX_ORDER_NR_PAGES sizes.
  */
 static void __init deferred_free_pages(unsigned long pfn,
-				       unsigned long end_pfn)
+				       unsigned long end_pfn,
+				       enum migratetype mt)
 {
 	unsigned long nr_free = 0;
 
 	for (; pfn < end_pfn; pfn++) {
 		if (!deferred_pfn_valid(pfn)) {
-			deferred_free_range(pfn - nr_free, nr_free);
+			deferred_free_range(pfn - nr_free, nr_free, mt);
 			nr_free = 0;
 		} else if (IS_MAX_ORDER_ALIGNED(pfn)) {
-			deferred_free_range(pfn - nr_free, nr_free);
+			deferred_free_range(pfn - nr_free, nr_free, mt);
 			nr_free = 1;
 		} else {
 			nr_free++;
 		}
 	}
 	/* Free the last block of pages to allocator */
-	deferred_free_range(pfn - nr_free, nr_free);
+	deferred_free_range(pfn - nr_free, nr_free, mt);
 }
 
 /*
@@ -2110,6 +2121,7 @@ deferred_init_mem_pfn_range_in_zone(u64 *i, struct zone *zone,
 			continue;
 		if (*spfn < first_init_pfn)
 			*spfn = first_init_pfn;
+
 		*i = j;
 		return true;
 	}
@@ -2135,6 +2147,8 @@ deferred_init_maxorder(u64 *i, struct zone *zone, unsigned long *start_pfn,
 	unsigned long spfn = *start_pfn, epfn = *end_pfn;
 	unsigned long nr_pages = 0;
 	u64 j = *i;
+	enum migratetype mt =
+		kho_scratch_migratetype(spfn, MIGRATE_MOVABLE);
 
 	/* First we loop through and initialize the page values */
 	for_each_free_mem_pfn_range_in_zone_from(j, zone, start_pfn, end_pfn) {
@@ -2162,7 +2176,7 @@ deferred_init_maxorder(u64 *i, struct zone *zone, unsigned long *start_pfn,
 			break;
 
 		t = min(mo_pfn, epfn);
-		deferred_free_pages(spfn, t);
+		deferred_free_pages(spfn, t, mt);
 
 		if (mo_pfn <= epfn)
 			break;
