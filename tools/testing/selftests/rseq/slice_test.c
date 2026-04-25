@@ -124,7 +124,7 @@ FIXTURE_SETUP(slice_ext)
 {
 	cpu_set_t affinity;
 
-	if (__rseq_register_current_thread(true, false))
+	if (rseq_register_current_thread())
 		SKIP(return, "RSEQ not supported\n");
 
 	if (prctl(PR_RSEQ_SLICE_EXTENSION, PR_RSEQ_SLICE_EXTENSION_SET,
