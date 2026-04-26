@@ -97,7 +97,7 @@ static void __deactivate_cptr_traps(struct kvm_vcpu *vcpu)
 
 static void __activate_traps(struct kvm_vcpu *vcpu)
 {
-	___activate_traps(vcpu);
+	___activate_traps(vcpu, vcpu->arch.hcr_el2);
 	__activate_traps_common(vcpu);
 	__activate_cptr_traps(vcpu);
 
