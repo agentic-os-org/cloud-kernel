@@ -7,7 +7,9 @@
 #define _UB_UBDEVSHM_UBDEVSHM_H_
 
 #include <linux/kernel.h>
-#include <linux/ck_kabi.h>
+
+#define UBDEVSHM_VERSION_MAJOR 1
+#define UBDEVSHM_VERSION_MINOR 0
 
 /**
  * struct uba_eid - eid info of ub address.
@@ -264,4 +266,16 @@ int ubdevshm_acquire_uba(struct access_ctx *ctx, struct mem_uva *va,
  */
 int ubdevshm_release_uba(struct access_ctx *ctx, struct mem_uba *uba);
 
-#endif /* _UB_UBDEVSHM_UBDEVSHM_H_ */
+/**
+ * ubdevshm_check_version() - version check
+ * @app_major: major version from user
+ * @app_minor: minor version from user
+ *
+ * Before using the functions of this module, user must call this
+ * interface to check the version
+ *
+ * return: 0 indicates pass, while any other value indicates failure
+ */
+int ubdevshm_check_version(uint32_t app_major, uint32_t app_minor);
+
+#endif /*_UB_UBDEVSHM_UBDEVSHM_H_*/
