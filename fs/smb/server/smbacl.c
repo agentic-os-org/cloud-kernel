@@ -1120,6 +1120,12 @@ int smb_inherit_dacl(struct ksmbd_conn *conn,
 				sizeof(__le32) * parent_aces->sid.num_subauth)
 			break;
 
+		if (parent_aces->sid.num_subauth > SID_MAX_SUB_AUTHORITIES ||
+		    pace_size < offsetof(struct smb_ace, sid) +
+				CIFS_SID_BASE_SIZE +
+				sizeof(__le32) * parent_aces->sid.num_subauth)
+			break;
+
 		aces_size -= pace_size;
 
 		flags = parent_aces->flags;
