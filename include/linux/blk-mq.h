@@ -1264,6 +1264,8 @@ static inline int blk_rq_map_sg(struct request *rq, struct scatterlist *sglist)
 
 	return __blk_rq_map_sg(rq, sglist, &last_sg);
 }
+int blk_rq_map_sg_bidir(struct request *rq, struct scatterlist *sglist_write,
+			struct scatterlist *sglist_read);
 void blk_dump_rq_flags(struct request *, char *);
 
 #endif /* BLK_MQ_H */

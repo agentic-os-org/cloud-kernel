@@ -63,6 +63,33 @@ static bool blk_map_iter_next(struct request *req, struct blk_map_iter *iter,
 	return true;
 }
 
+static bool blk_map_iter_next_no_merge(struct request *req, struct blk_map_iter *iter,
+			      struct phys_vec *vec)
+{
+	unsigned int max_size;
+	struct bio_vec bv;
+
+	if (!iter->iter.bi_size)
+		return false;
+
+	bv = mp_bvec_iter_bvec(iter->bvecs, iter->iter);
+	vec->paddr = bvec_phys(&bv);
+	max_size = get_max_segment_size(&req->q->limits, vec->paddr, UINT_MAX);
+	bv.bv_len = min(bv.bv_len, max_size);
+	bvec_iter_advance_single(iter->bvecs, &iter->iter, bv.bv_len);
+
+	/*
+	 * If we are entirely done with this bi_io_vec entry, check if the next
+	 * one could be merged into it.  This typically happens when moving to
+	 * the next bio, but some callers also don't pack bvecs tight.
+	 */
+	if (!iter->iter.bi_size || !iter->iter.bi_bvec_done)
+		__blk_map_iter_next(iter);
+
+	vec->len = bv.bv_len;
+	return true;
+}
+
 /*
  * The IOVA-based DMA API wants to be able to coalesce at the minimal IOMMU page
  * size granularity (which is guaranteed to be <= PAGE_SIZE and usually 4k), so
@@ -313,6 +340,43 @@ int __blk_rq_map_sg(struct request *rq, struct scatterlist *sglist,
 	return nsegs;
 }
 EXPORT_SYMBOL(__blk_rq_map_sg);
+
+int blk_rq_map_sg_bidir(struct request *rq, struct scatterlist *sglist_write,
+			struct scatterlist *sglist_read)
+{
+	struct blk_map_iter iter;
+	struct phys_vec vec;
+	int nsegs = 0;
+
+	struct scatterlist *sglist[2] = { sglist_read, sglist_write };
+	struct scatterlist *last_sg_read = NULL, *last_sg_write = NULL;
+	struct scatterlist **sglist_last[2] = { &last_sg_read, &last_sg_write };
+	bool write = false;
+
+	blk_rq_map_iter_init(rq, &iter);
+	while (blk_map_iter_next_no_merge(rq, &iter, &vec)) {
+		write = op_is_write(bio_op(iter.bio));
+
+		*sglist_last[write] = blk_next_sg(sglist_last[write], sglist[write]);
+		WARN_ON_ONCE(overflows_type(vec.len, unsigned int));
+		sg_set_page(*sglist_last[write], phys_to_page(vec.paddr), vec.len,
+			    offset_in_page(vec.paddr));
+		nsegs++;
+	}
+
+	if (last_sg_write)
+		sg_mark_end(last_sg_write);
+	if (last_sg_read)
+		sg_mark_end(last_sg_read);
+	/*
+	 * Something must have been wrong if the figured number of
+	 * segment is bigger than number of req's physical segments
+	 */
+	WARN_ON(nsegs > blk_rq_nr_phys_segments(rq));
+
+	return nsegs;
+}
+EXPORT_SYMBOL(blk_rq_map_sg_bidir);
 
 #ifdef CONFIG_BLK_DEV_INTEGRITY
 /**
