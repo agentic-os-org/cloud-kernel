@@ -21,14 +21,6 @@
 #include "sidtab.h"
 #include "services.h"
 
-struct sidtab_str_cache {
-	struct rcu_head rcu_member;
-	struct list_head lru_member;
-	struct sidtab_entry *parent;
-	u32 len;
-	char str[] __counted_by(len);
-};
-
 #define index_to_sid(index) ((index) + SECINITSID_NUM + 1)
 #define sid_to_index(sid)   ((sid) - (SECINITSID_NUM + 1))
 
@@ -47,12 +39,6 @@ int sidtab_init(struct sidtab *s)
 	hash_init(s->context_to_sid);
 
 	spin_lock_init(&s->lock);
-
-#if CONFIG_SECURITY_SELINUX_SID2STR_CACHE_SIZE > 0
-	s->cache_free_slots = CONFIG_SECURITY_SELINUX_SID2STR_CACHE_SIZE;
-	INIT_LIST_HEAD(&s->cache_lru_list);
-	spin_lock_init(&s->cache_lock);
-#endif
 
 	return 0;
 }
@@ -90,9 +76,6 @@ int sidtab_set_initial(struct sidtab *s, u32 sid, struct context *context)
 	if (rc)
 		return rc;
 
-#if CONFIG_SECURITY_SELINUX_SID2STR_CACHE_SIZE > 0
-	isid->entry.cache = NULL;
-#endif
 	isid->set = 1;
 
 	hash = context_compute_hash(context);
@@ -248,7 +231,7 @@ static struct sidtab_entry *sidtab_search_core(struct sidtab *s, u32 sid,
 			entry = sidtab_lookup(s, sid_to_index(sid));
 		else
 			entry = sidtab_lookup_initial(s, sid);
-		if (entry && (!entry->context.len || force))
+		if (entry && (entry->context.user || force))
 			return entry;
 	}
 
@@ -265,7 +248,12 @@ struct sidtab_entry *sidtab_search_entry_force(struct sidtab *s, u32 sid)
 	return sidtab_search_core(s, sid, 1);
 }
 
+#ifdef CONFIG_SECURITY_SELINUX_NS
+int sidtab_context_ss_to_sid(struct sidtab *s, struct context *context,
+			     struct selinux_state *state, u32 ss_sid, u32 *sid)
+#else
 int sidtab_context_to_sid(struct sidtab *s, struct context *context, u32 *sid)
+#endif
 {
 	unsigned long flags;
 	u32 count, hash = context_compute_hash(context);
@@ -308,6 +296,10 @@ int sidtab_context_to_sid(struct sidtab *s, struct context *context, u32 *sid)
 		goto out_unlock;
 
 	dst->sid = index_to_sid(count);
+#ifdef CONFIG_SECURITY_SELINUX_NS
+	dst->state = state;
+	dst->ss_sid = ss_sid;
+#endif
 	dst->hash = hash;
 
 	rc = context_cpy(&dst->context, context);
@@ -344,10 +336,6 @@ int sidtab_context_to_sid(struct sidtab *s, struct context *context, u32 *sid)
 			     dst_convert->hash);
 	}
 
-	if (context->len)
-		pr_info("SELinux:  Context %s is not valid (left unmapped).\n",
-			context->str);
-
 	*sid = index_to_sid(count);
 
 	/* write entries before updating count */
@@ -359,6 +347,13 @@ out_unlock:
 	spin_unlock_irqrestore(&s->lock, flags);
 	return rc;
 }
+
+#ifdef CONFIG_SECURITY_SELINUX_NS
+int sidtab_context_to_sid(struct sidtab *s, struct context *context, u32 *sid)
+{
+	return sidtab_context_ss_to_sid(s, context, NULL, 0, sid);
+}
+#endif
 
 static void sidtab_convert_hashtable(struct sidtab *s, u32 count)
 {
@@ -508,9 +503,6 @@ void sidtab_freeze_end(struct sidtab *s, unsigned long *flags)
 static void sidtab_destroy_entry(struct sidtab_entry *entry)
 {
 	context_destroy(&entry->context);
-#if CONFIG_SECURITY_SELINUX_SID2STR_CACHE_SIZE > 0
-	kfree(rcu_dereference_raw(entry->cache));
-#endif
 }
 
 static void sidtab_destroy_tree(union sidtab_entry_inner entry, u32 level)
@@ -558,81 +550,94 @@ void sidtab_destroy(struct sidtab *s)
 	 */
 }
 
-#if CONFIG_SECURITY_SELINUX_SID2STR_CACHE_SIZE > 0
-
-void sidtab_sid2str_put(struct sidtab *s, struct sidtab_entry *entry,
-			const char *str, u32 str_len)
+#ifdef CONFIG_SECURITY_SELINUX_NS
+static void sidtab_invalidate_state_entry(struct sidtab_entry *entry,
+					  struct selinux_state *state)
 {
-	struct sidtab_str_cache *cache, *victim = NULL;
-	unsigned long flags;
+#if CONFIG_SECURITY_SELINUX_SS_SID_CACHE_SIZE > 0
+	struct sidtab_ss_sid_cache *cache;
+	int i, first, last;
+#endif
 
-	/* do not cache invalid contexts */
-	if (entry->context.len)
-		return;
-
-	spin_lock_irqsave(&s->cache_lock, flags);
-
-	cache = rcu_dereference_protected(entry->cache,
-					  lockdep_is_held(&s->cache_lock));
-	if (cache) {
-		/* entry in cache - just bump to the head of LRU list */
-		list_move(&cache->lru_member, &s->cache_lru_list);
-		goto out_unlock;
+	if (entry->state == state) {
+		WRITE_ONCE(entry->ss_sid, 0);
+		WRITE_ONCE(entry->state, NULL);
 	}
 
-	cache = kmalloc(struct_size(cache, str, str_len), GFP_ATOMIC);
-	if (!cache)
-		goto out_unlock;
-
-	if (s->cache_free_slots == 0) {
-		/* pop a cache entry from the tail and free it */
-		victim = container_of(s->cache_lru_list.prev,
-				      struct sidtab_str_cache, lru_member);
-		list_del(&victim->lru_member);
-		rcu_assign_pointer(victim->parent->cache, NULL);
-	} else {
-		s->cache_free_slots--;
-	}
-	cache->parent = entry;
-	cache->len = str_len;
-	memcpy(cache->str, str, str_len);
-	list_add(&cache->lru_member, &s->cache_lru_list);
-
-	rcu_assign_pointer(entry->cache, cache);
-
-out_unlock:
-	spin_unlock_irqrestore(&s->cache_lock, flags);
-	kfree_rcu(victim, rcu_member);
-}
-
-int sidtab_sid2str_get(struct sidtab *s, struct sidtab_entry *entry, char **out,
-		       u32 *out_len)
-{
-	struct sidtab_str_cache *cache;
-	int rc = 0;
-
-	if (entry->context.len)
-		return -ENOENT; /* do not cache invalid contexts */
-
-	rcu_read_lock();
-
-	cache = rcu_dereference(entry->cache);
-	if (!cache) {
-		rc = -ENOENT;
-	} else {
-		*out_len = cache->len;
-		if (out) {
-			*out = kmemdup(cache->str, cache->len, GFP_ATOMIC);
-			if (!*out)
-				rc = -ENOMEM;
+#if CONFIG_SECURITY_SELINUX_SS_SID_CACHE_SIZE > 0
+	cache = &entry->ss_sid_cache;
+	first = cache->first;
+	last = cache->last;
+	for (i = first; i >= 0 && i <= last; i++) {
+		if (cache->state[i] == state) {
+			WRITE_ONCE(cache->ss_sid[i], 0);
+			WRITE_ONCE(cache->state[i], NULL);
+			if (first == i) {
+				for (first = i + 1; first <= last &&
+					     !cache->ss_sid[first]; first++)
+					;
+				if (first == (i+1))
+					first = -1;
+				WRITE_ONCE(cache->first, first);
+			}
+			if (last == i) {
+				for (last = i - 1; last >= first &&
+					     last >= 0 &&
+					     !cache->ss_sid[last]; last--)
+					;
+				if (last == (i-1))
+					last = -1;
+				WRITE_ONCE(cache->last, last);
+			}
+			return;
 		}
 	}
-
-	rcu_read_unlock();
-
-	if (!rc && out)
-		sidtab_sid2str_put(s, entry, *out, *out_len);
-	return rc;
+#endif
 }
 
-#endif /* CONFIG_SECURITY_SELINUX_SID2STR_CACHE_SIZE > 0 */
+static void sidtab_invalidate_state_tree(union sidtab_entry_inner entry,
+					 u32 level,
+					 struct selinux_state *state)
+{
+	u32 i;
+
+	if (level != 0) {
+		struct sidtab_node_inner *node = entry.ptr_inner;
+
+		if (!node)
+			return;
+
+		for (i = 0; i < SIDTAB_INNER_ENTRIES; i++)
+			sidtab_invalidate_state_tree(node->entries[i],
+						     level - 1, state);
+	} else {
+		struct sidtab_node_leaf *node = entry.ptr_leaf;
+
+		if (!node)
+			return;
+
+		for (i = 0; i < SIDTAB_LEAF_ENTRIES; i++)
+			sidtab_invalidate_state_entry(&node->entries[i], state);
+	}
+}
+
+void sidtab_invalidate_state(struct sidtab *s, struct selinux_state *state)
+{
+	u32 i, level;
+	unsigned long flags;
+
+	spin_lock_irqsave(&s->lock, flags);
+
+	for (i = 0; i < SECINITSID_NUM; i++)
+		if (s->isids[i].set)
+			sidtab_invalidate_state_entry(&s->isids[i].entry, state);
+
+	level = SIDTAB_MAX_LEVEL;
+	while (level && !s->roots[level].ptr_inner)
+		--level;
+
+	sidtab_invalidate_state_tree(s->roots[level], level, state);
+
+	spin_unlock_irqrestore(&s->lock, flags);
+}
+#endif /* CONFIG_SECURITY_SELINUX_NS */

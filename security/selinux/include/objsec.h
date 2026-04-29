@@ -28,20 +28,12 @@
 #include <net/net_namespace.h>
 #include "flask.h"
 #include "avc.h"
+#include "security.h"
 
 struct avdc_entry {
 	u32 isid; /* inode SID */
 	struct av_decision avd; /* av decision */
 };
-
-struct cred_security_struct {
-	u32 osid; /* SID prior to last execve */
-	u32 sid; /* current SID */
-	u32 exec_sid; /* exec SID */
-	u32 create_sid; /* fscreate SID */
-	u32 keycreate_sid; /* keycreate SID */
-	u32 sockcreate_sid; /* fscreate SID */
-} __randomize_layout;
 
 struct task_security_struct {
 #define TSEC_AVDC_DIR_SIZE (1 << 2)
@@ -59,7 +51,8 @@ static inline bool task_avdcache_permnoaudit(struct task_security_struct *tsec,
 {
 	return (tsec->avdcache.permissive_neveraudit &&
 		sid == tsec->avdcache.sid &&
-		tsec->avdcache.seqno == avc_policy_seqno());
+		tsec->avdcache.seqno ==
+			avc_policy_seqno(current_selinux_state));
 }
 
 enum label_initialized {
@@ -80,9 +73,9 @@ struct inode_security_struct {
 
 struct file_security_struct {
 	u32 sid; /* SID of open file description */
-	u32 fown_sid; /* SID of file owner (for SIGIO) */
 	u32 isid; /* SID of inode at the time of file open */
 	u32 pseqno; /* Policy seqno at the time of file open */
+	const struct cred *cred; /* cred for file owner (for SIGIO) */
 };
 
 struct superblock_security_struct {
@@ -109,6 +102,7 @@ struct netif_security_struct {
 	const struct net *ns; /* network namespace */
 	int ifindex; /* device index */
 	u32 sid; /* SID for this interface */
+	struct selinux_state *state; /* SELinux state */
 };
 
 struct netnode_security_struct {
@@ -118,6 +112,7 @@ struct netnode_security_struct {
 	} addr;
 	u32 sid; /* SID for this node */
 	u16 family; /* address family */
+	struct selinux_state *state; /* SELinux state */
 };
 
 struct netport_security_struct {
@@ -144,6 +139,7 @@ struct sk_security_struct {
 	       SCTP_ASSOC_UNSET = 0,
 	       SCTP_ASSOC_SET,
 	} sctp_assoc_state;
+	struct selinux_state *state; /* SELinux state */
 };
 
 struct tun_security_struct {
@@ -173,10 +169,6 @@ struct perf_event_security_struct {
 };
 
 extern struct lsm_blob_sizes selinux_blob_sizes;
-static inline struct cred_security_struct *selinux_cred(const struct cred *cred)
-{
-	return cred->security + selinux_blob_sizes.lbs_cred;
-}
 
 static inline struct task_security_struct *
 selinux_task(const struct task_struct *task)
@@ -207,16 +199,6 @@ static inline struct ipc_security_struct *
 selinux_ipc(const struct kern_ipc_perm *ipc)
 {
 	return ipc->security + selinux_blob_sizes.lbs_ipc;
-}
-
-/*
- * get the subjective security ID of the current task
- */
-static inline u32 current_sid(void)
-{
-	const struct cred_security_struct *crsec = selinux_cred(current_cred());
-
-	return crsec->sid;
 }
 
 static inline struct superblock_security_struct *
