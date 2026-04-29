@@ -145,7 +145,7 @@ struct virtio_blk {
 
 #ifdef CONFIG_VIRTIO_BLK_RING_PAIR
 	bool ring_pair;
-	bool no_align;
+	bool pt_enable;
 	bool hide_bdev;
 	/* saved indirect desc pointer, dma_addr and dma_len for SQ */
 	struct virtblk_indir_desc **indir_desc;
@@ -1775,9 +1775,9 @@ static int check_ext_feature(struct virtio_blk *vblk, void __iomem *ioaddr,
 	vblk->ring_pair = !!(*host_ext_features & VIRTIO_BLK_EXT_F_RING_PAIR);
 	if (vblk->ring_pair)
 		*guest_ext_features |= (VIRTIO_BLK_EXT_F_RING_PAIR);
-	vblk->no_align = !!(*host_ext_features & VIRTIO_BLK_EXT_F_RING_NO_ALIGN);
-	if (vblk->no_align)
-		*guest_ext_features |= (VIRTIO_BLK_EXT_F_RING_NO_ALIGN);
+	vblk->pt_enable = !!(*host_ext_features & VIRTIO_BLK_EXT_F_PT_ENABLE);
+	if (vblk->pt_enable)
+		*guest_ext_features |= (VIRTIO_BLK_EXT_F_PT_ENABLE);
 	vblk->hide_bdev = !!(*host_ext_features & VIRTIO_BLK_EXT_F_HIDE_BLOCK);
 	if (vblk->hide_bdev)
 		*guest_ext_features |= (VIRTIO_BLK_EXT_F_HIDE_BLOCK);
@@ -1968,7 +1968,7 @@ static int init_vq(struct virtio_blk *vblk)
 	 * to orginal use, so err needs a positive initial value
 	 */
 	vblk->ring_pair = false;
-	vblk->no_align = false;
+	vblk->pt_enable = false;
 	vblk->hide_bdev = false;
 
 	/* ext feature only support for virtio_blk over pci device currently */
@@ -3147,7 +3147,7 @@ static int virtblk_probe(struct virtio_device *vdev)
 	virtio_blk_dev_dbg_init(vblk);
 
 #ifdef CONFIG_VIRTIO_BLK_RING_PAIR
-	if (vblk->no_align)
+	if (vblk->pt_enable)
 		WARN_ON(virtblk_cdev_add(vblk, &virtblk_chr_fops));
 #endif
 
@@ -3181,7 +3181,7 @@ static void virtblk_remove(struct virtio_device *vdev)
 	flush_work(&vblk->config_work);
 
 #ifdef CONFIG_VIRTIO_BLK_RING_PAIR
-	if (vblk->no_align)
+	if (vblk->pt_enable)
 		virtblk_cdev_del(&vblk->cdev, &vblk->cdev_device);
 #endif
 
