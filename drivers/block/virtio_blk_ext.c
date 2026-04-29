@@ -7,7 +7,7 @@
 
 /* ext feature bit definition */
 #define VIRTIO_BLK_EXT_F_RING_PAIR	(1U << 0)
-#define VIRTIO_BLK_EXT_F_RING_NO_ALIGN  (1U << 1)
+#define VIRTIO_BLK_EXT_F_PT_ENABLE      (1U << 1)
 #define VIRTIO_BLK_EXT_F_HIDE_BLOCK     (1U << 2)
 #define VIRTIO_BLK_EXT_F_INVAL		(-1)
 
