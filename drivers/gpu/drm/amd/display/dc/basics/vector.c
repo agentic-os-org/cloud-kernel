@@ -291,8 +291,16 @@ bool dal_vector_reserve(struct vector *vector, uint32_t capacity)
 	if (capacity <= vector->capacity)
 		return true;
 
+	/* capacity * struct_size is computed in 32-bit arithmetic and can
+	 * wrap to a small value; fail the reservation instead of letting
+	 * krealloc() return a buffer smaller than the caller expects.
+	 */
+	if (!vector->struct_size || capacity > UINT_MAX / vector->struct_size)
+		return false;
+
 	new_container = krealloc(vector->container,
-				 capacity * vector->struct_size, GFP_KERNEL);
+				 (size_t)capacity * vector->struct_size,
+				 GFP_KERNEL);
 
 	if (new_container) {
 		vector->container = new_container;
