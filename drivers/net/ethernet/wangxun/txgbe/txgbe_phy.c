@@ -75,13 +75,13 @@ s32 txgbe_get_phy_id(struct txgbe_hw *hw)
 
 	status = txgbe_mtd_hw_xmdio_rd(&hw->phy_dev, hw->phy.addr,
 				       TXGBE_MDIO_PMA_PMD_DEV_TYPE,
-				TXGBE_MDIO_PHY_ID_HIGH, &phy_id_high);
+			TXGBE_MDIO_PHY_ID_HIGH, &phy_id_high);
 
 	if (status == 0) {
 		hw->phy.id = (u32)(phy_id_high << 16);
 		status = txgbe_mtd_hw_xmdio_rd(&hw->phy_dev, hw->phy.addr,
 					       TXGBE_MDIO_PMA_PMD_DEV_TYPE,
-				TXGBE_MDIO_PHY_ID_LOW, &phy_id_low);
+			TXGBE_MDIO_PHY_ID_LOW, &phy_id_low);
 		hw->phy.id |= (u32)(phy_id_low & TXGBE_PHY_REVISION_MASK);
 	}
 
@@ -123,7 +123,7 @@ enum txgbe_phy_type txgbe_get_phy_type_from_id(struct txgbe_hw *hw)
 	if (phy_type == txgbe_phy_unknown) {
 		txgbe_mtd_hw_xmdio_rd(&hw->phy_dev, hw->phy.addr,
 				      TXGBE_MDIO_PMA_PMD_DEV_TYPE,
-				TXGBE_MDIO_PHY_EXT_ABILITY, &ext_ability);
+			TXGBE_MDIO_PHY_EXT_ABILITY, &ext_ability);
 
 		if (ext_ability & (TXGBE_MDIO_PHY_10GBASET_ABILITY |
 			TXGBE_MDIO_PHY_1000BASET_ABILITY))
@@ -288,9 +288,9 @@ s32 txgbe_write_phy_reg(struct txgbe_hw *hw, u32 reg_addr,
 
 u32 txgbe_read_mdio(struct mtd_dev *dev,
 		    u16 port,
-						u16 mmd,
-						u16 reg,
-						u16 *value)
+					u16 mmd,
+					u16 reg,
+					u16 *value)
 {
 	struct txgbe_hw *hw = (struct txgbe_hw *)(dev->app_data);
 
@@ -301,9 +301,9 @@ u32 txgbe_read_mdio(struct mtd_dev *dev,
 
 u32 txgbe_write_mdio(struct mtd_dev *dev,
 		     u16 port,
-						u16 mmd,
-						u16 reg,
-						u16 value)
+					u16 mmd,
+					u16 reg,
+					u16 value)
 {
 	struct txgbe_hw *hw = (struct txgbe_hw *)(dev->app_data);
 
@@ -420,7 +420,7 @@ s32 txgbe_get_copper_link_capabilities(struct txgbe_hw *hw,
 
 	status = txgbe_mtd_hw_xmdio_rd(&hw->phy_dev, hw->phy.addr,
 				       TXGBE_MDIO_PMA_PMD_DEV_TYPE,
-				TXGBE_MDIO_PHY_SPEED_ABILITY, &speed_ability);
+			TXGBE_MDIO_PHY_SPEED_ABILITY, &speed_ability);
 
 	if (status == 0) {
 		if (speed_ability & TXGBE_MDIO_PHY_SPEED_10G)
@@ -843,8 +843,8 @@ sp_record:
 
 		/* addressing mode is not supported */
 		status = hw->phy.ops.read_i2c_eeprom(hw,
-							TXGBE_SFF_SFF_8472_SWAP,
-							&addr_mode);
+						TXGBE_SFF_SFF_8472_SWAP,
+						&addr_mode);
 		if (status != 0)
 			goto err_read_i2c_eeprom;
 
@@ -1117,8 +1117,8 @@ s32 txgbe_read_i2c_sff8636(struct txgbe_hw *hw, u8 page, u8 byte_offset,
 {
 	txgbe_init_i2c(hw);
 	hw->phy.ops.write_i2c_byte(hw, TXGBE_SFF_QSFP_PAGE_SELECT,
-					 TXGBE_I2C_EEPROM_DEV_ADDR,
-					 page);
+				 TXGBE_I2C_EEPROM_DEV_ADDR,
+				 page);
 
 	return hw->phy.ops.read_i2c_byte(hw, byte_offset,
 					 TXGBE_I2C_EEPROM_DEV_ADDR,
@@ -1140,8 +1140,8 @@ s32 txgbe_read_i2c_sfp_phy(struct txgbe_hw *hw, u16 byte_offset,
 	txgbe_init_i2c_sfp_phy(hw);
 
 	return txgbe_read_i2c_word(hw, byte_offset,
-					 TXGBE_I2C_EEPROM_DEV_ADDR3,
-					 data);
+				 TXGBE_I2C_EEPROM_DEV_ADDR3,
+				 data);
 }
 
 /**
@@ -1212,8 +1212,8 @@ out:
  **/
 static s32 txgbe_read_i2c_word_int(struct txgbe_hw *hw, u16 byte_offset,
 				   u8 __always_unused dev_addr,
-									u16 *data,
-									bool __always_unused lock)
+								u16 *data,
+								bool __always_unused lock)
 {
 	s32 status = 0;
 
@@ -1260,8 +1260,8 @@ static s32 txgbe_read_i2c_word_int(struct txgbe_hw *hw, u16 byte_offset,
 		/* wait tx empty */
 		status = po32m(hw, TXGBE_I2C_RAW_INTR_STAT,
 			       TXGBE_I2C_INTR_STAT_TX_EMPTY,
-							TXGBE_I2C_INTR_STAT_TX_EMPTY,
-							TXGBE_I2C_TIMEOUT, 10);
+						TXGBE_I2C_INTR_STAT_TX_EMPTY,
+						TXGBE_I2C_TIMEOUT, 10);
 		if (status != 0)
 			goto out;
 
@@ -1273,8 +1273,8 @@ static s32 txgbe_read_i2c_word_int(struct txgbe_hw *hw, u16 byte_offset,
 		/* wait tx empty */
 		status = po32m(hw, TXGBE_I2C_RAW_INTR_STAT,
 			       TXGBE_I2C_INTR_STAT_TX_EMPTY,
-							TXGBE_I2C_INTR_STAT_TX_EMPTY,
-							TXGBE_I2C_TIMEOUT, 10);
+						TXGBE_I2C_INTR_STAT_TX_EMPTY,
+						TXGBE_I2C_TIMEOUT, 10);
 		if (status != 0)
 			goto out;
 
@@ -1291,7 +1291,7 @@ static s32 txgbe_read_i2c_word_int(struct txgbe_hw *hw, u16 byte_offset,
 		/* wait for read complete */
 		status = po32m(hw, TXGBE_I2C_RAW_INTR_STAT,
 			       TXGBE_I2C_INTR_STAT_RX_FULL, TXGBE_I2C_INTR_STAT_RX_FULL,
-						TXGBE_I2C_TIMEOUT, 100);
+					TXGBE_I2C_TIMEOUT, 100);
 		if (status != 0)
 			goto out;
 
@@ -1333,7 +1333,7 @@ s32 txgbe_read_i2c_byte(struct txgbe_hw *hw, u8 byte_offset,
 	txgbe_switch_i2c_slave_addr(hw, dev_addr);
 
 	return txgbe_read_i2c_byte_int(hw, byte_offset, dev_addr,
-					       data, true);
+				       data, true);
 }
 
 /**
@@ -1351,7 +1351,7 @@ s32 txgbe_read_i2c_word(struct txgbe_hw *hw, u16 byte_offset,
 	txgbe_switch_i2c_slave_addr(hw, dev_addr);
 
 	return txgbe_read_i2c_word_int(hw, byte_offset, dev_addr,
-						   data, true);
+					   data, true);
 }
 
 /**
@@ -1401,7 +1401,7 @@ s32 txgbe_write_i2c_byte(struct txgbe_hw *hw, u8 byte_offset,
 			 u8 dev_addr, u8 data)
 {
 	return txgbe_write_i2c_byte_int(hw, byte_offset, dev_addr,
-						data);
+					data);
 }
 
 /**
@@ -1474,7 +1474,7 @@ s32 txgbe_uninit_external_phy(struct txgbe_hw *hw)
 s32 txgbe_set_phy_pause_advertisement(struct txgbe_hw *hw, u32 pause_bit)
 {
 	return txgbe_mtd_set_pause_adver(&hw->phy_dev, hw->phy.addr,
-						(pause_bit >> 10) & 0x3, false);
+					(pause_bit >> 10) & 0x3, false);
 }
 
 s32 txgbe_get_phy_advertised_pause(struct txgbe_hw *hw, u8 *pause_bit)
@@ -1484,7 +1484,7 @@ s32 txgbe_get_phy_advertised_pause(struct txgbe_hw *hw, u8 *pause_bit)
 
 	status = txgbe_mtd_hw_xmdio_rd(&hw->phy_dev, hw->phy.addr,
 				       TXGBE_MDIO_AUTO_NEG_DEV_TYPE,
-				TXGBE_MDIO_AUTO_NEG_ADVT, &value);
+			TXGBE_MDIO_AUTO_NEG_ADVT, &value);
 	*pause_bit = (u8)((value >> 10) & 0x3);
 	return status;
 }
@@ -1492,7 +1492,7 @@ s32 txgbe_get_phy_advertised_pause(struct txgbe_hw *hw, u8 *pause_bit)
 s32 txgbe_get_lp_advertised_pause(struct txgbe_hw *hw, u8 *pause_bit)
 {
 	return txgbe_mtd_get_lp_adver_pause(&hw->phy_dev,
-				hw->phy.addr, pause_bit);
+			hw->phy.addr, pause_bit);
 }
 
 s32 txgbe_external_phy_suspend(struct txgbe_hw *hw)
@@ -1502,7 +1502,7 @@ s32 txgbe_external_phy_suspend(struct txgbe_hw *hw)
 
 	status = txgbe_mtd_hw_xmdio_rd(&hw->phy_dev, hw->phy.addr,
 				       TXGBE_MDIO_VENDOR_SPECIFIC_2_DEV_TYPE,
-				TXGBE_MDIO_VENDOR_SPECIFIC_2_PORT_CTRL, &value);
+			TXGBE_MDIO_VENDOR_SPECIFIC_2_PORT_CTRL, &value);
 
 	if (status)
 		goto out;
@@ -1511,7 +1511,7 @@ s32 txgbe_external_phy_suspend(struct txgbe_hw *hw)
 
 	status = txgbe_mtd_xmdio_wr(&hw->phy_dev, hw->phy.addr,
 				    TXGBE_MDIO_VENDOR_SPECIFIC_2_DEV_TYPE,
-				TXGBE_MDIO_VENDOR_SPECIFIC_2_PORT_CTRL, value);
+			TXGBE_MDIO_VENDOR_SPECIFIC_2_PORT_CTRL, value);
 
 out:
 	return status;
@@ -1524,7 +1524,7 @@ s32 txgbe_external_phy_resume(struct txgbe_hw *hw)
 
 	status = txgbe_mtd_hw_xmdio_rd(&hw->phy_dev, hw->phy.addr,
 				       TXGBE_MDIO_VENDOR_SPECIFIC_2_DEV_TYPE,
-				TXGBE_MDIO_VENDOR_SPECIFIC_2_PORT_CTRL, &value);
+			TXGBE_MDIO_VENDOR_SPECIFIC_2_PORT_CTRL, &value);
 
 	if (status)
 		goto out;
@@ -1537,7 +1537,7 @@ s32 txgbe_external_phy_resume(struct txgbe_hw *hw)
 
 	status = txgbe_mtd_xmdio_wr(&hw->phy_dev, hw->phy.addr,
 				    TXGBE_MDIO_VENDOR_SPECIFIC_2_DEV_TYPE,
-				TXGBE_MDIO_VENDOR_SPECIFIC_2_PORT_CTRL, value);
+			TXGBE_MDIO_VENDOR_SPECIFIC_2_PORT_CTRL, value);
 
 out:
 	return status;
