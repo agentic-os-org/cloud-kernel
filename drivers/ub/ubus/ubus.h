@@ -65,6 +65,10 @@ struct ub_manage_subsystem_ops {
 	void (*controller_remove)(struct ub_bus_controller *ubc);
 	int (*ras_handler_probe)(void);
 	void (*ras_handler_remove)(void);
+
+#ifndef __GENKSYMS__
+	unsigned long long (*feature_get)(void);
+#endif
 };
 int register_ub_manage_subsystem_ops(const struct ub_manage_subsystem_ops *ops);
 void unregister_ub_manage_subsystem_ops(const struct ub_manage_subsystem_ops *ops);
