@@ -278,6 +278,32 @@ static void rxrpc_call_is_secure(struct rxrpc_call *call)
 }
 
 /*
+ * Wrap ->verify_response so that a cloned or paged skb is copied before the
+ * security layer performs in-place decryption.  This mirrors upstream commit
+ * aa54b1d27fe0 ("rxrpc: Also unshare DATA/RESPONSE packets when paged frags
+ * are present").
+ */
+static int rxrpc_verify_response(struct rxrpc_connection *conn,
+				 struct sk_buff *skb,
+				 u32 *_abort_code)
+{
+	int ret;
+
+	if (skb_cloned(skb) || skb_has_frag_list(skb) ||
+	    skb_has_shared_frag(skb)) {
+		struct sk_buff *nskb = skb_copy(skb, GFP_NOFS);
+
+		if (!nskb)
+			return -ENOMEM;
+		ret = conn->security->verify_response(conn, nskb, _abort_code);
+		kfree_skb(nskb);
+		return ret;
+	}
+
+	return conn->security->verify_response(conn, skb, _abort_code);
+}
+
+/*
  * connection-level Rx packet processor
  */
 static int rxrpc_process_event(struct rxrpc_connection *conn,
@@ -329,7 +355,7 @@ static int rxrpc_process_event(struct rxrpc_connection *conn,
 							    _abort_code);
 
 	case RXRPC_PACKET_TYPE_RESPONSE:
-		ret = conn->security->verify_response(conn, skb, _abort_code);
+		ret = rxrpc_verify_response(conn, skb, _abort_code);
 		if (ret < 0)
 			return ret;
 
