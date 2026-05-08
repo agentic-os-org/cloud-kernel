@@ -29,6 +29,15 @@
 #define PCI_ROM_DATA_STRUCT_SIGNATURE		0x52494350
 #define PCI_ROM_DATA_STRUCT_LEN			0x0A
 
+/*
+ * Per PCI Firmware r3.3, sec 5.1.3, a conformant PCI Data Structure is at
+ * least 24 bytes (0x18), large enough to cover every fixed field this
+ * driver reads (up to the Indicator byte at offset 0x15).  Reject smaller
+ * device-claimed lengths so the follow-up readers in pci_get_rom_size()
+ * cannot escape the mapped ROM window.
+ */
+#define PCI_ROM_DATA_STRUCT_MIN_LEN		0x18
+
 /**
  * pci_enable_rom - enable ROM decoding for a PCI device
  * @pdev: PCI device to enable
@@ -86,26 +95,28 @@ void pci_disable_rom(struct pci_dev *pdev)
 }
 EXPORT_SYMBOL_GPL(pci_disable_rom);
 
-static bool pci_rom_is_header_valid(struct pci_dev *pdev,
-				    void __iomem *image,
-				    void __iomem *rom,
-				    size_t size,
-				    bool last_image)
+static bool pci_rom_header_valid(struct pci_dev *pdev, void __iomem *image,
+				 void __iomem *rom, size_t size,
+				 bool expect_valid)
 {
 	unsigned long rom_end = (unsigned long)rom + size - 1;
 	unsigned long header_end;
 	u16 signature;
 
 	/*
-	 * Some CPU architectures require IOMEM access addresses to
-	 * be aligned, for example arm64, so since we're about to
-	 * call readw(), we check here for 2-byte alignment.
+	 * Per PCI Firmware r3.3, sec 5.1, each image must start on a
+	 * 512-byte boundary and must contain the PCI Expansion ROM header.
+	 * Because @rom is page-aligned (returned by ioremap()), checking
+	 * 512-byte alignment of @image is equivalent to enforcing the
+	 * spec's sector-aligned layout within the ROM.  This also
+	 * satisfies the natural-alignment requirement of readw() on archs
+	 * such as arm64 that disallow unaligned IOMEM access.
 	 */
-	if (!IS_ALIGNED((unsigned long)image, 2))
+	if (!IS_ALIGNED((unsigned long)image, PCI_ROM_IMAGE_SECTOR_SIZE))
 		return false;
 
-	if (check_add_overflow((unsigned long)image, PCI_ROM_HEADER_SIZE,
-				&header_end))
+	if (check_add_overflow((unsigned long)image, PCI_ROM_HEADER_SIZE - 1,
+			       &header_end))
 		return false;
 
 	if (image < rom || header_end > rom_end)
@@ -113,23 +124,21 @@ static bool pci_rom_is_header_valid(struct pci_dev *pdev,
 
 	/* Standard PCI ROMs start out with these bytes 55 AA */
 	signature = readw(image);
-	if (signature == PCI_ROM_IMAGE_SIGNATURE)
-		return true;
-
-	if (last_image) {
-		pci_info(pdev, "Invalid PCI ROM header signature: expecting %#06x, got %#06x\n",
-			 PCI_ROM_IMAGE_SIGNATURE, signature);
-	} else {
-		pci_info(pdev, "No more image in the PCI ROM\n");
+	if (signature != PCI_ROM_IMAGE_SIGNATURE) {
+		if (expect_valid) {
+			pci_info(pdev, "Invalid PCI ROM header signature: expecting %#06x, got %#06x\n",
+				 PCI_ROM_IMAGE_SIGNATURE, signature);
+		} else {
+			pci_info(pdev, "No more images in PCI ROM\n");
+		}
+		return false;
 	}
 
-	return false;
+	return true;
 }
 
-static bool pci_rom_is_data_struct_valid(struct pci_dev *pdev,
-					 void __iomem *pds,
-					 void __iomem *rom,
-					 size_t size)
+static bool pci_rom_data_struct_valid(struct pci_dev *pdev, void __iomem *pds,
+				      void __iomem *rom, size_t size)
 {
 	unsigned long rom_end = (unsigned long)rom + size - 1;
 	unsigned long end;
@@ -137,38 +146,38 @@ static bool pci_rom_is_data_struct_valid(struct pci_dev *pdev,
 	u16 data_len;
 
 	/*
-	 * Some CPU architectures require IOMEM access addresses to
-	 * be aligned, for example arm64, so since we're about to
-	 * call readl(), we check here for 4-byte alignment.
+	 * Some CPU architectures require IOMEM access addresses to be
+	 * aligned, for example arm64, so since we're about to call
+	 * readl(), check here for 4-byte alignment.
 	 */
 	if (!IS_ALIGNED((unsigned long)pds, 4))
 		return false;
 
-	/* Before reading length, check addr range. */
 	if (check_add_overflow((unsigned long)pds, PCI_ROM_DATA_STRUCT_LEN + 1,
-				&end))
+			       &end))
 		return false;
 
 	if (pds < rom || end > rom_end)
 		return false;
 
+	signature = readl(pds);
+	if (signature != PCI_ROM_DATA_STRUCT_SIGNATURE) {
+		pci_info(pdev, "Invalid PCI ROM data signature: expecting %#010x, got %#010x\n",
+			 PCI_ROM_DATA_STRUCT_SIGNATURE, signature);
+		return false;
+	}
+
 	data_len = readw(pds + PCI_ROM_DATA_STRUCT_LEN);
-	if (!data_len || data_len == U16_MAX)
+	if (data_len < PCI_ROM_DATA_STRUCT_MIN_LEN || data_len == U16_MAX)
 		return false;
 
-	if (check_add_overflow((unsigned long)pds, data_len, &end))
+	if (check_add_overflow((unsigned long)pds, data_len - 1, &end))
 		return false;
 
 	if (end > rom_end)
 		return false;
 
-	signature = readl(pds);
-	if (signature == PCI_ROM_DATA_STRUCT_SIGNATURE)
-		return true;
-
-	pci_info(pdev, "Invalid PCI ROM data signature: expecting %#010x, got %#010x\n",
-		 PCI_ROM_DATA_STRUCT_SIGNATURE, signature);
-	return false;
+	return true;
 }
 
 /**
@@ -192,12 +201,12 @@ static size_t pci_get_rom_size(struct pci_dev *pdev, void __iomem *rom,
 	image = rom;
 	do {
 		void __iomem *pds;
-		if (!pci_rom_is_header_valid(pdev, image, rom, size, true))
+		if (!pci_rom_header_valid(pdev, image, rom, size, true))
 			break;
 
-		/* get the PCI data structure and check its "PCIR" signature */
+		/* Get the PCI data structure and check its "PCIR" signature */
 		pds = image + readw(image + PCI_ROM_POINTER_TO_DATA_STRUCT);
-		if (!pci_rom_is_data_struct_valid(pdev, pds, rom, size))
+		if (!pci_rom_data_struct_valid(pdev, pds, rom, size))
 			break;
 
 		last_image = readb(pds + PCI_ROM_LAST_IMAGE_INDICATOR) &
@@ -205,7 +214,8 @@ static size_t pci_get_rom_size(struct pci_dev *pdev, void __iomem *rom,
 		length = readw(pds + PCI_ROM_IMAGE_LEN);
 		image += length * PCI_ROM_IMAGE_SECTOR_SIZE;
 
-		if (!pci_rom_is_header_valid(pdev, image, rom, size, last_image))
+		if (!last_image &&
+		    !pci_rom_header_valid(pdev, image, rom, size, false))
 			break;
 	} while (length && !last_image);
 
