@@ -2427,9 +2427,13 @@ static int virtblk_map_user_request(struct request *req, uintptr_t ubuffer,
 	struct virtblk_req *vbr = blk_mq_rq_to_pdu(req);
 	int ret;
 
-	if (vbr_is_bidirectional(vbr))
-		return virtblk_map_user_bidirectional(req, ubuffer, ioucmd,
-						      bufflen, num);
+	if (vbr_is_bidirectional(vbr)) {
+		ret = virtblk_map_user_bidirectional(req, ubuffer, ioucmd,
+						     bufflen, num);
+		if (ret)
+			blk_mq_free_request(req);
+		return ret;
+	}
 
 	if (ioucmd && (ioucmd->flags & IORING_URING_CMD_FIXED)) {
 		struct iov_iter iter;
