@@ -446,7 +446,8 @@ static struct request *blk_mq_rq_ctx_init(struct blk_mq_alloc_data *data,
 
 	if ((set->flags & BLK_MQ_F_DYN_ALLOC) && (tag >= set->nr_static_rqs))
 		tags->static_rqs[tag] = kmalloc(sizeof(struct request) +
-			set->cmd_size, GFP_KERNEL | __GFP_ZERO);
+			set->cmd_size,
+			GFP_KERNEL | __GFP_ZERO | __GFP_NOFAIL);
 
 	rq = tags->static_rqs[tag];
 	rq->q = q;
