@@ -445,6 +445,9 @@ static int configfs_attach_attr(struct configfs_dirent * sd, struct dentry * den
 
 	inode = configfs_create(dentry, (attr->ca_mode & S_IALLUGO) | S_IFREG);
 	if (IS_ERR(inode)) {
+		spin_lock(&configfs_dirent_lock);
+		sd->s_dentry = NULL;
+		spin_unlock(&configfs_dirent_lock);
 		configfs_put(sd);
 		return PTR_ERR(inode);
 	}
