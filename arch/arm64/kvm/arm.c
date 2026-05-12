@@ -744,7 +744,13 @@ int kvm_arch_vcpu_runnable(struct kvm_vcpu *v)
 	bool irq_lines = *vcpu_hcr(v) & (HCR_VI | HCR_VF);
 #ifdef CONFIG_PARAVIRT_SCHED
 	bool pv_unhalted = v->arch.pvsched.pv_unhalted;
+#endif
 
+	irq_lines |= (!irqchip_in_kernel(v->kvm) &&
+		      (kvm_timer_should_notify_user(v) ||
+		       kvm_pmu_should_notify_user(v)));
+
+#ifdef CONFIG_PARAVIRT_SCHED
 	return ((irq_lines || kvm_vgic_vcpu_pending_irq(v) || pv_unhalted)
 		&& !kvm_arm_vcpu_stopped(v) && !v->arch.pause);
 #else
