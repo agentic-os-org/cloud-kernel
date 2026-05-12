@@ -1881,6 +1881,13 @@ static int init_vq_rpair(struct virtio_blk *vblk)
 	if (err)
 		goto out;
 
+	/*
+	 * Publish num_vqs before the cq_req allocation loop so that the
+	 * error path in virtblk_kfree_vqs_cq_reqs() can iterate over all
+	 * already-allocated cq_req arrays when one of the allocations fails.
+	 */
+	vblk->num_vqs = num_vqs;
+
 	for (i = 0; i < num_vqs; i++) {
 		vring_size = virtqueue_get_vring_size(vqs[i]);
 		if ((i % VIRTBLK_RING_NUM) == VIRTBLK_RING_CQ) {
@@ -1889,6 +1896,7 @@ static int init_vq_rpair(struct virtio_blk *vblk)
 					GFP_KERNEL | __GFP_ZERO);
 			if (!vblk->vqs[i].cq_req) {
 				err = -ENOMEM;
+				vdev->config->del_vqs(vdev);
 				goto out;
 			}
 		} else {
@@ -1902,8 +1910,6 @@ static int init_vq_rpair(struct virtio_blk *vblk)
 	err = virtblk_prefill_res(vblk, vqs, num_vqs);
 	if (err < 0)
 		vdev->config->del_vqs(vdev);
-
-	vblk->num_vqs = num_vqs;
 
 out:
 	kfree(vqs);
