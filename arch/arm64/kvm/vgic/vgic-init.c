@@ -762,6 +762,8 @@ void __init vgic_set_kvm_info(const struct gic_kvm_info *info)
  *
  * For a specific CPU, initialize the GIC VE hardware.
  */
+static bool has_vgic_maint_irq;
+
 void kvm_vgic_init_cpu_hardware(void)
 {
 	BUG_ON(preemptible());
@@ -847,6 +849,16 @@ int kvm_vgic_hyp_init(void)
 		return ret;
 	}
 
+	has_vgic_maint_irq = true;
 	kvm_info("vgic interrupt IRQ%d\n", kvm_vgic_global_state.maint_irq);
 	return 0;
+}
+
+void kvm_vgic_hyp_uninit(void)
+{
+	if (!has_vgic_maint_irq)
+		return;
+
+	free_percpu_irq(kvm_vgic_global_state.maint_irq,
+			kvm_get_running_vcpus());
 }
