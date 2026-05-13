@@ -224,6 +224,12 @@ struct message_device {
 	struct list_head list;
 	const struct message_ops *ops;
 	struct fwnode_handle *fwnode;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+	CK_KABI_RESERVE(5)
 };
 
 /**
