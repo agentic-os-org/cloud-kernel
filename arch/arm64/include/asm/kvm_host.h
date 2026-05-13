@@ -1736,4 +1736,63 @@ static __always_inline enum fgt_group_id __fgt_reg_to_group_id(enum vcpu_sysreg 
 
 long kvm_get_cap_for_kvm_ioctl(unsigned int ioctl, long *ext);
 
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+struct kvm_pmu_ops {
+	void (*set_pmu_events)(u64 set, struct perf_event_attr *attr);
+	void (*clr_pmu_events)(u64 clr);
+	bool (*set_pmuserenr)(u64 val);
+	void (*vcpu_pmu_resync_el0)(void);
+};
+
+extern struct kvm_pmu_ops __rcu *kvm_pmu_ops;
+
+DECLARE_STATIC_CALL(__kvm_set_pmu_events, *kvm_pmu_ops->set_pmu_events);
+DECLARE_STATIC_CALL(__kvm_clr_pmu_events, *kvm_pmu_ops->clr_pmu_events);
+DECLARE_STATIC_CALL(__kvm_set_pmuserenr, *kvm_pmu_ops->set_pmuserenr);
+DECLARE_STATIC_CALL(__kvm_vcpu_pmu_resync_el0, *kvm_pmu_ops->vcpu_pmu_resync_el0);
+
+static inline void host_kvm_set_pmu_events(u64 set, struct perf_event_attr *attr)
+{
+	static_call_cond(__kvm_set_pmu_events)(set, attr);
+}
+
+static inline void host_kvm_clr_pmu_events(u64 clr)
+{
+	static_call_cond(__kvm_clr_pmu_events)(clr);
+}
+
+static inline bool host_kvm_set_pmuserenr(u64 val)
+{
+	return static_call(__kvm_set_pmuserenr)(val);
+}
+
+static inline void host_kvm_vcpu_pmu_resync_el0(void)
+{
+	static_call_cond(__kvm_vcpu_pmu_resync_el0)();
+}
+
+void kvm_register_pmu_handlers(struct kvm_pmu_ops *ops);
+void kvm_unregister_pmu_handlers(struct kvm_pmu_ops *ops);
+#else
+static inline void host_kvm_set_pmu_events(u64 set, struct perf_event_attr *attr)
+{
+	kvm_set_pmu_events(set, attr);
+}
+
+static inline void host_kvm_clr_pmu_events(u64 clr)
+{
+	kvm_clr_pmu_events(clr);
+}
+
+static inline bool host_kvm_set_pmuserenr(u64 val)
+{
+	return kvm_set_pmuserenr(val);
+}
+
+static inline void host_kvm_vcpu_pmu_resync_el0(void)
+{
+	kvm_vcpu_pmu_resync_el0();
+}
+#endif
+
 #endif /* __ARM64_KVM_HOST_H__ */

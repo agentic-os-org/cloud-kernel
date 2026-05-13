@@ -2050,6 +2050,28 @@ int kvm_arch_vm_ioctl(struct file *filp, unsigned int ioctl, unsigned long arg)
 	}
 }
 
+#ifdef MODULE
+static struct kvm_pmu_ops __kvm_pmu_ops = {
+	.set_pmu_events = kvm_set_pmu_events,
+	.clr_pmu_events = kvm_clr_pmu_events,
+	.set_pmuserenr = kvm_set_pmuserenr,
+	.vcpu_pmu_resync_el0 = kvm_vcpu_pmu_resync_el0,
+};
+
+static void __init register_pmu_handlers(void)
+{
+	kvm_register_pmu_handlers(&__kvm_pmu_ops);
+}
+
+static void unregister_pmu_handlers(void)
+{
+	kvm_unregister_pmu_handlers(&__kvm_pmu_ops);
+}
+#else
+static inline void __init register_pmu_handlers(void) {}
+static inline void unregister_pmu_handlers(void) {}
+#endif
+
 static unsigned long nvhe_percpu_size(void)
 {
 	return (unsigned long)CHOOSE_NVHE_SYM(__per_cpu_end) -
@@ -2455,12 +2477,15 @@ static int __init init_subsystems(void)
 	if (err)
 		goto out;
 
+	register_pmu_handlers();
+
 	kvm_register_perf_callbacks();
 
 	err = kvm_hyp_trace_init();
 	if (err) {
 		kvm_err("Failed to initialize Hyp tracing\n");
 		kvm_unregister_perf_callbacks();
+		unregister_pmu_handlers();
 		kvm_timer_hyp_uninit();
 	}
 
@@ -2479,6 +2504,7 @@ out:
 static void __init teardown_subsystems(void)
 {
 	kvm_unregister_perf_callbacks();
+	unregister_pmu_handlers();
 	kvm_timer_hyp_uninit();
 	kvm_vgic_hyp_uninit();
 	hyp_cpu_pm_exit();
