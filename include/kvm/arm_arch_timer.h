@@ -98,6 +98,7 @@ struct arch_timer_cpu {
 };
 
 int __init kvm_timer_hyp_init(bool has_gic);
+void kvm_timer_hyp_uninit(void);
 int kvm_timer_enable(struct kvm_vcpu *vcpu);
 void kvm_timer_vcpu_reset(struct kvm_vcpu *vcpu);
 void kvm_timer_vcpu_init(struct kvm_vcpu *vcpu);

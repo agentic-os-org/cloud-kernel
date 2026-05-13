@@ -2458,8 +2458,11 @@ static int __init init_subsystems(void)
 	kvm_register_perf_callbacks();
 
 	err = kvm_hyp_trace_init();
-	if (err)
+	if (err) {
 		kvm_err("Failed to initialize Hyp tracing\n");
+		kvm_unregister_perf_callbacks();
+		kvm_timer_hyp_uninit();
+	}
 
 out:
 	if (err) {
@@ -2476,6 +2479,7 @@ out:
 static void __init teardown_subsystems(void)
 {
 	kvm_unregister_perf_callbacks();
+	kvm_timer_hyp_uninit();
 	kvm_vgic_hyp_uninit();
 	hyp_cpu_pm_exit();
 }
