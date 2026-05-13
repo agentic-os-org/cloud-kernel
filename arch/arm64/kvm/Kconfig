@@ -103,5 +103,14 @@ config PKVM_STACKTRACE
 	  If unsure, or not using protected nVHE (pKVM), say N.
 
 endif # NVHE_EL2_DEBUG
+
+config KVM_ARM_HOST_VHE_ONLY
+	def_bool y
+	depends on KVM=m
+	help
+	  Enabled by default if KVM is built as a module.
+
+	  This config means KVM=m only supports host with VHE.
+
 endif # KVM
 endif # VIRTUALIZATION
