@@ -25,6 +25,7 @@ obj-y += kvm_host.o
 
 kvm-$(CONFIG_VIRT_PLAT_DEV)  += vgic/shadow_dev.o
 kvm-$(CONFIG_HW_PERF_EVENTS)  += pmu-emul.o pmu.o
+kvm-$(CONFIG_ARM64_PTR_AUTH)  += pauth.o
 kvm-$(CONFIG_KVM) += hisilicon/hisi_virt.o
 
 ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
