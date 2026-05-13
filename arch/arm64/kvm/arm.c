@@ -2116,12 +2116,12 @@ static unsigned long nvhe_percpu_order(void)
 
 	return size ? get_order(size) : 0;
 }
-#endif
 
 static size_t pkvm_host_sve_state_order(void)
 {
 	return get_order(pkvm_host_sve_state_size());
 }
+#endif
 
 /* A lookup table holding the hypervisor VA for each vector slot */
 static void *hyp_spectre_vector_selector[BP_HARDEN_EL2_SLOTS];
@@ -2550,7 +2550,7 @@ out:
 	return err;
 }
 
-static void __init teardown_subsystems(void)
+static void teardown_subsystems(void)
 {
 	kvm_unregister_perf_callbacks();
 	unregister_pmu_handlers();
@@ -3135,8 +3135,10 @@ static __init int kvm_arm_init(void)
 	 * This should be called after initialization is done and failure isn't
 	 * possible anymore.
 	 */
+#ifndef MODULE
 	if (!in_hyp_mode)
 		finalize_init_hyp_mode();
+#endif
 
 	kvm_arm_initialised = true;
 

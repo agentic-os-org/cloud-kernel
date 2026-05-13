@@ -16,6 +16,7 @@
 #include <linux/irqdomain.h>
 #include <linux/sysfs.h>
 #include <linux/string_choices.h>
+#include <linux/kvm_types.h>
 
 #include "internals.h"
 
@@ -419,6 +420,7 @@ struct irq_desc *irq_to_desc(unsigned int irq)
 #ifdef CONFIG_KVM_BOOK3S_64_HV_MODULE
 EXPORT_SYMBOL_GPL(irq_to_desc);
 #endif
+EXPORT_SYMBOL_FOR_KVM(irq_to_desc);
 
 void irq_lock_sparse(void)
 {
