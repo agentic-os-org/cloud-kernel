@@ -37,7 +37,11 @@ u32 __ro_after_init __hyp_va_bits;
 
 static unsigned long __ro_after_init io_map_base;
 
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+#define KVM_PGT_FN(fn)          fn
+#else
 #define KVM_PGT_FN(fn)		(!is_protected_kvm_enabled() ? fn : p ## fn)
+#endif
 
 static phys_addr_t __stage2_range_addr_end(phys_addr_t addr, phys_addr_t end,
 					   phys_addr_t size)
@@ -252,10 +256,12 @@ static void kvm_host_get_page(void *addr)
 	get_page(virt_to_page(addr));
 }
 
+#ifndef MODULE
 static void kvm_host_put_page(void *addr)
 {
 	put_page(virt_to_page(addr));
 }
+#endif
 
 static void kvm_s2_put_page(void *addr)
 {
@@ -1713,7 +1719,7 @@ static int pkvm_mem_abort(const struct kvm_s2_fault_desc *s2fd)
 	}
 
 	write_lock(&kvm->mmu_lock);
-	ret = pkvm_pgtable_stage2_map(pgt, s2fd->fault_ipa, PAGE_SIZE,
+	ret = KVM_PGT_FN(kvm_pgtable_stage2_map)(pgt, s2fd->fault_ipa, PAGE_SIZE,
 				      page_to_phys(page), KVM_PGTABLE_PROT_RWX,
 				      hyp_memcache, 0);
 	write_unlock(&kvm->mmu_lock);

@@ -1354,13 +1354,13 @@ static u64 reg_feat_map_bits(const struct reg_bits_to_feat_map *map)
 	return map->flags & MASKS_POINTER ? (map->masks->mask | map->masks->nmask) : map->bits;
 }
 
-static void __init check_reg_desc(const struct reg_feat_map_desc *r)
+static void check_reg_desc(const struct reg_feat_map_desc *r)
 {
 	check_feat_map(r->bit_feat_map, r->bit_feat_map_sz,
 		       ~reg_feat_map_bits(&r->feat_map), r->name);
 }
 
-void __init check_feature_map(void)
+void check_feature_map(void)
 {
 	check_reg_desc(&hfgrtr_desc);
 	check_reg_desc(&hfgwtr_desc);

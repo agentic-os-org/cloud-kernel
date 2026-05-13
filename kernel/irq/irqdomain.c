@@ -19,6 +19,7 @@
 #include <linux/slab.h>
 #include <linux/smp.h>
 #include <linux/fs.h>
+#include <linux/kvm_types.h>
 
 static LIST_HEAD(irq_domain_list);
 static DEFINE_MUTEX(irq_domain_mutex);
@@ -2009,6 +2010,7 @@ int irq_domain_activate_irq(struct irq_data *irq_data, bool reserve)
 		irqd_set_activated(irq_data);
 	return ret;
 }
+EXPORT_SYMBOL_FOR_KVM(irq_domain_activate_irq);
 
 /**
  * irq_domain_deactivate_irq - Call domain_ops->deactivate recursively to
@@ -2025,6 +2027,7 @@ void irq_domain_deactivate_irq(struct irq_data *irq_data)
 		irqd_clr_activated(irq_data);
 	}
 }
+EXPORT_SYMBOL_FOR_KVM(irq_domain_deactivate_irq);
 
 static void irq_domain_check_hierarchy(struct irq_domain *domain)
 {

@@ -10,6 +10,7 @@
 #include <linux/arm-smccc.h>
 #include <linux/init.h>
 #include <linux/linkage.h>
+#include <linux/kvm_types.h>
 
 #include <asm/alternative.h>
 #include <asm/assembler.h>
@@ -535,6 +536,7 @@ SYM_CODE_START(vectors)
 	kernel_ventry	0, t, 32, fiq		// FIQ 32-bit EL0
 	kernel_ventry	0, t, 32, error		// Error 32-bit EL0
 SYM_CODE_END(vectors)
+EXPORT_SYMBOL_FOR_KVM(vectors)
 
 SYM_CODE_START_LOCAL(__bad_stack)
 	/*
