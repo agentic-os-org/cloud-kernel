@@ -10,6 +10,10 @@
  * Author: Christoffer Dall <c.dall@virtualopensystems.com>
  */
 
+#ifdef MODULE
+#define __KVM_VHE_HYPERVISOR__
+#endif
+
 #include <hyp/adjust_pc.h>
 #include <linux/kvm_host.h>
 #include <asm/kvm_emulate.h>

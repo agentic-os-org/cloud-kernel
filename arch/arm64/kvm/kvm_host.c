@@ -11,6 +11,8 @@
 
 static enum kvm_mode kvm_mode = KVM_MODE_DEFAULT;
 
+DEFINE_STATIC_KEY_FALSE(kvm_protected_mode_initialized);
+
 static int __init early_kvm_mode_cfg(char *arg)
 {
 	if (!arg)

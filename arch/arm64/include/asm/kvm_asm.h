@@ -174,6 +174,13 @@ extern void *__vhe_undefined_symbol;
 
 #else
 
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+#define CHOOSE_HYP_SYM(sym)		CHOOSE_VHE_SYM(sym)
+#define this_cpu_ptr_hyp_sym(sym)	this_cpu_ptr(&sym)
+#define per_cpu_ptr_hyp_sym(sym, cpu)	per_cpu_ptr(&sym, cpu)
+#define CHOOSE_VHE_SYM(sym)		sym
+#define CHOOSE_NVHE_SYM(sym)		kvm_nvhe_sym(sym)
+#else
 /*
  * BIG FAT WARNINGS:
  *
@@ -199,6 +206,7 @@ extern void *__vhe_undefined_symbol;
 
 #define CHOOSE_VHE_SYM(sym)	sym
 #define CHOOSE_NVHE_SYM(sym)	kvm_nvhe_sym(sym)
+#endif
 
 #endif
 

@@ -100,6 +100,17 @@ alternative_cb_end
 #include <asm/kvm_host.h>
 #include <asm/kvm_nested.h>
 
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+static inline void kvm_compute_layout(void)
+{
+}
+
+static inline void kvm_apply_hyp_relocations(void)
+{
+}
+
+#define kern_hyp_va(v)		(v)
+#else
 void kvm_update_va_mask(struct alt_instr *alt,
 			__le32 *origptr, __le32 *updptr, int nr_inst);
 void kvm_compute_layout(void);
@@ -139,6 +150,7 @@ static __always_inline unsigned long __kern_hyp_va(unsigned long v)
 }
 
 #define kern_hyp_va(v) 	((typeof(v))(__kern_hyp_va((unsigned long)(v))))
+#endif
 
 extern u32 __hyp_va_bits;
 

@@ -4,6 +4,10 @@
  * Author: Marc Zyngier <marc.zyngier@arm.com>
  */
 
+#ifdef MODULE
+#define __KVM_VHE_HYPERVISOR__
+#endif
+
 #include <linux/linkage.h>
 
 #include <asm/alternative.h>

@@ -507,6 +507,7 @@ void handle_exit_early(struct kvm_vcpu *vcpu, int exception_index)
 		kvm_handle_guest_serror(vcpu, kvm_vcpu_get_esr(vcpu));
 }
 
+#ifndef MODULE
 static void print_nvhe_hyp_panic(const char *name, u64 panic_addr)
 {
 	kvm_err("nVHE hyp %s at: [<%016llx>] %pB!\n", name, panic_addr,
@@ -578,3 +579,4 @@ void __noreturn __cold nvhe_hyp_panic_handler(u64 esr, u64 spsr,
 	panic("HYP panic:\nPS:%08llx PC:%016llx ESR:%016llx\nFAR:%016llx HPFAR:%016llx PAR:%016llx\nVCPU:%016lx\n",
 	      spsr, elr_virt, esr, far, hpfar, par, vcpu);
 }
+#endif
