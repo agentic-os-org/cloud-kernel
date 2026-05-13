@@ -17,11 +17,42 @@
 
 #define HYP_MEMBLOCK_REGIONS 128
 
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+static inline int pkvm_init_host_vm(struct kvm *kvm, unsigned long type)
+{
+	WARN_ON_ONCE(is_protected_kvm_enabled());
+	return 0;
+}
+
+static inline int pkvm_create_hyp_vm(struct kvm *kvm)
+{
+	WARN_ON_ONCE(is_protected_kvm_enabled());
+	return 0;
+}
+
+static inline void pkvm_destroy_hyp_vm(struct kvm *kvm)
+{
+	WARN_ON_ONCE(is_protected_kvm_enabled());
+}
+
+static inline int pkvm_create_hyp_vcpu(struct kvm_vcpu *vcpu)
+{
+	WARN_ON_ONCE(is_protected_kvm_enabled());
+	return 0;
+}
+
+static inline bool pkvm_hyp_vm_is_created(struct kvm *kvm)
+{
+	WARN_ON_ONCE(is_protected_kvm_enabled());
+	return false;
+}
+#else
 int pkvm_init_host_vm(struct kvm *kvm, unsigned long type);
 int pkvm_create_hyp_vm(struct kvm *kvm);
 bool pkvm_hyp_vm_is_created(struct kvm *kvm);
 void pkvm_destroy_hyp_vm(struct kvm *kvm);
 int pkvm_create_hyp_vcpu(struct kvm_vcpu *vcpu);
+#endif
 
 /*
  * Check whether the specific capability is allowed in pKVM.

@@ -53,7 +53,9 @@ int __init kvm_arm_init_sve(void)
 	if (system_supports_sve()) {
 		kvm_sve_max_vl = sve_max_virtualisable_vl();
 		kvm_host_sve_max_vl = sve_max_vl();
+#ifndef CONFIG_KVM_ARM_HOST_VHE_ONLY
 		kvm_nvhe_sym(kvm_host_sve_max_vl) = kvm_host_sve_max_vl;
+#endif
 
 		/*
 		 * The get_sve_reg()/set_sve_reg() ioctl interface will need

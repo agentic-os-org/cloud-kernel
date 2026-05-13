@@ -297,7 +297,6 @@ int its_commit_vpe(struct its_vpe *vpe)
 	return ret;
 }
 
-
 int its_invall_vpe(struct its_vpe *vpe)
 {
 	struct its_cmd_info info = {
