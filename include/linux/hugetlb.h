@@ -30,6 +30,7 @@ void free_huge_folio(struct folio *folio);
 
 #ifdef CONFIG_HUGETLB_PAGE
 
+#include <linux/mempolicy.h>
 #include <linux/pagemap.h>
 #include <linux/shm.h>
 #include <asm/tlbflush.h>
