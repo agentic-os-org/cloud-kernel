@@ -87,6 +87,12 @@ struct ub_decoder {
 
 	struct mutex table_lock;
 	bool create_matt;
+
+	CK_KABI_RESERVE(1)
+	CK_KABI_RESERVE(2)
+	CK_KABI_RESERVE(3)
+	CK_KABI_RESERVE(4)
+	CK_KABI_RESERVE(5)
 };
 
 struct decoder_map_info {
