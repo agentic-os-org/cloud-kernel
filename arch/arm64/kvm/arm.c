@@ -2427,6 +2427,7 @@ out:
 static void __init teardown_subsystems(void)
 {
 	kvm_unregister_perf_callbacks();
+	kvm_timer_hyp_uninit();
 	kvm_vgic_hyp_uninit();
 	hyp_cpu_pm_exit();
 }
