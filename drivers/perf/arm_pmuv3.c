@@ -704,7 +704,7 @@ static void armv8pmu_enable_event_counter(struct perf_event *event)
 	struct perf_event_attr *attr = &event->attr;
 	u64 mask = armv8pmu_event_cnten_mask(event);
 
-	kvm_set_pmu_events(mask, attr);
+	host_kvm_set_pmu_events(mask, attr);
 
 	/* We rely on the hypervisor switch code to enable guest counters */
 	if (!kvm_pmu_counter_deferred(attr))
@@ -726,7 +726,7 @@ static void armv8pmu_disable_event_counter(struct perf_event *event)
 	struct perf_event_attr *attr = &event->attr;
 	u64 mask = armv8pmu_event_cnten_mask(event);
 
-	kvm_clr_pmu_events(mask);
+	host_kvm_clr_pmu_events(mask);
 
 	/* We rely on the hypervisor switch code to disable guest counters */
 	if (!kvm_pmu_counter_deferred(attr))
@@ -781,7 +781,7 @@ static void update_pmuserenr(u64 val)
 	 * for the host EL0 so that KVM can restore it before returning to
 	 * the host EL0. Otherwise, update the register now.
 	 */
-	if (kvm_set_pmuserenr(val))
+	if (host_kvm_set_pmuserenr(val))
 		return;
 
 	write_pmuserenr(val);
@@ -848,7 +848,7 @@ static void armv8pmu_start(struct arm_pmu *cpu_pmu)
 	else
 		armv8pmu_disable_user_access();
 
-	kvm_vcpu_pmu_resync_el0();
+	host_kvm_vcpu_pmu_resync_el0();
 
 	if (hw_events->branch_users)
 		brbe_enable(cpu_pmu);
@@ -1172,7 +1172,7 @@ static void armv8pmu_reset(void *info)
 	armv8pmu_disable_intens(mask);
 
 	/* Clear the counters we flip at guest entry/exit */
-	kvm_clr_pmu_events(mask);
+	host_kvm_clr_pmu_events(mask);
 
 	if (brbe_num_branch_records(cpu_pmu)) {
 		brbe_disable();
