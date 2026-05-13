@@ -1,1 +1,1 @@
-# CONFIG_MTD_SWAP is not set
+CONFIG_MTD_SWAP=m
