@@ -78,6 +78,10 @@ obj-y					+= vdso-wrap.o
 obj-$(CONFIG_COMPAT_VDSO)		+= vdso32-wrap.o
 obj-$(CONFIG_UNWIND_PATCH_PAC_INTO_SCS)	+= patch-scs.o
 obj-$(CONFIG_UNWINDER_ORC) += orc_lookup.o
+obj-$(CONFIG_ARM64_SYNC_SEI)		+= arm64_sync_sei.o
+obj-$(CONFIG_IPI_AS_NMI)		+= ipi_nmi.o
+obj-$(CONFIG_HISI_VIRTCCA_GUEST)	+= virtcca_cvm_guest.o virtcca_cvm_tsi.o
+obj-$(CONFIG_HISI_VIRTCCA_HOST)		+= virtcca_cvm_host.o
 CFLAGS_patch-scs.o			+= -mbranch-protection=none
 
 # Force dependency (vdso*-wrap.S includes vdso.so through incbin)
