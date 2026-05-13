@@ -112,7 +112,11 @@ DECLARE_KVM_HYP_PER_CPU(unsigned long, kvm_hyp_vector);
 DEFINE_PER_CPU(unsigned long, kvm_arm_hyp_stack_base);
 DECLARE_KVM_NVHE_PER_CPU(struct kvm_nvhe_init_params, kvm_init_params);
 
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+extern struct kvm_cpu_context __percpu *kvm_hyp_ctxt;
+#else
 DECLARE_KVM_NVHE_PER_CPU(struct kvm_cpu_context, kvm_hyp_ctxt);
+#endif
 
 static bool vgic_present, kvm_arm_initialised;
 
@@ -614,7 +618,7 @@ static void vcpu_set_pauth_traps(struct kvm_vcpu *vcpu)
 		if (vcpu->arch.hcr_el2 & (HCR_API | HCR_APK)) {
 			struct kvm_cpu_context *ctxt;
 
-			ctxt = this_cpu_ptr_hyp_sym(kvm_hyp_ctxt);
+			ctxt = this_cpu_ptr_wrapper(kvm_hyp_ctxt);
 			ptrauth_save_keys(ctxt);
 		}
 	}
@@ -2067,9 +2071,38 @@ static void unregister_pmu_handlers(void)
 {
 	kvm_unregister_pmu_handlers(&__kvm_pmu_ops);
 }
+
+static int __init kvm_alloc_percpu(void)
+{
+	kvm_host_data = alloc_percpu(struct kvm_host_data);
+	if (!kvm_host_data) {
+		kvm_err("Failed to allocate percpu memory for kvm_host_data.\n");
+		return -ENOMEM;
+	}
+
+	kvm_hyp_ctxt = alloc_percpu(struct kvm_cpu_context);
+	if (!kvm_hyp_ctxt) {
+		free_percpu(kvm_host_data);
+		kvm_host_data = NULL;
+		kvm_err("Failed to allocate percpu memory for kvm_hyp_ctxt.\n");
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+static void kvm_free_percpu(void)
+{
+	free_percpu(kvm_host_data);
+	kvm_host_data = NULL;
+	free_percpu(kvm_hyp_ctxt);
+	kvm_hyp_ctxt = NULL;
+}
 #else
 static inline void __init register_pmu_handlers(void) {}
 static inline void unregister_pmu_handlers(void) {}
+static inline int __init kvm_alloc_percpu(void) { return 0; }
+static void kvm_free_percpu(void) {}
 #endif
 
 static unsigned long nvhe_percpu_size(void)
@@ -3025,10 +3058,14 @@ static __init int kvm_arm_init(void)
 		return err;
 	}
 
+	err = kvm_alloc_percpu();
+	if (err)
+		goto out_err;
+
 	if (!in_hyp_mode) {
 		err = init_hyp_mode();
 		if (err)
-			goto out_err;
+			goto out_percpu;
 	}
 
 	err = kvm_init_vector_slots();
@@ -3072,6 +3109,8 @@ out_subs:
 out_hyp:
 	if (!in_hyp_mode)
 		teardown_hyp_mode();
+out_percpu:
+	kvm_free_percpu();
 out_err:
 	kvm_arm_vmid_alloc_free();
 	return err;

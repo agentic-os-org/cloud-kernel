@@ -974,7 +974,7 @@ static inline void __kvm_unexpected_el2_exception(void)
 	}
 
 	/* Trigger a panic after restoring the hyp context. */
-	this_cpu_ptr(&kvm_hyp_ctxt)->sys_regs[ELR_EL2] = elr_el2;
+	this_cpu_ptr_wrapper(kvm_hyp_ctxt)->sys_regs[ELR_EL2] = elr_el2;
 	write_sysreg(__guest_exit_restore_elr_and_panic, elr_el2);
 }
 

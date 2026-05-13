@@ -26,7 +26,7 @@ SYM_FUNC_START(__guest_enter)
 	// x1-x17: clobbered by macros
 	// x29: guest context
 
-	adr_this_cpu x1, kvm_hyp_ctxt, x2
+	kvm_adr_this_cpu x1, kvm_hyp_ctxt, x2
 
 	// Store the hyp regs
 	save_callee_saved_regs x1
@@ -92,7 +92,7 @@ SYM_INNER_LABEL(__guest_exit_restore_elr_and_panic, SYM_L_GLOBAL)
 	// x2-x29,lr: vcpu regs
 	// vcpu x0-x1 on the stack
 
-	adr_this_cpu x0, kvm_hyp_ctxt, x1
+	kvm_adr_this_cpu x0, kvm_hyp_ctxt, x1
 	ldr	x0, [x0, #CPU_ELR_EL2]
 	msr	elr_el2, x0
 
@@ -112,7 +112,7 @@ SYM_INNER_LABEL(__guest_exit_panic, SYM_L_GLOBAL)
 	// return address to tail call into hyp_panic. As a side effect, the
 	// current state is saved to the guest context but it will only be
 	// accurate if the guest had been completely restored.
-	adr_this_cpu x0, kvm_hyp_ctxt, x1
+	kvm_adr_this_cpu x0, kvm_hyp_ctxt, x1
 	adr_l	x1, hyp_panic
 	str	x1, [x0, #CPU_XREG_OFFSET(30)]
 
@@ -150,7 +150,7 @@ SYM_INNER_LABEL(__guest_exit, SYM_L_GLOBAL)
 	// Store the guest's sp_el0
 	save_sp_el0	x1, x2
 
-	adr_this_cpu x2, kvm_hyp_ctxt, x3
+	kvm_adr_this_cpu x2, kvm_hyp_ctxt, x3
 
 	// Macro ptrauth_switch_to_hyp format:
 	// 	ptrauth_switch_to_hyp(guest cxt, host cxt, tmp1, tmp2, tmp3)
