@@ -53,8 +53,6 @@
 
 #include "sys_regs.h"
 
-static enum kvm_mode kvm_mode = KVM_MODE_DEFAULT;
-
 enum kvm_wfx_trap_policy {
 	KVM_WFX_NOTRAP_SINGLE_TASK, /* Default option */
 	KVM_WFX_NOTRAP,
@@ -2442,7 +2440,7 @@ static int __init init_subsystems(void)
 		goto out;
 	}
 
-	if (kvm_mode == KVM_MODE_NV &&
+	if (kvm_get_mode() == KVM_MODE_NV &&
 		!(vgic_present && (kvm_vgic_global_state.type == VGIC_V3 ||
 				   kvm_vgic_global_state.has_gcie_v3_compat))) {
 		kvm_err("NV support requires GICv3 or GICv5 with legacy support, giving up\n");
@@ -3045,46 +3043,9 @@ out_err:
 	kvm_arm_vmid_alloc_free();
 	return err;
 }
+module_init(kvm_arm_init);
 
-static int __init early_kvm_mode_cfg(char *arg)
-{
-	if (!arg)
-		return -EINVAL;
-
-	if (strcmp(arg, "none") == 0) {
-		kvm_mode = KVM_MODE_NONE;
-		return 0;
-	}
-
-	if (!is_hyp_mode_available()) {
-		pr_warn_once("KVM is not available. Ignoring kvm-arm.mode\n");
-		return 0;
-	}
-
-	if (strcmp(arg, "protected") == 0) {
-		if (!is_kernel_in_hyp_mode())
-			kvm_mode = KVM_MODE_PROTECTED;
-		else
-			pr_warn_once("Protected KVM not available with VHE\n");
-
-		return 0;
-	}
-
-	if (strcmp(arg, "nvhe") == 0 && !WARN_ON(is_kernel_in_hyp_mode())) {
-		kvm_mode = KVM_MODE_DEFAULT;
-		return 0;
-	}
-
-	if (strcmp(arg, "nested") == 0 && !WARN_ON(!is_kernel_in_hyp_mode())) {
-		kvm_mode = KVM_MODE_NV;
-		return 0;
-	}
-
-	return -EINVAL;
-}
-early_param("kvm-arm.mode", early_kvm_mode_cfg);
-
-static int __init early_kvm_wfx_trap_policy_cfg(char *arg, enum kvm_wfx_trap_policy *p)
+static int early_kvm_wfx_trap_policy_cfg(char *arg, enum kvm_wfx_trap_policy *p)
 {
 	if (!arg)
 		return -EINVAL;
@@ -3099,6 +3060,7 @@ static int __init early_kvm_wfx_trap_policy_cfg(char *arg, enum kvm_wfx_trap_pol
 		return 0;
 	}
 
+	kvm_err("Invalid wfx trap policy value: %s\n", arg);
 	return -EINVAL;
 }
 
@@ -3113,10 +3075,3 @@ static int __init early_kvm_wfe_trap_policy_cfg(char *arg)
 	return early_kvm_wfx_trap_policy_cfg(arg, &kvm_wfe_trap_policy);
 }
 early_param("kvm-arm.wfe_trap_policy", early_kvm_wfe_trap_policy_cfg);
-
-enum kvm_mode kvm_get_mode(void)
-{
-	return kvm_mode;
-}
-
-module_init(kvm_arm_init);
