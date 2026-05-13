@@ -495,4 +495,6 @@ static inline bool vgic_supports_direct_irqs(struct kvm *kvm)
 int vgic_its_debug_init(struct kvm_device *dev);
 void vgic_its_debug_destroy(struct kvm_device *dev);
 
+extern struct gic_kvm_info *gic_kvm_info;
+
 #endif

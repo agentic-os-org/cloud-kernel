@@ -747,16 +747,6 @@ static irqreturn_t vgic_maintenance_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static struct gic_kvm_info *gic_kvm_info;
-
-void __init vgic_set_kvm_info(const struct gic_kvm_info *info)
-{
-	BUG_ON(gic_kvm_info != NULL);
-	gic_kvm_info = kmalloc_obj(*gic_kvm_info);
-	if (gic_kvm_info)
-		*gic_kvm_info = *info;
-}
-
 /**
  * kvm_vgic_init_cpu_hardware - initialize the GIC VE hardware
  *
@@ -831,8 +821,10 @@ int kvm_vgic_hyp_init(void)
 
 	kvm_vgic_global_state.maint_irq = gic_kvm_info->maint_irq;
 
+#ifndef MODULE
 	kfree(gic_kvm_info);
 	gic_kvm_info = NULL;
+#endif
 
 	if (ret)
 		return ret;
