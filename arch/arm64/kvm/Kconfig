@@ -82,4 +82,12 @@ config PTDUMP_STAGE2_DEBUGFS
 
 	  If in doubt, say N.
 
+config KVM_ARM_HOST_VHE_ONLY
+	def_bool y
+	depends on KVM=m
+	help
+	  Enabled by default if KVM is built as a module.
+
+	  This config means KVM=m only supports host with VHE.
+
 endif # VIRTUALIZATION
