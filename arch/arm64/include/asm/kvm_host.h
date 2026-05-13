@@ -1391,7 +1391,11 @@ static inline bool kvm_arm_is_pvtime_enabled(struct kvm_vcpu_arch *vcpu_arch)
 
 struct kvm_vcpu *kvm_mpidr_to_vcpu(struct kvm *kvm, unsigned long mpidr);
 
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+extern struct kvm_host_data __percpu *kvm_host_data;
+#else
 DECLARE_KVM_HYP_PER_CPU(struct kvm_host_data, kvm_host_data);
+#endif
 
 /*
  * How we access per-CPU host data depends on the where we access it from,
@@ -1410,8 +1414,8 @@ DECLARE_KVM_HYP_PER_CPU(struct kvm_host_data, kvm_host_data);
  *
  * Yes, this is all totally trivial. Shoot me now.
  */
-#if defined(__KVM_NVHE_HYPERVISOR__) || defined(__KVM_VHE_HYPERVISOR__)
-#define host_data_ptr(f)	(&this_cpu_ptr(&kvm_host_data)->f)
+#if defined(__KVM_NVHE_HYPERVISOR__) || defined(__KVM_VHE_HYPERVISOR__) || defined(CONFIG_KVM_ARM_HOST_VHE_ONLY)
+#define host_data_ptr(f)	(&this_cpu_ptr_wrapper(kvm_host_data)->f)
 #else
 #define host_data_ptr(f)						\
 	(static_branch_unlikely(&kvm_protected_mode_initialized) ?	\

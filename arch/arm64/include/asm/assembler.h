@@ -243,6 +243,19 @@ alternative_endif
 	.endm
 
 	/*
+	 * @dst: Result of per_cpu(symptr, smp_processor_id()) (can be SP)
+	 * @symptr: The pointer points to the per-cpu variable
+	 * @tmp: scratch register
+	 */
+	.macro adr_this_cpu_ptr, dst, symptr, tmp
+	adrp	\tmp, \symptr
+	add	\tmp, \tmp, #:lo12:\symptr
+	ldr	\dst, [\tmp]
+	get_this_cpu_offset \tmp
+	add	\dst, \dst, \tmp
+	.endm
+
+	/*
 	 * @dst: Result of READ_ONCE(per_cpu(sym, smp_processor_id()))
 	 * @sym: The name of the per-cpu variable
 	 * @tmp: scratch register
