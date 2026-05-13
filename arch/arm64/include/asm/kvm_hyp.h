@@ -12,7 +12,11 @@
 #include <asm/alternative.h>
 #include <asm/sysreg.h>
 
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+extern struct kvm_cpu_context __percpu *kvm_hyp_ctxt;
+#else
 DECLARE_PER_CPU(struct kvm_cpu_context, kvm_hyp_ctxt);
+#endif
 DECLARE_PER_CPU(unsigned long, kvm_hyp_vector);
 DECLARE_PER_CPU(struct kvm_nvhe_init_params, kvm_init_params);
 
