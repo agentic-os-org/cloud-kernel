@@ -10950,6 +10950,90 @@ static int cpu_exstat_show(struct seq_file *sf, void *v)
 	return 0;
 }
 
+static void cpu_usage_percpu_get(struct cgroup *cgrp, int cpu, u64 *user, u64 *sys)
+{
+	if (cgroup_parent(cgrp)) {
+		struct cgroup_rstat_base_cpu *rstatbc;
+
+		rstatbc = per_cpu_ptr(cgrp->rstat_base_cpu, cpu);
+		*user = rstatbc->bstat.cputime.utime;
+		*sys = rstatbc->bstat.cputime.stime;
+	} else {
+		struct kernel_cpustat kcpustat;
+		u64 *cpustat = kcpustat.cpustat;
+
+		kcpustat_cpu_fetch(&kcpustat, cpu);
+		*user = cpustat[CPUTIME_USER] + cpustat[CPUTIME_NICE];
+		*sys = cpustat[CPUTIME_SYSTEM] + cpustat[CPUTIME_IRQ] +
+		       cpustat[CPUTIME_SOFTIRQ];
+	}
+}
+
+static int cpu_usage_percpu_show(struct seq_file *sf, void *v)
+{
+	struct cgroup *cgrp = seq_css(sf)->cgroup;
+	int cpu;
+	u64 user, sys;
+
+	css_rstat_flush(&cgrp->self);
+
+	for_each_possible_cpu(cpu) {
+		cpu_usage_percpu_get(cgrp, cpu, &user, &sys);
+		seq_printf(sf, "%llu ", (unsigned long long)(user + sys));
+	}
+	seq_putc(sf, '\n');
+	return 0;
+}
+
+static int cpu_usage_percpu_user_show(struct seq_file *sf, void *v)
+{
+	struct cgroup *cgrp = seq_css(sf)->cgroup;
+	int cpu;
+	u64 user, sys;
+
+	css_rstat_flush(&cgrp->self);
+
+	for_each_possible_cpu(cpu) {
+		cpu_usage_percpu_get(cgrp, cpu, &user, &sys);
+		seq_printf(sf, "%llu ", (unsigned long long)user);
+	}
+	seq_putc(sf, '\n');
+	return 0;
+}
+
+static int cpu_usage_percpu_sys_show(struct seq_file *sf, void *v)
+{
+	struct cgroup *cgrp = seq_css(sf)->cgroup;
+	int cpu;
+	u64 user, sys;
+
+	css_rstat_flush(&cgrp->self);
+
+	for_each_possible_cpu(cpu) {
+		cpu_usage_percpu_get(cgrp, cpu, &user, &sys);
+		seq_printf(sf, "%llu ", (unsigned long long)sys);
+	}
+	seq_putc(sf, '\n');
+	return 0;
+}
+
+static int cpu_usage_all_show(struct seq_file *sf, void *v)
+{
+	struct cgroup *cgrp = seq_css(sf)->cgroup;
+	int cpu;
+	u64 user, sys;
+
+	css_rstat_flush(&cgrp->self);
+
+	seq_puts(sf, "cpu user system\n");
+	for_each_possible_cpu(cpu) {
+		cpu_usage_percpu_get(cgrp, cpu, &user, &sys);
+		seq_printf(sf, "%d %llu %llu\n", cpu,
+			(unsigned long long)user,
+			(unsigned long long)sys);
+	}
+	return 0;
+}
 
 #endif
 
@@ -11042,6 +11126,22 @@ static struct cftype cpu_files[] = {
 		.read_u64 = enable_sli_read,
 		.write_u64 = enable_sli_write
 
+	},
+	{
+		.name = "usage_percpu",
+		.seq_show = cpu_usage_percpu_show,
+	},
+	{
+		.name = "usage_percpu_user",
+		.seq_show = cpu_usage_percpu_user_show,
+	},
+	{
+		.name = "usage_percpu_sys",
+		.seq_show = cpu_usage_percpu_sys_show,
+	},
+	{
+		.name = "usage_all",
+		.seq_show = cpu_usage_all_show,
 	},
 #endif
 	{ }	/* terminate */
