@@ -2582,7 +2582,16 @@ static int task_is_throttled_rt(struct task_struct *p, int cpu)
 	struct rt_rq *rt_rq;
 
 #ifdef CONFIG_RT_GROUP_SCHED // XXX maybe add task_rt_rq(), see also sched_rt_period_rt_rq
-	rt_rq = task_group(p)->rt_rq[cpu];
+	/*
+	 * When rt_group_sched is runtime-disabled, non-root task_groups do
+	 * not own a per-cpu rt_rq array. Fall back to the root rq's rt_rq,
+	 * matching the redirection set_task_rq() applies to p->rt.rt_rq.
+	 */
+	if (rt_group_sched_enabled())
+		rt_rq = task_group(p)->rt_rq[cpu];
+	else
+		rt_rq = &cpu_rq(cpu)->rt;
+	/* Invariant: with rt_group_sched off, rt_rq must belong to root. */
 	WARN_ON(!rt_group_sched_enabled() && rt_rq->tg != &root_task_group);
 #else
 	rt_rq = &cpu_rq(cpu)->rt;
