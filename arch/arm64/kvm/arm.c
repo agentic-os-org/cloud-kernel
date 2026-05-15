@@ -3064,6 +3064,44 @@ static int early_kvm_wfx_trap_policy_cfg(char *arg, enum kvm_wfx_trap_policy *p)
 	return -EINVAL;
 }
 
+#ifdef MODULE
+static int kvm_wfx_trap_set_policy(const char *val, const struct kernel_param *kp)
+{
+	if (strcmp(kp->name, "wfi_trap_policy") == 0)
+		return early_kvm_wfx_trap_policy_cfg((char *)val, &kvm_wfi_trap_policy);
+
+	if (strcmp(kp->name, "wfe_trap_policy") == 0)
+		return early_kvm_wfx_trap_policy_cfg((char *)val, &kvm_wfe_trap_policy);
+
+	kvm_err("Invalid wfx trap policy parameter: %s\n", kp->name);
+	return -EINVAL;
+}
+
+static int kvm_wfx_trap_get_policy(char *buffer, const struct kernel_param *kp)
+{
+	const char *values[] = {"KVM_WFX_NOTRAP_SINGLE_TASK", "KVM_WFX_NOTRAP", "KVM_WFX_TRAP" };
+
+	if (strcmp(kp->name, "wfi_trap_policy") == 0)
+		return sysfs_emit(buffer, "%s\n",
+				  values[(int)kvm_wfi_trap_policy]);
+
+	if (strcmp(kp->name, "wfe_trap_policy") == 0)
+		return sysfs_emit(buffer, "%s\n",
+				  values[(int)kvm_wfe_trap_policy]);
+
+	return 0;
+}
+
+static const struct kernel_param_ops kvm_wfx_trap_ops = {
+	.set = kvm_wfx_trap_set_policy,
+	.get = kvm_wfx_trap_get_policy,
+};
+
+module_param_cb(wfi_trap_policy, &kvm_wfx_trap_ops, NULL, 0444);
+MODULE_PARM_DESC(wfi_trap_policy, "WFI trap policy (trap, notrap, notrap_single_task)");
+module_param_cb(wfe_trap_policy, &kvm_wfx_trap_ops, NULL, 0444);
+MODULE_PARM_DESC(wfe_trap_policy, "WFE trap policy (trap, notrap, notrap_single_task)");
+#else
 static int __init early_kvm_wfi_trap_policy_cfg(char *arg)
 {
 	return early_kvm_wfx_trap_policy_cfg(arg, &kvm_wfi_trap_policy);
@@ -3075,3 +3113,4 @@ static int __init early_kvm_wfe_trap_policy_cfg(char *arg)
 	return early_kvm_wfx_trap_policy_cfg(arg, &kvm_wfe_trap_policy);
 }
 early_param("kvm-arm.wfe_trap_policy", early_kvm_wfe_trap_policy_cfg);
+#endif
