@@ -5,11 +5,13 @@
  */
 
 #include <asm/tlbflush.h>
+#include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/pagewalk.h>
 #include <linux/pgtable.h>
 #include <linux/slab.h>
+#include <linux/vmalloc.h>
 
 #include "obmm_cache.h"
 #include "obmm_sysfs.h"
@@ -108,6 +110,7 @@ static bool validate_update_info(const struct obmm_region *region,
 
 	return true;
 }
+
 static int obmm_vma_mprotect(struct vm_area_struct *vma __always_unused,
 			     unsigned long start __always_unused, unsigned long end __always_unused,
 			     unsigned long newflags __always_unused)
@@ -115,18 +118,127 @@ static int obmm_vma_mprotect(struct vm_area_struct *vma __always_unused,
 	pr_warn("mprotect not supported\n");
 	return -EOPNOTSUPP;
 }
+
 static vm_fault_t obmm_vma_fault(struct vm_fault *vmf __always_unused)
 {
 	pr_warn("Unexpected fault\n");
 	return VM_FAULT_SIGBUS;
 }
-static int obmm_vma_access(struct vm_area_struct *vma __always_unused,
-			   unsigned long addr __always_unused, void *buf __always_unused,
-			   int len __always_unused, int write __always_unused)
+
+/*
+ * Walk the page table for @addr and extract the PFN.
+ * Handles both PTE entries and PMD leaf (huge page) entries.
+ * Caller must hold mmap_read_lock (or mmap_write_lock) so that the page
+ * table entries cannot be torn or freed concurrently.
+ */
+static int obmm_lookup_pfn(struct vm_area_struct *vma, unsigned long addr,
+			   unsigned long *pfn)
 {
-	pr_warn("access not supported\n");
-	return -EOPNOTSUPP;
+	struct mm_struct *mm = vma->vm_mm;
+	struct follow_pfnmap_args args = { .vma = vma, .address = addr };
+	pgd_t *pgd;
+	p4d_t *p4d;
+	pud_t *pud;
+	pmd_t *pmd;
+
+	pgd = pgd_offset(mm, addr);
+	if (pgd_none(*pgd) || unlikely(pgd_bad(*pgd)))
+		return -EINVAL;
+
+	p4d = p4d_offset(pgd, addr);
+	if (p4d_none(*p4d) || unlikely(p4d_bad(*p4d)))
+		return -EINVAL;
+
+	pud = pud_offset(p4d, addr);
+	if (pud_none(*pud) || unlikely(pud_bad(*pud)))
+		return -EINVAL;
+
+	pmd = pmd_offset(pud, addr);
+
+	/* PMD leaf (huge page): extract PFN directly */
+	if (pmd_leaf(*pmd)) {
+		if (!pmd_present(*pmd))
+			return -EINVAL;
+		*pfn = pmd_pfn(*pmd) + ((addr & ~PMD_MASK) >> PAGE_SHIFT);
+		return 0;
+	}
+
+	if (pmd_none(*pmd) || unlikely(pmd_bad(*pmd)))
+		return -EINVAL;
+
+	/* Regular PTE: follow_pte handles PTE-level lock and mapping */
+	if (follow_pfnmap_start(&args))
+		return -EINVAL;
+	*pfn = args.pfn;
+	follow_pfnmap_end(&args);
+	return 0;
 }
+
+/* Custom access handler for ptrace/GDB on PFNMAP VMAs */
+static int obmm_vma_access(struct vm_area_struct *vma, unsigned long addr,
+			   void *buf, int len, int write)
+{
+	struct obmm_region *reg = vma->vm_file->private_data;
+	unsigned long pfn, prot;
+	void *kaddr;
+	bool is_vmap;
+	int offset = offset_in_page(addr);
+	int ret = -EINVAL;
+
+	pr_debug("addr=%#lx len=%d write=%d region=%d type=%s\n",
+		 addr, len, write, reg->regionid,
+		 reg->type == OBMM_EXPORT_REGION ? "export" : "import");
+
+	if (!(vma->vm_flags & (VM_IO | VM_PFNMAP)))
+		return -EINVAL;
+
+	/* Check permission from vm_flags */
+	if (!(vma->vm_flags & VM_READ))
+		return -EINVAL;
+	if (write && !(vma->vm_flags & VM_WRITE))
+		return -EINVAL;
+
+	/* Get PFN from page table walk */
+	if (obmm_lookup_pfn(vma, addr, &pfn))
+		return -EINVAL;
+
+	/* Derive prot from vma->vm_page_prot, adjust for kernel access */
+	prot = pgprot_val(vma->vm_page_prot);
+	prot &= ~(PTE_USER | PTE_NG);
+	prot |= (PTE_PXN | PTE_UXN);
+
+	/* Map one page */
+	len = min(len, (int)(PAGE_SIZE - offset));
+
+	if (reg->type == OBMM_EXPORT_REGION) {
+		struct page *page;
+
+		if (!pfn_valid(pfn))
+			return -EINVAL;
+		page = pfn_to_page(pfn);
+		kaddr = vmap(&page, 1, VM_MAP, __pgprot(prot));
+		is_vmap = true;
+	} else {
+		resource_size_t phys_addr = (resource_size_t)pfn << PAGE_SHIFT;
+
+		kaddr = (__force void *)ioremap_prot(phys_addr, PAGE_SIZE, prot);
+		is_vmap = false;
+	}
+	if (!kaddr)
+		return -ENOMEM;
+
+	if (write)
+		ret = copy_mc_to_kernel(kaddr + offset, buf, len) ? -EFAULT : len;
+	else
+		ret = copy_mc_to_kernel(buf, kaddr + offset, len) ? -EFAULT : len;
+
+	if (is_vmap)
+		vunmap(kaddr);
+	else
+		iounmap((__force void __iomem *)kaddr);
+	return ret;
+}
+
 static const char *obmm_vma_name(struct vm_area_struct *vma __always_unused)
 {
 	return "OBMM_SHM";
