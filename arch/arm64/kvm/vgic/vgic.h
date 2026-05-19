@@ -164,18 +164,25 @@ static inline int vgic_write_guest_lock(struct kvm *kvm, gpa_t gpa,
 	return ret;
 }
 
+u64 __kvm_compute_ich_hcr_trap_bits(void);
+#ifndef CONFIG_KVM_ARM_HOST_VHE_ONLY
 void kvm_compute_ich_hcr_trap_bits(struct alt_instr *alt,
 				   __le32 *origptr, __le32 *updptr, int nr_inst);
+#endif
 
 static inline u64 vgic_ich_hcr_trap_bits(void)
 {
 	u64 hcr;
 
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+	hcr = __kvm_compute_ich_hcr_trap_bits();
+#else
 	/* All the traps are in the bottom 16bits */
 	asm volatile(ALTERNATIVE_CB("movz %0, #0\n",
 				    ARM64_ALWAYS_SYSTEM,
 				    kvm_compute_ich_hcr_trap_bits)
 		     : "=r" (hcr));
+#endif
 
 	return hcr;
 }
