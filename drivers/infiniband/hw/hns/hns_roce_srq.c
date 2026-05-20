@@ -64,8 +64,8 @@ static int hns_roce_hw_create_srq(struct hns_roce_dev *dev,
 				  unsigned long srq_num)
 {
 	return hns_roce_cmd_mbox(dev, mailbox->dma, 0, srq_num, 0,
-				 HNS_ROCE_CMD_CREATE_SRQ,
-				 HNS_ROCE_CMD_TIMEOUT_MSECS);
+			 HNS_ROCE_CMD_CREATE_SRQ,
+			 HNS_ROCE_CMD_TIMEOUT_MSECS);
 }
 
 static int hns_roce_hw_destroy_srq(struct hns_roce_dev *dev,
@@ -73,8 +73,8 @@ static int hns_roce_hw_destroy_srq(struct hns_roce_dev *dev,
 				   unsigned long srq_num)
 {
 	return hns_roce_cmd_mbox(dev, 0, mailbox ? mailbox->dma : 0, srq_num,
-				 mailbox ? 0 : 1, HNS_ROCE_CMD_DESTROY_SRQ,
-				 HNS_ROCE_CMD_TIMEOUT_MSECS);
+			 mailbox ? 0 : 1, HNS_ROCE_CMD_DESTROY_SRQ,
+			 HNS_ROCE_CMD_TIMEOUT_MSECS);
 }
 
 static int alloc_srqc(struct hns_roce_dev *hr_dev, struct hns_roce_srq *srq,
@@ -140,7 +140,7 @@ static int alloc_srqc(struct hns_roce_dev *hr_dev, struct hns_roce_srq *srq,
 	ret = hns_roce_hw_create_srq(hr_dev, mailbox, srq->srqn);
 	hns_roce_free_cmd_mailbox(hr_dev, mailbox);
 	if (ret) {
-		ibdev_err(ibdev, "failed to config SRQC, ret = %d.\n", ret);
+		ibdev_err_ratelimited(ibdev, "failed to config SRQC, ret = %d.\n", ret);
 		goto err_xa;
 	}
 
@@ -224,7 +224,7 @@ static int alloc_srq_idx(struct hns_roce_dev *hr_dev, struct hns_roce_srq *srq,
 
 	buf_attr.page_shift = hr_dev->caps.idx_buf_pg_sz + HNS_HW_PAGE_SHIFT;
 	buf_attr.region[0].size = to_hr_hem_entries_size(srq->wqe_cnt,
-					srq->idx_que.entry_shift);
+							srq->idx_que.entry_shift);
 	buf_attr.region[0].hopnum = hr_dev->caps.idx_hop_num;
 	buf_attr.region_count = 1;
 	buf_attr.fixed_page = true;
