@@ -31,7 +31,7 @@ enum {
 };
 
 DEFINE_MUTEX(percpu_sqd_lock);
-struct io_sq_data __percpu **percpu_sqd;
+struct io_sq_data * __percpu *percpu_sqd;
 
 void io_sq_thread_unpark(struct io_sq_data *sqd)
 	__releases(&sqd->lock)

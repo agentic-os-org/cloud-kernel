@@ -113,7 +113,7 @@
 #define IO_COMPL_BATCH			32
 #define IO_REQ_ALLOC_BATCH		8
 
-extern struct io_sq_data __percpu **percpu_sqd;
+extern struct io_sq_data * __percpu *percpu_sqd;
 
 /* requests with any of those set should undergo io_disarm_next() */
 #define IO_DISARM_MASK (REQ_F_ARM_LTIMEOUT | REQ_F_LINK_TIMEOUT | REQ_F_FAIL)
