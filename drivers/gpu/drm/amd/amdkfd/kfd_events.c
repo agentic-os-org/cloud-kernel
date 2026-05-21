@@ -115,6 +115,18 @@ static int allocate_event_notification_slot(struct kfd_process *p,
 	if (id < 0)
 		return id;
 
+	/*
+	 * p->signal_mapped_size can be set from a user supplied buffer size,
+	 * so it does not bound the slot index by itself. The signal page only
+	 * ever holds KFD_SIGNAL_EVENT_LIMIT slots, and events above that limit
+	 * can neither be mapped nor signaled, so reject them instead of
+	 * writing past the page.
+	 */
+	if (id >= KFD_SIGNAL_EVENT_LIMIT) {
+		idr_remove(&p->event_idr, id);
+		return -EINVAL;
+	}
+
 	ev->event_id = id;
 	page_slots(p->signal_page)[id] = UNSIGNALED_EVENT_SLOT;
 
