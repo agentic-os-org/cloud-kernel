@@ -887,35 +887,6 @@ err_out:
  *
  * If the mft record is not a FILE record or it is a base mft record, we can
  * safely write it and return 'true'.
- *
- * We now know the mft record is an extent mft record.  We check if the inode
- * corresponding to its base mft record is in icache and obtain a reference to
- * it if it is.  If it is not, we can safely write it and return 'true'.
- *
- * We now have the base inode for the extent mft record.  We check if it has an
- * ntfs inode for the extent mft record attached and if not it is safe to write
- * the extent mft record and we return 'true'.
- *
- * The ntfs inode for the extent mft record is attached to the base inode so we
- * attempt to lock the extent mft record and if we find the lock was already
- * taken, it is not safe to write the extent mft record and we return 'false'.
- *
- * If we manage to obtain the lock we have exclusive access to the extent mft
- * record, which also allows us safe writeout of the extent mft record.  We
- * set the ntfs inode of the extent mft record clean and then set @locked_ni to
- * the now locked ntfs inode and return 'true'.
- *
- * Note, the reason for actually writing dirty mft records here and not just
- * relying on the vfs inode dirty code paths is that we can have mft records
- * modified without them ever having actual inodes in memory.  Also we can have
- * dirty mft records with clean ntfs inodes in memory.  None of the described
- * cases would result in the dirty mft records being written out if we only
- * relied on the vfs inode dirty code paths.  And these cases can really occur
- * during allocation of new mft records and in particular when the
- * initialized_size of the $MFT/$DATA attribute is extended and the new space
- * is initialized using ntfs_mft_record_format().  The clean inode can then
- * appear if the mft record is reused for a new inode before it got written
- * out.
  */
 bool ntfs_may_write_mft_record(ntfs_volume *vol, const unsigned long mft_no,
 		const MFT_RECORD *m, ntfs_inode **locked_ni)
@@ -923,8 +894,7 @@ bool ntfs_may_write_mft_record(ntfs_volume *vol, const unsigned long mft_no,
 	struct super_block *sb = vol->sb;
 	struct inode *mft_vi = vol->mft_ino;
 	struct inode *vi;
-	ntfs_inode *ni, *eni, **extent_nis;
-	int i;
+	ntfs_inode *ni;
 	ntfs_attr na;
 
 	ntfs_debug("Entering for inode 0x%lx.", mft_no);
@@ -1006,99 +976,10 @@ bool ntfs_may_write_mft_record(ntfs_volume *vol, const unsigned long mft_no,
 				mft_no);
 		return true;
 	}
-	/*
-	 * This is an extent mft record.  Check if the inode corresponding to
-	 * its base mft record is in icache and obtain a reference to it if it
-	 * is.
-	 */
-	na.mft_no = MREF_LE(m->base_mft_record);
-	ntfs_debug("Mft record 0x%lx is an extent record.  Looking for base "
-			"inode 0x%lx in icache.", mft_no, na.mft_no);
-	if (!na.mft_no) {
-		/* Balance the below iput(). */
-		vi = igrab(mft_vi);
-		BUG_ON(vi != mft_vi);
-	} else
-		vi = ilookup5_nowait(sb, na.mft_no, ntfs_test_inode,
-				&na);
-	if (!vi) {
-		/*
-		 * The base inode is not in icache, write this extent mft
-		 * record.
-		 */
-		ntfs_debug("Base inode 0x%lx is not in icache, write the "
-				"extent record.", na.mft_no);
-		return true;
-	}
-	ntfs_debug("Base inode 0x%lx is in icache.", na.mft_no);
-	/*
-	 * The base inode is in icache.  Check if it has the extent inode
-	 * corresponding to this extent mft record attached.
-	 */
-	ni = NTFS_I(vi);
-	mutex_lock(&ni->extent_lock);
-	if (ni->nr_extents <= 0) {
-		/*
-		 * The base inode has no attached extent inodes, write this
-		 * extent mft record.
-		 */
-		mutex_unlock(&ni->extent_lock);
-		iput(vi);
-		ntfs_debug("Base inode 0x%lx has no attached extent inodes, "
-				"write the extent record.", na.mft_no);
-		return true;
-	}
-	/* Iterate over the attached extent inodes. */
-	extent_nis = ni->ext.extent_ntfs_inos;
-	for (eni = NULL, i = 0; i < ni->nr_extents; ++i) {
-		if (mft_no == extent_nis[i]->mft_no) {
-			/*
-			 * Found the extent inode corresponding to this extent
-			 * mft record.
-			 */
-			eni = extent_nis[i];
-			break;
-		}
-	}
-	/*
-	 * If the extent inode was not attached to the base inode, write this
-	 * extent mft record.
-	 */
-	if (!eni) {
-		mutex_unlock(&ni->extent_lock);
-		iput(vi);
-		ntfs_debug("Extent inode 0x%lx is not attached to its base "
-				"inode 0x%lx, write the extent record.",
-				mft_no, na.mft_no);
-		return true;
-	}
-	ntfs_debug("Extent inode 0x%lx is attached to its base inode 0x%lx.",
-			mft_no, na.mft_no);
-	/* Take a reference to the extent ntfs inode. */
-	atomic_inc(&eni->count);
-	mutex_unlock(&ni->extent_lock);
-	/*
-	 * Found the extent inode coresponding to this extent mft record.
-	 * Try to take the mft record lock.
-	 */
-	if (unlikely(!mutex_trylock(&eni->mrec_lock))) {
-		atomic_dec(&eni->count);
-		iput(vi);
-		ntfs_debug("Extent mft record 0x%lx is already locked, do "
-				"not write it.", mft_no);
-		return false;
-	}
-	ntfs_debug("Managed to lock extent mft record 0x%lx, write it.",
-			mft_no);
-	if (NInoTestClearDirty(eni))
-		ntfs_debug("Extent inode 0x%lx is dirty, marking it clean.",
-				mft_no);
-	/*
-	 * The write has to occur while we hold the mft record lock so return
-	 * the locked extent ntfs inode.
-	 */
-	*locked_ni = eni;
-	return true;
+
+	ntfs_debug("Mft record 0x%lx is an extent record, skip it.",
+		   mft_no);
+	return false;
 }
 
 static const char *es = "  Leaving inconsistent metadata.  Unmount and run "
