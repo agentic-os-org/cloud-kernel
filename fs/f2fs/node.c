@@ -1352,8 +1352,44 @@ void f2fs_ra_node_page(struct f2fs_sb_info *sbi, nid_t nid)
 	f2fs_put_page(apage, err ? 1 : 0);
 }
 
+/*
+ * Compat: f2fs_sanity_check_node_footer() adapted for page-based API.
+ * Upstream version uses folio and additional helpers not available in 5.10.
+ */
+static int f2fs_sanity_check_node_footer(struct f2fs_sb_info *sbi,
+					struct page *page, pgoff_t nid,
+					enum node_type ntype)
+{
+	bool is_inode, is_xnode;
+
+	if (unlikely(nid != nid_of_node(page)))
+		goto out_err;
+
+	is_inode = IS_INODE(page);
+	is_xnode = f2fs_has_xattr_block(ofs_of_node(page));
+
+	switch (ntype) {
+	case NODE_TYPE_NON_IXNODE:
+		if (is_inode || is_xnode)
+			goto out_err;
+		break;
+	default:
+		break;
+	}
+	return 0;
+out_err:
+	set_sbi_flag(sbi, SBI_NEED_FSCK);
+	f2fs_warn(sbi, "inconsistent node block, node_type:%d, nid:%lu, "
+		"node_footer[nid:%u,ino:%u,ofs:%u,cpver:%llu,blkaddr:%u]",
+		ntype, nid, nid_of_node(page), ino_of_node(page),
+		ofs_of_node(page), cpver_of_node(page),
+		next_blkaddr_of_node(page));
+	return -EFSCORRUPTED;
+}
+
 static struct page *__get_node_page(struct f2fs_sb_info *sbi, pgoff_t nid,
-					struct page *parent, int start)
+					struct page *parent, int start,
+					enum node_type ntype)
 {
 	struct page *page;
 	int err;
@@ -1396,6 +1432,9 @@ repeat:
 		goto out_err;
 	}
 page_hit:
+	err = f2fs_sanity_check_node_footer(sbi, page, nid, ntype);
+	if (err)
+		goto out_err;
 	if(unlikely(nid != nid_of_node(page))) {
 		f2fs_warn(sbi, "inconsistent node block, nid:%lu, node_footer[nid:%u,ino:%u,ofs:%u,cpver:%llu,blkaddr:%u]",
 			  nid, nid_of_node(page), ino_of_node(page),
@@ -1413,7 +1452,7 @@ out_err:
 
 struct page *f2fs_get_node_page(struct f2fs_sb_info *sbi, pgoff_t nid)
 {
-	return __get_node_page(sbi, nid, NULL, 0);
+	return __get_node_page(sbi, nid, NULL, 0, NODE_TYPE_REGULAR);
 }
 
 struct page *f2fs_get_node_page_ra(struct page *parent, int start)
@@ -1421,7 +1460,7 @@ struct page *f2fs_get_node_page_ra(struct page *parent, int start)
 	struct f2fs_sb_info *sbi = F2FS_P_SB(parent);
 	nid_t nid = get_nid(parent, start, false);
 
-	return __get_node_page(sbi, nid, parent, start);
+	return __get_node_page(sbi, nid, parent, start, NODE_TYPE_NON_IXNODE);
 }
 
 static void flush_inline_data(struct f2fs_sb_info *sbi, nid_t ino)
