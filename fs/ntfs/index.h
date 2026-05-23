@@ -73,6 +73,9 @@ typedef struct {
 
 extern ntfs_index_context *ntfs_index_ctx_get(ntfs_inode *idx_ni);
 extern void ntfs_index_ctx_put(ntfs_index_context *ictx);
+extern int ntfs_index_block_inconsistent(ntfs_volume *vol,
+		const INDEX_ALLOCATION *ia, u32 block_size,
+		VCN vcn, unsigned long inum);
 
 extern int ntfs_index_lookup(const void *key, const int key_len,
 		ntfs_index_context *ictx);
