@@ -25,6 +25,7 @@
 struct xdomain_request_work {
 	struct work_struct work;
 	struct tb_xdp_header *pkg;
+	size_t pkg_len;
 	struct tb *tb;
 };
 
@@ -559,6 +560,7 @@ static void tb_xdp_handle_request(struct work_struct *work)
 	struct xdomain_request_work *xw = container_of(work, typeof(*xw), work);
 	const struct tb_xdp_header *pkg = xw->pkg;
 	const struct tb_xdomain_header *xhdr = &pkg->xd_hdr;
+	size_t pkg_len = xw->pkg_len;
 	struct tb *tb = xw->tb;
 	struct tb_ctl *ctl = tb->ctl;
 	const uuid_t *uuid;
@@ -586,14 +588,20 @@ static void tb_xdp_handle_request(struct work_struct *work)
 
 	switch (pkg->type) {
 	case PROPERTIES_REQUEST:
-		ret = tb_xdp_properties_response(tb, ctl, route, sequence, uuid,
-			(const struct tb_xdp_properties *)pkg);
+		if (pkg_len >= sizeof(struct tb_xdp_properties)) {
+			ret = tb_xdp_properties_response(tb, ctl, route,
+				sequence, uuid,
+				(const struct tb_xdp_properties *)pkg);
+		}
 		break;
 
 	case PROPERTIES_CHANGED_REQUEST: {
 		const struct tb_xdp_properties_changed *xchg =
 			(const struct tb_xdp_properties_changed *)pkg;
 		struct tb_xdomain *xd;
+
+		if (pkg_len < sizeof(*xchg))
+			break;
 
 		ret = tb_xdp_properties_changed_response(ctl, route, sequence);
 
@@ -651,6 +659,7 @@ tb_xdp_schedule_request(struct tb *tb, const struct tb_xdp_header *hdr,
 		kfree(xw);
 		return false;
 	}
+	xw->pkg_len = size;
 	xw->tb = tb_domain_get(tb);
 
 	schedule_work(&xw->work);
@@ -1097,7 +1106,7 @@ static void tb_xdomain_properties_changed(struct work_struct *work)
 	int ret;
 
 	ret = tb_xdp_properties_changed_request(xd->tb->ctl, xd->route,
-				xd->properties_changed_retries, xd->local_uuid);
+			xd->properties_changed_retries, xd->local_uuid);
 	if (ret) {
 		if (xd->properties_changed_retries-- > 0)
 			queue_delayed_work(xd->tb->wq,
