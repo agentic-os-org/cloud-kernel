@@ -283,6 +283,8 @@ out:
  *
  * Determines @kn's parent, pins and returns it.  This function can be
  * called from any context.
+ *
+ * Return: parent node of @kn
  */
 struct kernfs_node *kernfs_get_parent(struct kernfs_node *kn)
 {
@@ -630,13 +632,23 @@ static struct kernfs_node *__kernfs_new_node(struct kernfs_root *root,
 	}
 
 	if (parent) {
+		kernfs_get(parent);
+		kn->parent = parent;
+
 		ret = security_kernfs_init_security(parent, kn);
 		if (ret)
-			goto err_out3;
+			goto err_out4;
 	}
 
 	return kn;
 
+ err_out4:
+	kn->parent = NULL;
+	kernfs_put(parent);
+	if (kn->iattr) {
+		simple_xattrs_free(&kn->iattr->xattrs);
+		kmem_cache_free(kernfs_iattrs_cache, kn->iattr);
+	}
  err_out3:
 	spin_lock(&kernfs_idr_lock);
 	idr_remove(&root->ino_idr, (u32)kernfs_ino(kn));
@@ -669,10 +681,6 @@ struct kernfs_node *kernfs_new_node(struct kernfs_node *parent,
 
 	kn = __kernfs_new_node(kernfs_root(parent), parent,
 			       name, mode, uid, gid, flags);
-	if (kn) {
-		kernfs_get(parent);
-		kn->parent = parent;
-	}
 	return kn;
 }
 
