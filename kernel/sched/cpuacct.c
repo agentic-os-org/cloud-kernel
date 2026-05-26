@@ -963,6 +963,21 @@ void cpuacct_account_field(struct task_struct *tsk, int index, u64 val)
 		__this_cpu_add(ca->cpustat->cpustat[index], val);
 }
 
+#ifdef CONFIG_SCHED_SLI
+void tg_account_cputime_field(struct task_struct *tsk, int index, u64 val)
+{
+	struct task_group *tg;
+
+	rcu_read_lock();
+	for (tg = css_tg(task_css(tsk, cpu_cgrp_id));
+	     tg && tg != &root_task_group; tg = tg->parent) {
+		if (tg->cpustat)
+			__this_cpu_add(tg->cpustat->cpustat[index], val);
+	}
+	rcu_read_unlock();
+}
+#endif
+
 static void cpuacct_cgroup_attach(struct cgroup_taskset *tset)
 {
 	struct task_struct *task;

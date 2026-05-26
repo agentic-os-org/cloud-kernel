@@ -8595,6 +8595,7 @@ int in_sched_functions(unsigned long addr)
 
 #ifdef CONFIG_CGROUP_SCHED
 #ifdef CONFIG_SCHED_SLI
+static DEFINE_PER_CPU(struct kernel_cpustat, root_tg_cpustat);
 static DEFINE_PER_CPU(struct sched_cgroup_lat_stat_cpu, root_lat_stat_cpu);
 static DEFINE_PER_CPU(struct cpu_alistats, root_alistats);
 #endif
@@ -8604,6 +8605,7 @@ static DEFINE_PER_CPU(struct cpu_alistats, root_alistats);
  */
 struct task_group root_task_group = {
 #ifdef CONFIG_SCHED_SLI
+	.cpustat	= &root_tg_cpustat,
 	.lat_stat_cpu	= &root_lat_stat_cpu,
 	.alistats	= &root_alistats,
 #endif
@@ -9129,6 +9131,8 @@ static void sched_free_group(struct task_group *tg)
 	autogroup_free(tg);
 
 #ifdef CONFIG_SCHED_SLI
+	if (tg->cpustat)
+		free_percpu(tg->cpustat);
 	if (tg->lat_stat_cpu)
 		free_percpu(tg->lat_stat_cpu);
 	if (tg->alistats)
@@ -9173,6 +9177,10 @@ struct task_group *sched_create_group(struct task_group *parent)
 	INIT_LIST_HEAD(&tg->sli_list);
 	tg->avenrun[0] = tg->avenrun[1] = tg->avenrun[2] = 0;
 	tg->avenrun_r[0] = tg->avenrun_r[1] = tg->avenrun_r[2] = 0;
+
+	tg->cpustat = alloc_percpu(struct kernel_cpustat);
+	if (!tg->cpustat)
+		goto err;
 
 	tg->lat_stat_cpu = alloc_percpu(struct sched_cgroup_lat_stat_cpu);
 	if (!tg->lat_stat_cpu)
@@ -11113,10 +11121,21 @@ void __cgroup_get_usage_result(struct cgroup_subsys_state *css, int cpu,
 	if (unlikely(!tg))
 		return;
 
-	if (cgroup_on_dfl(cgrp))
-		__cgroup_get_usage(cgrp, cpu, res);
-	else
+	if (cgroup_on_dfl(cgrp)) {
+		if (tg && tg->cpustat) {
+			struct kernel_cpustat *kcpustat = per_cpu_ptr(tg->cpustat, cpu);
+
+			res->user = kcpustat->cpustat[CPUTIME_USER];
+			res->nice = kcpustat->cpustat[CPUTIME_NICE];
+			res->system = kcpustat->cpustat[CPUTIME_SYSTEM];
+			res->irq = kcpustat->cpustat[CPUTIME_IRQ];
+			res->softirq = kcpustat->cpustat[CPUTIME_SOFTIRQ];
+			res->guest = kcpustat->cpustat[CPUTIME_GUEST];
+			res->guest_nice = kcpustat->cpustat[CPUTIME_GUEST_NICE];
+		}
+	} else {
 		__cpuacct_get_usage(css, cpu, res);
+	}
 
 	se = tg->se[cpu];
 

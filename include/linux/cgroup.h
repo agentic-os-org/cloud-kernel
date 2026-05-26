@@ -699,8 +699,11 @@ void cgroup_rstat_flush(struct cgroup *cgrp);
 void cgroup_rstat_flush_hold(struct cgroup *cgrp);
 void cgroup_rstat_flush_release(void);
 bool cgroup_on_dfl(const struct cgroup *cgrp);
-void __cgroup_get_usage(struct cgroup *cgrp, int cpu,
-				struct cpuacct_usage_result *res);
+#ifdef CONFIG_SCHED_SLI
+void tg_account_cputime_field(struct task_struct *tsk, int index, u64 val);
+#else
+static inline void tg_account_cputime_field(struct task_struct *tsk, int index, u64 val) {}
+#endif
 
 /*
  * Basic resource stats.
@@ -739,8 +742,10 @@ static inline void cgroup_account_cputime_field(struct task_struct *task,
 	cpuacct_account_field(task, index, delta_exec);
 
 	cgrp = task_dfl_cgroup(task);
-	if (cgroup_parent(cgrp))
+	if (cgroup_parent(cgrp)) {
 		__cgroup_account_cputime_field(cgrp, index, delta_exec);
+		tg_account_cputime_field(task, index, delta_exec);
+	}
 }
 
 #else	/* CONFIG_CGROUPS */

@@ -667,6 +667,7 @@ struct task_group {
 #endif
 
 #ifdef CONFIG_SCHED_SLI
+	struct kernel_cpustat __percpu *cpustat;
 	struct sched_cgroup_lat_stat_cpu __percpu *lat_stat_cpu;
 	struct cpu_alistats __percpu *alistats;
 	struct list_head	sli_list;
