@@ -760,15 +760,3 @@ static int __init bpf_rstat_kfunc_init(void)
 					 &bpf_rstat_kfunc_set);
 }
 late_initcall(bpf_rstat_kfunc_init);
-
-void __cgroup_get_usage(struct cgroup *cgrp, int cpu,
-					struct cpuacct_usage_result *res)
-{
-	struct cgroup_rstat_base_cpu *rstatbc;
-
-	css_rstat_flush(&cgrp->self);
-
-	rstatbc = per_cpu_ptr(cgrp->rstat_base_cpu, cpu);
-	res->user = rstatbc->bstat.cputime.utime;
-	res->system = rstatbc->bstat.cputime.stime;
-}
