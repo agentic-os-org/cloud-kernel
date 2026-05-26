@@ -15083,8 +15083,26 @@ static void attach_task_cfs_rq(struct task_struct *p)
 	attach_entity_cfs_rq(se);
 }
 
+#ifdef CONFIG_FAIR_GROUP_SCHED
+static void update_nr_iowait_fair(struct task_struct *p, long inc);
+#else
+static inline void update_nr_iowait_fair(struct task_struct *p, long inc) {}
+#endif
+
 static void switched_from_fair(struct rq *rq, struct task_struct *p)
 {
+	/*
+	 * If p was charged to this (fair) class's cg_nr_iowait by __schedule()
+	 * before its sched_class got switched away, we must give the charge
+	 * back here -- the later try_to_wake_up() will dispatch update_nr_iowait
+	 * to the new class and miss this fair-side counter, leaving it leaked.
+	 *
+	 * Guard on !task_on_rq_queued(p) to skip the window where in_iowait is
+	 * already set by io_schedule_prepare() but __schedule() has not yet
+	 * deactivated the task and charged the +1.
+	 */
+	if (p->in_iowait && !task_on_rq_queued(p))
+		update_nr_iowait_fair(p, -1);
 	detach_task_cfs_rq(p);
 }
 
@@ -15104,6 +15122,15 @@ static void switched_to_fair(struct rq *rq, struct task_struct *p)
 			resched_curr(rq);
 		else
 			wakeup_preempt(rq, p, 0);
+	} else if (p->in_iowait) {
+		/*
+		 * Symmetric to switched_from_fair(): the prior class's
+		 * __schedule()->update_nr_iowait() was a no-op (only fair
+		 * implements the callback), so we must charge the +1 to the
+		 * fair-side counter ourselves; the upcoming try_to_wake_up()
+		 * will balance it with -1 on the fair class.
+		 */
+		update_nr_iowait_fair(p, 1);
 	}
 }
 
