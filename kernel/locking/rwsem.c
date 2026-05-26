@@ -28,9 +28,49 @@
 #include <linux/rwsem.h>
 #include <linux/atomic.h>
 #include <trace/events/lock.h>
+#include <linux/jump_label.h>
 
 #ifndef CONFIG_PREEMPT_RT
 #include "lock_events.h"
+
+static DEFINE_STATIC_KEY_FALSE(rwsem_nosteal_key);
+
+#ifdef CONFIG_SYSCTL
+static int sysctl_rwsem_reader_steal = 1;
+
+static int proc_rwsem_reader_steal(struct ctl_table *table, int write,
+				   void *buffer, size_t *lenp, loff_t *ppos)
+{
+	int ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
+
+	if (ret || !write)
+		return ret;
+	if (sysctl_rwsem_reader_steal)
+		static_branch_disable(&rwsem_nosteal_key);
+	else
+		static_branch_enable(&rwsem_nosteal_key);
+	return 0;
+}
+
+static struct ctl_table rwsem_sysctls[] = {
+	{
+		.procname	= "rwsem_reader_steal",
+		.data		= &sysctl_rwsem_reader_steal,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_rwsem_reader_steal,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
+};
+
+static int __init rwsem_sysctl_init(void)
+{
+	register_sysctl_init("kernel", rwsem_sysctls);
+	return 0;
+}
+late_initcall(rwsem_sysctl_init);
+#endif
 
 /*
  * The least significant 2 bits of the owner value has the following
@@ -999,6 +1039,9 @@ rwsem_down_read_slowpath(struct rw_semaphore *sem, long count, unsigned int stat
 	long rcnt = (count >> RWSEM_READER_SHIFT);
 	struct rwsem_waiter waiter;
 	DEFINE_WAKE_Q(wake_q);
+
+	if (static_branch_unlikely(&rwsem_nosteal_key))
+		goto queue;
 
 	/*
 	 * To prevent a constant stream of readers from starving a sleeping
