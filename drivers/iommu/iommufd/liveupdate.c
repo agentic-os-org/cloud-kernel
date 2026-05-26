@@ -330,6 +330,59 @@ err_folio_put:
 	return rc;
 }
 
+int iommufd_hwpt_liveupdate_restore(struct iommufd_ucmd *ucmd)
+{
+	struct iommu_hwpt_liveupdate_restore *cmd = ucmd->cmd;
+	struct iommufd_hwpt_paging *hwpt = NULL;
+	struct iommufd_ctx *ictx = ucmd->ictx;
+	struct iommu_domain_ser *domain_ser;
+	struct iommufd_hwpt_ser *hwpt_ser;
+	struct iommufd_ser *iommufd_ser;
+	struct iommu_domain *domain;
+	unsigned int i;
+	int rc;
+
+	iommufd_ser = ictx->ser;
+	if (!iommufd_ser)
+		return -ENOTTY;
+
+	for (i = 0; i < iommufd_ser->nr_hwpts; i++) {
+		hwpt_ser = &iommufd_ser->hwpt_array[i];
+
+		if (hwpt_ser->reclaimed)
+			continue;
+
+		if (hwpt_ser->token == cmd->hwpt_token)
+			goto hwpt_found;
+	}
+
+	return -ENOENT;
+
+hwpt_found:
+	hwpt = _iommufd_hwpt_paging_alloc(ictx);
+	if (IS_ERR(hwpt))
+		return PTR_ERR(hwpt);
+
+	domain_ser = __va(hwpt_ser->domain_data);
+	domain = domain_ser->restored_domain;
+	if (!domain) {
+		rc = -ENOENT;
+		goto err_destroy;
+	}
+
+	iommufd_hwpt_init_from_domain(&hwpt->common, domain);
+	iommufd_object_finalize(ictx, &hwpt->common.obj);
+
+	hwpt_ser->reclaimed = true;
+	hwpt->liveupdate_restored = true;
+	cmd->pt_id = hwpt->common.obj.id;
+	return 0;
+
+err_destroy:
+	iommufd_object_abort_and_destroy(ictx, &hwpt->common.obj);
+	return rc;
+}
+
 static bool iommufd_liveupdate_can_finish(struct liveupdate_file_op_args *args)
 {
 	if (args->retrieve_status <= 0 || !args->file) {

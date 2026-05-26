@@ -207,6 +207,8 @@ int iommufd_object_remove(struct iommufd_ctx *ictx,
 			  struct iommufd_object *to_destroy, u32 id,
 			  unsigned int flags)
 {
+	struct iommufd_hwpt_paging *hwpt_paging;
+	struct iommu_domain *domain;
 	struct iommufd_object *obj;
 	XA_STATE(xas, &ictx->objects, id);
 	bool zerod_wait_cnt = false;
@@ -248,6 +250,23 @@ int iommufd_object_remove(struct iommufd_ctx *ictx,
 	} else if (xa_is_zero(obj) || !obj) {
 		ret = -ENOENT;
 		goto err_xa;
+	}
+
+	if (obj->type == IOMMUFD_OBJ_HWPT_PAGING) {
+		/*
+		 * Normally attacments are refcounted, but this is not the case
+		 * for liveupdate-restored HWPTs.
+		 * Additionally, LUO holds a reference to struct files until
+		 * finish, which makes sure HWPTs are no-longer attached, so
+		 * this code path is not a concern in iommufd_fops_release
+		 */
+		hwpt_paging = container_of(obj, struct iommufd_hwpt_paging,
+					   common.obj);
+		domain = hwpt_paging->common.domain;
+		if (domain && iommu_domain_has_attachments(domain)) {
+			ret = -EBUSY;
+			goto err_xa;
+		}
 	}
 
 	if (!refcount_dec_if_one(&obj->users)) {
@@ -502,6 +521,8 @@ static const struct iommufd_ioctl_op iommufd_ioctl_ops[] = {
 		 struct iommu_viommu_alloc, out_viommu_id),
 	IOCTL_OP(IOMMU_HWPT_LIVEUPDATE_MARK_PRESERVE, iommufd_hwpt_liveupdate_mark_preserve,
 		 struct iommu_hwpt_liveupdate_mark_preserve, hwpt_token),
+	IOCTL_OP(IOMMU_HWPT_LIVEUPDATE_RESTORE, iommufd_hwpt_liveupdate_restore,
+		struct iommu_hwpt_liveupdate_restore, hwpt_token),
 #ifdef CONFIG_IOMMUFD_TEST
 	IOCTL_OP(IOMMU_TEST_CMD, iommufd_test, struct iommu_test_cmd, last),
 #endif
