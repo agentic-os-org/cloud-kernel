@@ -385,16 +385,58 @@ err_destroy:
 
 static bool iommufd_liveupdate_can_finish(struct liveupdate_file_op_args *args)
 {
+	struct iommufd_hwpt_paging *hwpt;
+	struct iommufd_hwpt_ser *hwpt_ser;
+	struct iommufd_ser *iommufd_ser;
+	struct iommufd_object *obj;
+	struct iommufd_ctx *ictx;
+	unsigned long index;
+	unsigned int i;
+
 	if (args->retrieve_status <= 0 || !args->file) {
 		pr_warn("%s: fd not reclaimed\n", __func__);
 		return false;
 	}
+
+	ictx = iommufd_ctx_from_file(args->file);
+	iommufd_ser = ictx->ser;
+
+	for (i = 0; i < iommufd_ser->nr_hwpts; i++) {
+		hwpt_ser = &iommufd_ser->hwpt_array[i];
+
+		if (!hwpt_ser->reclaimed)
+			return false;
+	}
+
+	xa_lock(&ictx->objects);
+	xa_for_each(&ictx->objects, index, obj) {
+		if (obj->type != IOMMUFD_OBJ_HWPT_PAGING)
+			continue;
+
+		hwpt = container_of(obj, struct iommufd_hwpt_paging, common.obj);
+		if (!hwpt->liveupdate_restored)
+			continue;
+
+		if (!hwpt->common.domain || iommu_domain_has_attachments(hwpt->common.domain)) {
+			xa_unlock(&ictx->objects);
+			return false;
+		}
+	}
+	xa_unlock(&ictx->objects);
 
 	return true;
 }
 
 static void iommufd_liveupdate_finish(struct liveupdate_file_op_args *args)
 {
+	struct iommufd_ser *iommufd_ser;
+	struct iommufd_ctx *ictx;
+
+	ictx = iommufd_ctx_from_file(args->file);
+	iommufd_ser = ictx->ser;
+	ictx->ser = NULL;
+	folio_put(virt_to_folio(iommufd_ser));
+	iommufd_ctx_put(ictx);
 }
 
 static bool iommufd_liveupdate_can_preserve(struct liveupdate_file_handler *handler,
