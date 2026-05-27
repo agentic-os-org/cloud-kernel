@@ -41,6 +41,9 @@ struct vfio_pci_device {
 struct vfio_pci_device *__vfio_pci_device_init(const char *bdf,
 					       struct iommu *iommu,
 					       int device_fd);
+struct vfio_pci_device *__vfio_pci_device_no_bind_init(const char *bdf,
+						       struct iommu *iommu,
+						       int device_fd);
 struct vfio_pci_device *vfio_pci_device_init(const char *bdf, struct iommu *iommu);
 void vfio_pci_device_cleanup(struct vfio_pci_device *device);
 

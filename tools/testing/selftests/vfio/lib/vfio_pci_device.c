@@ -23,6 +23,7 @@
 #include <linux/sizes.h>
 #include <linux/types.h>
 #include <linux/vfio.h>
+#include <libliveupdate.h>
 
 #include "../../kselftest.h"
 #include <libvfio.h>
@@ -275,6 +276,7 @@ static void vfio_pci_device_setup(struct vfio_pci_device *device)
 	int i;
 
 	device->info.argsz = sizeof(device->info);
+
 	ioctl_assert(device->fd, VFIO_DEVICE_GET_INFO, &device->info);
 
 	vfio_pci_region_get(device, VFIO_PCI_CONFIG_REGION_INDEX, &device->config_space);
@@ -338,20 +340,34 @@ static void vfio_device_bind_iommufd(int device_fd, int iommufd)
 	ioctl_assert(device_fd, VFIO_DEVICE_BIND_IOMMUFD, &args);
 }
 
-static void vfio_device_attach_iommufd_pt(int device_fd, u32 pt_id)
+static void vfio_device_attach_iommufd_pt(int device_fd, u32 *pt_id)
 {
 	struct vfio_device_attach_iommufd_pt args = {
 		.argsz = sizeof(args),
-		.pt_id = pt_id,
+		.pt_id = *pt_id,
 	};
 
 	ioctl_assert(device_fd, VFIO_DEVICE_ATTACH_IOMMUFD_PT, &args);
+	*pt_id = args.pt_id;
+}
+
+static void vfio_device_iommufd_pt_mark_preserve(int iommufd, uint32_t hwpt_id, uint64_t hwpt_token)
+{
+	struct iommu_hwpt_liveupdate_mark_preserve mark_preserve = {
+		.size = sizeof(mark_preserve),
+		.hwpt_id = hwpt_id,
+		.hwpt_token = hwpt_token,
+	};
+
+	ioctl_assert(iommufd, IOMMU_HWPT_LIVEUPDATE_MARK_PRESERVE, &mark_preserve);
 }
 
 static void vfio_pci_iommufd_setup(struct vfio_pci_device *device,
 				   const char *bdf, int device_fd)
 {
 	const char *cdev_path;
+	uint64_t hwpt_token = 0x12345678;
+	uint32_t pt_id;
 
 	if (device_fd >= 0) {
 		device->fd = device_fd;
@@ -363,7 +379,9 @@ static void vfio_pci_iommufd_setup(struct vfio_pci_device *device,
 	}
 
 	vfio_device_bind_iommufd(device->fd, device->iommu->iommufd);
-	vfio_device_attach_iommufd_pt(device->fd, device->iommu->ioas_id);
+	pt_id = device->iommu->ioas_id;
+	vfio_device_attach_iommufd_pt(device->fd, &pt_id);
+	vfio_device_iommufd_pt_mark_preserve(device->iommu->iommufd, pt_id, hwpt_token);
 }
 
 struct vfio_pci_device *vfio_pci_device_alloc(const char *bdf, struct iommu *iommu)
@@ -373,7 +391,6 @@ struct vfio_pci_device *vfio_pci_device_alloc(const char *bdf, struct iommu *iom
 	device = calloc(1, sizeof(*device));
 	VFIO_ASSERT_NOT_NULL(device);
 
-	VFIO_ASSERT_NOT_NULL(iommu);
 	device->iommu = iommu;
 	device->bdf = bdf;
 
@@ -401,6 +418,24 @@ struct vfio_pci_device *__vfio_pci_device_init(const char *bdf,
 	return device;
 }
 
+struct vfio_pci_device *__vfio_pci_device_no_bind_init(const char *bdf,
+						       struct iommu *iommu, int device_id)
+{
+	struct vfio_pci_device *device;
+
+	device = vfio_pci_device_alloc(bdf, iommu);
+
+	device->fd = device_id;
+	device->iommu = NULL;
+
+	device->info.argsz = sizeof(device->info);
+
+	if (ioctl(device->fd, VFIO_DEVICE_GET_INFO, &device->info) == 0 || errno != EINVAL)
+		fail_exit("device VFIO_DEVICE_GET_INFO ioctl should return EINVAL due to no iommufd bind");
+
+	return device;
+}
+
 struct vfio_pci_device *vfio_pci_device_init(const char *bdf, struct iommu *iommu)
 {
 	return __vfio_pci_device_init(bdf, iommu, /*device_fd=*/-1);
@@ -413,17 +448,19 @@ void vfio_pci_device_cleanup(struct vfio_pci_device *device)
 	if (device->driver.initialized)
 		vfio_pci_driver_remove(device);
 
-	vfio_pci_bar_unmap_all(device);
+	if (device->iommu)
+		vfio_pci_bar_unmap_all(device);
 
 	VFIO_ASSERT_EQ(close(device->fd), 0);
 
-	for (i = 0; i < ARRAY_SIZE(device->msi_eventfds); i++) {
-		if (device->msi_eventfds[i] < 0)
-			continue;
+	if (device->iommu) {
+		for (i = 0; i < ARRAY_SIZE(device->msi_eventfds); i++) {
+			if (device->msi_eventfds[i] < 0)
+				continue;
 
-		VFIO_ASSERT_EQ(close(device->msi_eventfds[i]), 0);
+			VFIO_ASSERT_EQ(close(device->msi_eventfds[i]), 0);
+		}
 	}
-
 	if (device->group_fd)
 		VFIO_ASSERT_EQ(close(device->group_fd), 0);
 
