@@ -2807,9 +2807,6 @@ again:
 				goto out;
 			}
 
-			if (sk->sk_type != SOCK_STREAM)
-				return -EOPNOTSUPP;
-
 			mutex_lock(&u->iolock);
 			goto redo;
 unlock:
