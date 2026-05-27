@@ -116,6 +116,27 @@ static int vfio_iommu_map(struct iommu *iommu, struct dma_region *region)
 	return 0;
 }
 
+static int iommufd_map_file(struct iommu *iommu, struct dma_region *region)
+{
+	struct iommu_ioas_map_file args = {
+		.size = sizeof(args),
+		.flags = IOMMU_IOAS_MAP_READABLE |
+			 IOMMU_IOAS_MAP_WRITEABLE |
+			 IOMMU_IOAS_MAP_FIXED_IOVA,
+		.fd = region->file.fd,
+		.start = region->file.offset,
+		.iova = region->iova,
+		.length = region->size,
+		.ioas_id = iommu->ioas_id,
+	};
+
+	if (ioctl(iommu->iommufd, IOMMU_IOAS_MAP_FILE, &args))
+		return -errno;
+
+	return 0;
+
+}
+
 static int iommufd_map(struct iommu *iommu, struct dma_region *region)
 {
 	struct iommu_ioas_map args = {
@@ -128,6 +149,10 @@ static int iommufd_map(struct iommu *iommu, struct dma_region *region)
 		.length = region->size,
 		.ioas_id = iommu->ioas_id,
 	};
+
+	/* use fd to indicate using map user or map file */
+	if (region->file.fd > 0)
+		return iommufd_map_file(iommu, region);
 
 	if (ioctl(iommu->iommufd, IOMMU_IOAS_MAP, &args))
 		return -errno;
@@ -421,11 +446,9 @@ static u32 iommufd_ioas_alloc(int iommufd)
 	return args.out_ioas_id;
 }
 
-struct iommu *iommu_init(const char *iommu_mode)
+static struct iommu *iommu_alloc(const char *iommu_mode)
 {
-	const char *container_path;
 	struct iommu *iommu;
-	int version;
 
 	iommu = calloc(1, sizeof(*iommu));
 	VFIO_ASSERT_NOT_NULL(iommu);
@@ -433,6 +456,30 @@ struct iommu *iommu_init(const char *iommu_mode)
 	INIT_LIST_HEAD(&iommu->dma_regions);
 
 	iommu->mode = lookup_iommu_mode(iommu_mode);
+
+	return iommu;
+}
+
+struct iommu *iommufd_iommu_init(int iommufd, u32 dev_id)
+{
+	struct iommu *iommu;
+
+	iommu = iommu_alloc("iommufd");
+
+	iommu->iommufd = dup(iommufd);
+	VFIO_ASSERT_GT(iommu->iommufd, 0);
+
+	iommu->ioas_id = iommufd_ioas_alloc(iommu->iommufd);
+
+	return iommu;
+}
+struct iommu *iommu_init(const char *iommu_mode)
+{
+	const char *container_path;
+	struct iommu *iommu;
+	int version;
+
+	iommu = iommu_alloc(iommu_mode);
 
 	container_path = iommu->mode->container_path;
 	if (container_path) {
@@ -458,6 +505,9 @@ struct iommu *iommu_init(const char *iommu_mode)
 
 void iommu_cleanup(struct iommu *iommu)
 {
+	if (!iommu)
+		return;
+
 	if (iommu->iommufd)
 		VFIO_ASSERT_EQ(close(iommu->iommufd), 0);
 	else
