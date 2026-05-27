@@ -71,22 +71,34 @@ static void audit_update_mark(struct audit_fsnotify_mark *audit_mark,
 	audit_mark->ino = inode ? inode->i_ino : AUDIT_INO_UNSET;
 }
 
-struct audit_fsnotify_mark *audit_alloc_mark(struct audit_krule *krule, char *pathname, int len)
+struct audit_fsnotify_mark *audit_alloc_mark(struct audit_krule *krule, char *pathname,
+					     int len, struct audit_watch_ctx *ctx)
 {
 	struct audit_fsnotify_mark *audit_mark;
 	struct path path;
 	struct dentry *dentry;
-	struct inode *inode;
+	struct inode *dir, *child;
 	int ret;
 
 	if (pathname[0] != '/' || pathname[len-1] == '/')
 		return ERR_PTR(-EINVAL);
 
-	dentry = kern_path_locked(pathname, &path);
-	if (IS_ERR(dentry))
-		return (void *)dentry; /* returning an error */
-	inode = path.dentry->d_inode;
-	inode_unlock(inode);
+	/*
+	 * When called from an fsnotify event handler the parent directory is
+	 * already locked by the VFS, so the path walk below would deadlock;
+	 * the caller hands us the dir/child inodes instead.
+	 */
+	if (!ctx) {
+		dentry = kern_path_locked(pathname, &path);
+		if (IS_ERR(dentry))
+			return (void *)dentry; /* returning an error */
+		dir = path.dentry->d_inode;
+		child = dentry->d_inode;
+		inode_unlock(dir);
+	} else {
+		dir = ctx->dir;
+		child = ctx->child;
+	}
 
 	audit_mark = kzalloc(sizeof(*audit_mark), GFP_KERNEL);
 	if (unlikely(!audit_mark)) {
@@ -97,18 +109,20 @@ struct audit_fsnotify_mark *audit_alloc_mark(struct audit_krule *krule, char *pa
 	fsnotify_init_mark(&audit_mark->mark, audit_fsnotify_group);
 	audit_mark->mark.mask = AUDIT_FS_EVENTS;
 	audit_mark->path = pathname;
-	audit_update_mark(audit_mark, dentry->d_inode);
+	audit_update_mark(audit_mark, child);
 	audit_mark->rule = krule;
 
-	ret = fsnotify_add_inode_mark(&audit_mark->mark, inode, true);
+	ret = fsnotify_add_inode_mark(&audit_mark->mark, dir, true);
 	if (ret < 0) {
 		audit_mark->path = NULL;
 		fsnotify_put_mark(&audit_mark->mark);
 		audit_mark = ERR_PTR(ret);
 	}
 out:
-	dput(dentry);
-	path_put(&path);
+	if (!ctx) {
+		dput(dentry);
+		path_put(&path);
+	}
 	return audit_mark;
 }
 
