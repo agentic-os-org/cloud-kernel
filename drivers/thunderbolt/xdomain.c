@@ -159,7 +159,7 @@ static int __tb_xdomain_request(struct tb_ctl *ctl, const void *request,
 }
 
 /**
- * tb_xdomain_request() - Send a XDomain request
+ * tb_xdomain_request() - Send an XDomain request
  * @xd: XDomain to send the request
  * @request: Request to send
  * @request_size: Size of the request in bytes
@@ -461,7 +461,7 @@ tb_xdp_properties_changed_response(struct tb_ctl *ctl, u64 route, u8 sequence)
 	struct tb_xdp_properties_changed_response res;
 
 	memset(&res, 0, sizeof(res));
-	tb_xdp_fill_header(&res.hdr, route, sequence,
+	tb_xdp_fill_header(&res->hdr, route, sequence,
 			   PROPERTIES_CHANGED_RESPONSE, sizeof(res));
 	return __tb_xdomain_response(ctl, &res, sizeof(res),
 				     TB_CFG_PKG_XDOMAIN_RESP);
@@ -604,8 +604,12 @@ static void tb_xdp_handle_request(struct work_struct *work)
 		 */
 		xd = tb_xdomain_find_by_uuid_locked(tb, &xchg->src_uuid);
 		if (xd) {
-			queue_delayed_work(tb->wq, &xd->get_properties_work,
-					   msecs_to_jiffies(50));
+			mutex_lock(&xd->lock);
+			if (!xd->removing)
+				queue_delayed_work(tb->wq,
+						   &xd->get_properties_work,
+						   msecs_to_jiffies(50));
+			mutex_unlock(&xd->lock);
 			tb_xdomain_put(xd);
 		}
 
@@ -1366,6 +1370,10 @@ static int unregister_service(struct device *dev, void *data)
  */
 void tb_xdomain_remove(struct tb_xdomain *xd)
 {
+	mutex_lock(&xd->lock);
+	xd->removing = true;
+	mutex_unlock(&xd->lock);
+
 	stop_handshake(xd);
 
 	device_for_each_child_reverse(&xd->dev, xd, unregister_service);
@@ -1631,8 +1639,12 @@ static int update_xdomain(struct device *dev, void *data)
 
 	xd = tb_to_xdomain(dev);
 	if (xd) {
-		queue_delayed_work(xd->tb->wq, &xd->properties_changed_work,
-				   msecs_to_jiffies(50));
+		mutex_lock(&xd->lock);
+		if (!xd->removing)
+			queue_delayed_work(xd->tb->wq,
+					   &xd->properties_changed_work,
+					   msecs_to_jiffies(50));
+		mutex_unlock(&xd->lock);
 	}
 
 	return 0;

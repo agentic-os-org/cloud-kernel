@@ -180,6 +180,8 @@ void tb_unregister_property_dir(const char *key, struct tb_property_dir *dir);
  * @vendor_name: Name of the vendor (or %NULL if not known)
  * @device_name: Name of the device (or %NULL if not known)
  * @is_unplugged: The XDomain is unplugged
+ * @removing: Set by tb_xdomain_remove() under @lock to prevent
+ *	      concurrent delayed work queueing
  * @resume: The XDomain is being resumed
  * @needs_uuid: If the XDomain does not have @remote_uuid it will be
  *		queried first
@@ -224,6 +226,7 @@ struct tb_xdomain {
 	const char *vendor_name;
 	const char *device_name;
 	bool is_unplugged;
+	bool removing;
 	bool resume;
 	bool needs_uuid;
 	u16 transmit_path;
