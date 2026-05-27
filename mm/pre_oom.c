@@ -34,7 +34,7 @@ int pre_oom_enter(void)
 
 void pre_oom_leave(void)
 {
-	if (pre_oom_enabled() && current->reclaim_stall) {
+	if (current->reclaim_stall) {
 		current->reclaim_stall = 0;
 		up(sem);
 	}
