@@ -1010,11 +1010,11 @@ static int amd_pstate_cpu_init(struct cpufreq_policy *policy)
 							      cpudata->nominal_freq,
 							      perf.highest_perf);
 
-	policy->boost_supported = READ_ONCE(cpudata->boost_supported);
 	ret = amd_pstate_cppc_enable(policy);
 	if (ret)
 		goto free_cpudata1;
 
+	policy->boost_supported = READ_ONCE(cpudata->boost_supported);
 
 	/* It will be updated by governor */
 	policy->cur = policy->cpuinfo.min_freq;
