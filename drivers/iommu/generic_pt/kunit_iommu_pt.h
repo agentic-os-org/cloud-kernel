@@ -512,4 +512,4 @@ kunit_test_suites(&NS(iommu_suite));
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Kunit for generic page table");
-MODULE_IMPORT_NS("GENERIC_PT_IOMMU");
+MODULE_IMPORT_NS(GENERIC_PT_IOMMU);

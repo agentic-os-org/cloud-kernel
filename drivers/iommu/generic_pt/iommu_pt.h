@@ -1424,8 +1424,8 @@ EXPORT_SYMBOL_NS_GPL(pt_iommu_hw_info, GENERIC_PT_IOMMU);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("IOMMU Page table implementation for " __stringify(PTPFX_RAW));
-MODULE_IMPORT_NS("GENERIC_PT");
+MODULE_IMPORT_NS(GENERIC_PT);
 /* For iommu_dirty_bitmap_record() */
-MODULE_IMPORT_NS("IOMMUFD");
+MODULE_IMPORT_NS(IOMMUFD);
 
 #endif  /* __GENERIC_PT_IOMMU_PT_H */
