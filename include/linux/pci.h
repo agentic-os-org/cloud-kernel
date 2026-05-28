@@ -560,8 +560,10 @@ struct pci_dev {
 	u8		tph_req_type;	/* TPH requester type */
 #endif
 
-	CK_KABI_USE_SPLIT(1, unsigned int liveupdate_incoming:1); /* Preserved by previous kernel */
-	CK_KABI_USE_SPLIT(1, unsigned int liveupdate_outgoing:1); /* Preserved for next kernel */
+	unsigned int liveupdate_incoming:1; /* Preserved by previous kernel */
+	unsigned int liveupdate_outgoing:1; /* Preserved for next kernel */
+
+	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
