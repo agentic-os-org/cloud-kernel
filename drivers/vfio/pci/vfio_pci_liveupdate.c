@@ -113,7 +113,7 @@
 
 #include "vfio_pci_priv.h"
 
-MODULE_IMPORT_NS("IOMMUFD");
+MODULE_IMPORT_NS(IOMMUFD);
 
 static bool vfio_pci_liveupdate_can_preserve(struct liveupdate_file_handler *handler,
 					     struct file *file)
