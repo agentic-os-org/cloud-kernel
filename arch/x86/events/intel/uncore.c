@@ -1273,8 +1273,7 @@ static int uncore_bus_notify(struct notifier_block *nb,
 	struct intel_uncore_pmu *pmu;
 	int die;
 
-	/* Unregister the PMU when the device is going to be deleted. */
-	if (action != BUS_NOTIFY_DEL_DEVICE)
+	if (action != BUS_NOTIFY_DEL_DEVICE && action != BUS_NOTIFY_ADD_DEVICE)
 		return NOTIFY_DONE;
 
 	pmu = uncore_pci_find_dev_pmu(pdev, ids);
@@ -1284,7 +1283,16 @@ static int uncore_bus_notify(struct notifier_block *nb,
 	if (uncore_pci_get_dev_die_info(pdev, &die))
 		return NOTIFY_DONE;
 
-	uncore_pci_pmu_unregister(pmu, die);
+	switch (action) {
+	case BUS_NOTIFY_DEL_DEVICE:
+		uncore_pci_pmu_unregister(pmu, die);
+		break;
+	case BUS_NOTIFY_ADD_DEVICE:
+		uncore_pci_pmu_register(pdev, pmu->type, pmu, die);
+		break;
+	default:
+		return NOTIFY_DONE;
+	}
 
 	return NOTIFY_OK;
 }

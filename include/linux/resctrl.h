@@ -252,6 +252,7 @@ enum membw_throttle_mode {
  * @throttle_mode:	Bandwidth throttling mode when threads request
  *			different memory bandwidths
  * @mba_sc:		True if MBA software controller(mba_sc) is enabled
+ * @hwdrc:		True if memory bandwidth HWDRC is enabled
  * @mb_map:		Mapping of memory B/W percentage to memory B/W delay
  */
 struct resctrl_membw {
@@ -262,6 +263,7 @@ struct resctrl_membw {
 	bool				arch_needs_linear;
 	enum membw_throttle_mode	throttle_mode;
 	bool				mba_sc;
+	bool				hwdrc;
 	u32				*mb_map;
 };
 
@@ -317,6 +319,8 @@ struct resctrl_mon {
  * @name:		Name to use in "schemata" file.
  * @schema_fmt:		Which format string and parser is used for this schema.
  * @cdp_capable:	Is the CDP feature available on this resource
+ * @hwdrc_capable:	Is the hardware Dynamic Resource Controller available
+ *			on this resource.
  */
 struct rdt_resource {
 	int			rid;
@@ -332,6 +336,7 @@ struct rdt_resource {
 	char			*name;
 	enum resctrl_schema_fmt	schema_fmt;
 	bool			cdp_capable;
+	bool			hwdrc_capable;
 };
 
 /*

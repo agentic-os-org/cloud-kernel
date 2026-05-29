@@ -2638,11 +2638,60 @@ static int mkdir_mondata_all(struct kernfs_node *parent_kn,
 			     struct rdtgroup *prgrp,
 			     struct kernfs_node **mon_data_kn);
 
+static inline void mba_enable(void)
+{
+	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_MBA);
+
+	r->alloc_capable = true;
+	pr_info("RDT_RESOURCE_MBA: enabled\n");
+}
+
+static inline void mba_disable(void)
+{
+	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_MBA);
+
+	r->alloc_capable = false;
+	pr_info("RDT_RESOURCE_MBA: disabled\n");
+}
+
+static inline bool supports_hwdrc(void)
+{
+	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_MBA);
+
+	return r->hwdrc_capable;
+}
+
+static inline bool is_hwdrc(void)
+{
+	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_MBA);
+
+	return r->membw.hwdrc;
+}
+
+static int set_hwdrc(bool hwdrc)
+{
+	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_MBA);
+
+	if (!supports_hwdrc() || hwdrc == r->membw.hwdrc)
+		return -EINVAL;
+
+	/* MBA and HWDRC features are mutually exclusive */
+	if (hwdrc)
+		mba_disable();
+	else
+		mba_enable();
+
+	r->membw.hwdrc = hwdrc;
+
+	return 0;
+}
+
 static void rdt_disable_ctx(void)
 {
 	resctrl_arch_set_cdp_enabled(RDT_RESOURCE_L3, false);
 	resctrl_arch_set_cdp_enabled(RDT_RESOURCE_L2, false);
 	set_mba_sc(false);
+	set_hwdrc(false);
 
 	resctrl_debug = false;
 }
@@ -2663,8 +2712,20 @@ static int rdt_enable_ctx(struct rdt_fs_context *ctx)
 			goto out_cdpl2;
 	}
 
-	if (ctx->enable_mba_mbps) {
+	/*
+	 * MBA and memory bandwidth HWDRC features are mutually exclusive.
+	 * So mba_MBps and hwdrc options could not be set at the same time.
+	 */
+	if (ctx->enable_hwdrc && ctx->enable_mba_mbps) {
+		pr_debug("Option 'mba_MBps' and 'hwdrc' are mutually exclusive\n");
+		ret = -EINVAL;
+		goto out_cdpl3;
+	} else if (ctx->enable_mba_mbps) {
 		ret = set_mba_sc(true);
+		if (ret)
+			goto out_cdpl3;
+	} else if (ctx->enable_hwdrc) {
+		ret = set_hwdrc(true);
 		if (ret)
 			goto out_cdpl3;
 	}
@@ -2906,6 +2967,7 @@ enum rdt_param {
 	Opt_cdp,
 	Opt_cdpl2,
 	Opt_mba_mbps,
+	Opt_hwdrc,
 	Opt_debug,
 	nr__rdt_params
 };
@@ -2914,6 +2976,7 @@ static const struct fs_parameter_spec rdt_fs_parameters[] = {
 	fsparam_flag("cdp",		Opt_cdp),
 	fsparam_flag("cdpl2",		Opt_cdpl2),
 	fsparam_flag("mba_MBps",	Opt_mba_mbps),
+	fsparam_flag("hwdrc",		Opt_hwdrc),
 	fsparam_flag("debug",		Opt_debug),
 	{}
 };
@@ -2941,6 +3004,12 @@ static int rdt_parse_param(struct fs_context *fc, struct fs_parameter *param)
 		if (!supports_mba_mbps())
 			return invalfc(fc, msg);
 		ctx->enable_mba_mbps = true;
+		return 0;
+	case Opt_hwdrc:
+		msg = "hwdrc: requires hardware support for DRC";
+		if (!supports_hwdrc())
+			return invalfc(fc, msg);
+		ctx->enable_hwdrc = true;
 		return 0;
 	case Opt_debug:
 		ctx->enable_debug = true;
@@ -4239,6 +4308,9 @@ static int rdtgroup_show_options(struct seq_file *seq, struct kernfs_root *kf)
 
 	if (is_mba_sc(resctrl_arch_get_resource(RDT_RESOURCE_MBA)))
 		seq_puts(seq, ",mba_MBps");
+
+	if (is_hwdrc())
+		seq_puts(seq, ",hwdrc");
 
 	if (resctrl_debug)
 		seq_puts(seq, ",debug");

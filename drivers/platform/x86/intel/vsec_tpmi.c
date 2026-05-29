@@ -587,6 +587,8 @@ static const char *intel_tpmi_name(enum intel_tpmi_id id)
 		return "pem";
 	case TPMI_ID_UNCORE:
 		return "uncore";
+	case TPMI_ID_DRC:
+		return "drc";
 	case TPMI_ID_SST:
 		return "sst";
 	case TPMI_ID_PLR:
