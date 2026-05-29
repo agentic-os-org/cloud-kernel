@@ -68,7 +68,7 @@
 #define __kidled_ref __ref
 #endif
 
-DEFINE_STATIC_KEY_FALSE(kidled_enabled_key);
+DEFINE_STATIC_KEY_FALSE(kidled_lru_page_enabled_key);
 static atomic_t kidled_disabling;
 
 unsigned int kidled_scan_target __read_mostly = KIDLED_SCAN_PAGE;
@@ -84,7 +84,7 @@ struct kidled_scan_control kidled_scan_control;
 const int kidled_default_buckets[NUM_KIDLED_BUCKETS] = {
 	1, 2, 5, 15, 30, 60, 120, 240 };
 static DECLARE_WAIT_QUEUE_HEAD(kidled_wait);
-static DEFINE_STATIC_KEY_FALSE(kidled_slab_key);
+DEFINE_STATIC_KEY_FALSE(kidled_slab_enabled_key);
 unsigned long kidled_scan_rounds __read_mostly;
 static atomic_t kidled_setting;
 
@@ -291,9 +291,29 @@ kidled_mem_cgroup_scan_done(struct kidled_scan_control scan_control)
 		 */
 		if (!KIDLED_IS_BUCKET_INVALID(unstable_stats->buckets)) {
 			mem_cgroup_idle_page_stats_switch(memcg);
-			if (kidled_has_page_target(&scan_control))
+			/*
+			 * Only bump page_scans when page scan actually
+			 * happened (page key on AND MGLRU not active).
+			 */
+			if (kidled_has_page_target(&scan_control) &&
+			    is_kidled_lru_page_enabled() && !lru_gen_enabled())
 				memcg->idle_page_scans++;
+			/*
+			 * Only bump slab_scans when slab scan actually
+			 * happened (slab key on). Note this is NOT symmetric
+			 * with the page path: page scan execution is gated by
+			 * the static key (is_kidled_lru_page_enabled() in the
+			 * main loop), whereas slab scan execution is gated
+			 * only by scan_target (kidled_scan_slabs() checks
+			 * kidled_has_slab_target(), not the static key) since
+			 * the slab path is decoupled from MGLRU. The static
+			 * key check here only gates the counter, so slab may
+			 * be scanned without bumping it in the brief window
+			 * where the key is off but scan_target still carries
+			 * the SLAB bit.
+			 */
 			if (kidled_has_slab_target(&scan_control) &&
+			    is_kidled_slab_enabled() &&
 			    (memcg_kmem_online() || mem_cgroup_is_root(memcg)))
 				memcg->idle_slab_scans++;
 
@@ -792,7 +812,12 @@ static inline bool kidled_should_run(struct kidled_scan_control *p,
 #endif
 		}
 		if (!scan_control.duration) {
-			static_branch_disable(&kidled_enabled_key);
+			/*
+			 * kidled_scan_period_store() wakes us up after publishing
+			 * duration=0, then updates page/slab static keys. If we run
+			 * before those key updates, duration=0 still prevents any scan;
+			 * just clear the disabling flag here.
+			 */
 			if (atomic_cmpxchg(&kidled_disabling, 1, 0) != 1)
 				pr_warn_ratelimited("%s: kidled_disabling may be not set correctly when disabling kidled\n", __func__);
 		}
@@ -871,9 +896,18 @@ static int kidled(void *dummy)
 			continue;
 
 		start_jiffies = jiffies_64;
-		get_online_mems();
-		scan_done = kidled_scan_nodes(scan_control, restart);
-		put_online_mems();
+		/*
+		 * Skip page scan when the page-path key is off or MGLRU
+		 * is active (overlapping page->flags age bits). The slab
+		 * path uses obj_exts and remains independent.
+		 */
+		if (is_kidled_lru_page_enabled() && !lru_gen_enabled()) {
+			get_online_mems();
+			scan_done = kidled_scan_nodes(scan_control, restart);
+			put_online_mems();
+		} else {
+			scan_done = true;
+		}
 
 		kidled_scan_slabs(scan_control);
 		if (is_kidled_scan_done(scan_done,
@@ -954,12 +988,44 @@ static inline bool kidled_allow_scan_slab(void)
 
 static inline void kidled_slab_scan_enabled(void)
 {
-	if (!static_key_enabled(&kidled_slab_key)) {
+	if (!static_key_enabled(&kidled_slab_enabled_key)) {
 		if (kidled_allow_scan_slab())
-			static_branch_enable(&kidled_slab_key);
+			static_branch_enable(&kidled_slab_enabled_key);
 	} else {
 		if (!kidled_allow_scan_slab())
-			static_branch_disable(&kidled_slab_key);
+			static_branch_disable(&kidled_slab_enabled_key);
+	}
+}
+
+static inline bool kidled_allow_scan_lru_page(void)
+{
+	struct kidled_scan_control scan_control =
+		kidled_get_current_scan_control();
+
+	if (!scan_control.duration)
+		return false;
+
+	if (!kidled_has_page_target(&scan_control))
+		return false;
+
+	/*
+	 * Page scan conflicts with MGLRU (overlapping page->flags age
+	 * bits). Never enable the page key while MGLRU is active.
+	 */
+	if (lru_gen_enabled())
+		return false;
+
+	return true;
+}
+
+static inline void kidled_lru_page_scan_enabled(void)
+{
+	if (!static_key_enabled(&kidled_lru_page_enabled_key)) {
+		if (kidled_allow_scan_lru_page())
+			static_branch_enable(&kidled_lru_page_enabled_key);
+	} else {
+		if (!kidled_allow_scan_lru_page())
+			static_branch_disable(&kidled_lru_page_enabled_key);
 	}
 }
 
@@ -999,7 +1065,7 @@ unsigned short kidled_get_slab_age(void *object)
 	struct slab *slab;
 	unsigned int off;
 
-	if (!static_branch_unlikely(&kidled_slab_key))
+	if (!static_branch_unlikely(&kidled_slab_enabled_key))
 		return 0;
 
 	slab_age = kidled_get_slab_age_array(object);
@@ -1018,7 +1084,7 @@ void kidled_set_slab_age(void *object, unsigned short age)
 	struct slab *slab;
 	unsigned int off;
 
-	if (!static_branch_unlikely(&kidled_slab_key))
+	if (!static_branch_unlikely(&kidled_slab_enabled_key))
 		return;
 
 	slab_age = kidled_get_slab_age_array(object);
@@ -1088,7 +1154,12 @@ static ssize_t kidled_scan_period_show(struct kobject *kobj,
 
 bool is_kidled_setting(void)
 {
-	return !!atomic_read(&kidled_setting);
+	/*
+	 * MGLRU mutex only cares about the page scan path; slab scan is
+	 * independent of lru_gen. Narrow the "setting" signal accordingly.
+	 */
+	return !!atomic_read(&kidled_setting) &&
+	       (READ_ONCE(kidled_scan_target) & KIDLED_SCAN_PAGE);
 }
 
 /*
@@ -1109,15 +1180,16 @@ static ssize_t kidled_scan_period_store(struct kobject *kobj,
 	ret = count;
 	/* Mark kidled as setting first */
 	atomic_inc(&kidled_setting);
-	if (lru_gen_is_setting()) {
-		pr_warn("%s: Failed to enable kidled due to mglru is being set\n", __func__);
+	if ((kidled_scan_target & KIDLED_SCAN_PAGE) && lru_gen_is_setting()) {
+		pr_warn("%s: Failed to enable kidled page scan due to mglru is being set\n", __func__);
 		ret = -EBUSY;
 		goto out;
 	}
 
-	/* Disable kidled when mglru enabled */
-	if (secs && lru_gen_enabled()) {
-		pr_warn("%s: Failed to enable kidled due to mglru enabled\n", __func__);
+	/* Disable kidled page scan when mglru enabled */
+	if (secs && lru_gen_enabled() &&
+	    (kidled_scan_target & KIDLED_SCAN_PAGE)) {
+		pr_warn("%s: Failed to enable kidled page scan due to mglru enabled\n", __func__);
 		ret = -EINVAL;
 		goto out;
 	}
@@ -1132,7 +1204,6 @@ static ssize_t kidled_scan_period_store(struct kobject *kobj,
 			ret = -EINVAL;
 			goto out;
 		}
-		static_branch_enable(&kidled_enabled_key);
 	} else {
 		if (atomic_cmpxchg(&kidled_disabling, 0, 1) != 0) {
 			pr_debug("%s: kidled is still being disabled, ignore this time\n", __func__);
@@ -1143,6 +1214,7 @@ static ssize_t kidled_scan_period_store(struct kobject *kobj,
 	kidled_set_scan_duration(secs);
 	wake_up_interruptible(&kidled_wait);
 	kidled_slab_scan_enabled();
+	kidled_lru_page_scan_enabled();
 out:
 	atomic_dec(&kidled_setting);
 
@@ -1167,8 +1239,23 @@ static ssize_t kidled_scan_target_store(struct kobject *kobj,
 	if (ret || !val || val > KIDLED_SCAN_ALL)
 		return -EINVAL;
 
+	/*
+	 * Disallow switching an active kidled instance to page scan while
+	 * MGLRU is active: the two subsystems share page->flags age bits
+	 * and cannot coexist. If duration is zero, scan_target is only a
+	 * saved configuration and no page scan will run until scan_period
+	 * is written, where the same MGLRU conflict is checked again.
+	 */
+	if ((val & KIDLED_SCAN_PAGE) && kidled_get_current_scan_duration() &&
+	    lru_gen_enabled()) {
+		pr_warn("%s: Failed to set active scan_target with PAGE bit due to mglru enabled\n",
+			__func__);
+		return -EINVAL;
+	}
+
 	WRITE_ONCE(kidled_scan_target, val);
 	kidled_slab_scan_enabled();
+	kidled_lru_page_scan_enabled();
 	return count;
 }
 
