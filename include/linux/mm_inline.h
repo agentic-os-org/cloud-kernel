@@ -287,7 +287,8 @@ static inline bool lru_gen_del_folio(struct lruvec *lruvec, struct folio *folio,
 	unsigned long flags;
 	int gen = folio_lru_gen(folio);
 
-	if (gen < 0 || is_kidled_enabled())
+	/* Conflict is only in page->flags age-bits vs lru_gen; slab path is independent */
+	if (gen < 0 || is_kidled_lru_page_enabled())
 		return false;
 
 	VM_WARN_ON_ONCE_FOLIO(folio_test_active(folio), folio);
