@@ -1,0 +1,17 @@
+netkit is a BPF-programmable virtual network device introduced in Linux
+6.7 by the Cilium team. It is designed as a next-generation replacement
+for veth in cloud-native / container networking scenarios, allowing BPF
+programs to be attached directly to the device transmission routine and
+operating in either L2 or L3 mode.
+
+Enabling CONFIG_NETKIT is required by:
+- tools/testing/selftests/net/nk_qlease.py and the in-tree netkit
+  selftests (tools/testing/selftests/net/config explicitly sets
+  CONFIG_NETKIT=y).
+- Cilium >= 1.14 netkit device mode, see:
+  https://docs.cilium.io/en/stable/operations/system_requirements/
+  ("The netkit device mode requires CONFIG_NETKIT=y").
+
+Note CONFIG_NETKIT is a bool (not tristate) and depends on
+CONFIG_BPF_SYSCALL, so it can only be set to y or n. Move it from
+L2-OPTIONAL to L1-RECOMMEND with value y on all architectures.
