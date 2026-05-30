@@ -1002,6 +1002,15 @@ static bool tg_may_dispatch(struct throtl_grp *tg, struct bio *bio,
 	return false;
 }
 
+/* Map an IO latency in ns to a log2 histogram bucket (~1us .. ~34s). */
+static unsigned int throtl_lat_bucket(u64 lat_ns)
+{
+	if (lat_ns < 1024)
+		return 0;
+	return min_t(unsigned int, ilog2(lat_ns) - 10,
+		     THROTL_LAT_NR_BUCKETS - 1);
+}
+
 static void throtl_stats_update_completion(struct throtl_grp *tg,
 					   uint64_t start_time,
 					   uint64_t io_start_time,
@@ -1017,6 +1026,10 @@ static void throtl_stats_update_completion(struct throtl_grp *tg,
 		blkg_rwstat_add(&tg->wait_time, opf, io_start_time - start_time);
 	blkg_rwstat_add(&tg->completed, opf, 1);
 	local_irq_restore(flags);
+
+	if (time_after64(now, start_time))
+		atomic64_inc(&tg->lat_hist[op_is_write(opf)]
+				    [throtl_lat_bucket(now - start_time)]);
 }
 
 static void throtl_bio_end_io(struct bio *bio)
@@ -1759,6 +1772,45 @@ static int tg_print_extstat(struct seq_file *sf, void *v)
 	return 0;
 }
 
+static void tg_prfill_lat_hist_dir(struct seq_file *sf, const char *dname,
+				   const char *dir, atomic64_t *bucket)
+{
+	int i;
+
+	seq_printf(sf, "%s %s", dname, dir);
+	for (i = 0; i < THROTL_LAT_NR_BUCKETS; i++)
+		seq_printf(sf, " %llu",
+			   (unsigned long long)atomic64_read(&bucket[i]));
+	seq_putc(sf, '\n');
+}
+
+static u64 tg_prfill_lat_hist(struct seq_file *sf, struct blkg_policy_data *pd,
+			      int off)
+{
+	struct throtl_grp *tg = pd_to_tg(pd);
+	const char *dname = blkg_dev_name(pd->blkg);
+
+	if (!dname)
+		return 0;
+
+	/*
+	 * Raw end-to-end latency histogram, read and write separately.
+	 * Bucket boundaries are fixed (see THROTL_LAT_NR_BUCKETS); userspace
+	 * derives percentiles and samples deltas between two reads.
+	 */
+	tg_prfill_lat_hist_dir(sf, dname, "read", tg->lat_hist[READ]);
+	tg_prfill_lat_hist_dir(sf, dname, "write", tg->lat_hist[WRITE]);
+
+	return 0;
+}
+
+static int tg_print_lat_hist(struct seq_file *sf, void *v)
+{
+	blkcg_print_blkgs(sf, css_to_blkcg(seq_css(sf)), tg_prfill_lat_hist,
+			  &blkcg_policy_throtl, 0, false);
+	return 0;
+}
+
 static ssize_t tg_set_limit(struct kernfs_open_file *of,
 			  char *buf, size_t nbytes, loff_t off)
 {
@@ -1898,6 +1950,11 @@ static struct cftype throtl_files[] = {
 	{
 		.name = "extstat",
 		.seq_show = tg_print_extstat,
+	},
+	{
+		.name = "lat_hist",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = tg_print_lat_hist,
 	},
 	{ }	/* terminate */
 };
