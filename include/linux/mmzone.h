@@ -590,6 +590,7 @@ void lru_gen_release_memcg(struct mem_cgroup *memcg);
 void lru_gen_soft_reclaim(struct mem_cgroup *memcg, int nid);
 struct seq_file;
 int lru_gen_print_memcg(struct seq_file *m, struct mem_cgroup *memcg);
+int lru_gen_idle_stats_show(struct seq_file *m, struct mem_cgroup *memcg);
 struct kernfs_open_file;
 ssize_t lru_gen_memcg_write(struct kernfs_open_file *of,
 			    char *buf, size_t nbytes, loff_t off);
@@ -636,6 +637,11 @@ static inline void lru_gen_soft_reclaim(struct mem_cgroup *memcg, int nid)
 
 struct seq_file;
 static inline int lru_gen_print_memcg(struct seq_file *m, struct mem_cgroup *memcg)
+{
+	return 0;
+}
+
+static inline int lru_gen_idle_stats_show(struct seq_file *m, struct mem_cgroup *memcg)
 {
 	return 0;
 }
