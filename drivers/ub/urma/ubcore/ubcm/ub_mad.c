@@ -486,6 +486,7 @@ static void ubmad_release_tjetty(struct kref *kref)
 	}
 	spin_unlock_irqrestore(&tjetty->tgt_hash_lock, flag);
 
+	ubmad_uninit_msn_mgr(&tjetty->recv_msn_mgr);
 	ubmad_uninit_msn_mgr(&tjetty->msn_mgr);
 
 	ret = ubcore_unimport_jetty(tjetty->tjetty);
@@ -628,6 +629,7 @@ struct ubmad_tjetty *ubmad_import_jetty(struct ubcore_device *device,
 	new_tjetty->rsrc = rsrc;
 
 	ubmad_init_msn_mgr(&new_tjetty->msn_mgr);
+	ubmad_init_msn_mgr(&new_tjetty->recv_msn_mgr);
 
 	spin_lock_irqsave(&rsrc->tjetty_hlist_lock, flag);
 	/* get again in case of concurrence */
@@ -657,6 +659,7 @@ struct ubmad_tjetty *ubmad_import_jetty(struct ubcore_device *device,
 	return new_tjetty;
 
 uninit_msn_mgr:
+	ubmad_uninit_msn_mgr(&new_tjetty->recv_msn_mgr);
 	ubmad_uninit_msn_mgr(&new_tjetty->msn_mgr);
 	ubcore_unimport_jetty(new_target);
 free:
