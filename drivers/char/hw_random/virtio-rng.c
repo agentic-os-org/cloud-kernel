@@ -74,7 +74,13 @@ static int virtio_read(struct hwrng *rng, void *buf, size_t size, bool wait)
 
 	vi->busy = false;
 
-	return vi->data_avail;
+	/*
+	 * vi->data_avail comes from the device-reported used.len.  A
+	 * malicious or buggy virtio-rng backend can report more bytes
+	 * than the buffer we supplied; clamp it so callers never read
+	 * past the end of their buffer.
+	 */
+	return min_t(size_t, vi->data_avail, size);
 }
 
 static void virtio_cleanup(struct hwrng *rng)
