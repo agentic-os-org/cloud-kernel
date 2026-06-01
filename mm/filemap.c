@@ -2027,8 +2027,10 @@ no_page:
 			if (order > min_order)
 				alloc_gfp |= __GFP_NORETRY | __GFP_NOWARN;
 			folio = filemap_alloc_folio(alloc_gfp, order, policy);
-			if (!folio)
+			if (!folio) {
+				count_mthp_stat(order, MTHP_STAT_FILE_FALLBACK);
 				goto try_next;
+			}
 
 			/* Init accessed so avoid atomic mark_page_accessed later */
 			if (fgp_flags & FGP_ACCESSED)
@@ -2041,6 +2043,8 @@ no_page:
 				break;
 			folio_put(folio);
 			folio = NULL;
+			if (err != -EEXIST)
+				count_mthp_stat(order, MTHP_STAT_FILE_FALLBACK_CHARGE);
 
 try_next:
 			if (order <= min_order)
