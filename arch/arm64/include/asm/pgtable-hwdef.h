@@ -184,6 +184,11 @@
 #define PTE_S2_MEMATTR(t)	(_AT(pteval_t, (t)) << 2)
 
 /*
+ * Hierarchical permission for Stage-1 tables
+ */
+#define S1_TABLE_AP		(_AT(pmdval_t, 3) << 61)
+
+/*
  * Highest possible physical address supported.
  */
 #define PHYS_MASK_SHIFT		(CONFIG_ARM64_PA_BITS)
@@ -277,6 +282,11 @@
 #define TCR_TBI1		(UL(1) << 38)
 #define TCR_HA			(UL(1) << 39)
 #define TCR_HD			(UL(1) << 40)
+#define TCR_HPD0_SHIFT		41
+#define TCR_HPD0		(UL(1) << TCR_HPD0_SHIFT)
+#define TCR_HPD1_SHIFT		42
+#define TCR_HPD1		(UL(1) << TCR_HPD1_SHIFT)
+#define TCR_TBID0		(UL(1) << 51)
 #define TCR_TBID1		(UL(1) << 52)
 #define TCR_NFD0		(UL(1) << 53)
 #define TCR_NFD1		(UL(1) << 54)
@@ -284,6 +294,7 @@
 #define TCR_E0PD1		(UL(1) << 56)
 #define TCR_TCMA0		(UL(1) << 57)
 #define TCR_TCMA1		(UL(1) << 58)
+#define TCR_DS			(UL(1) << 59)
 
 /*
  * TTBR.

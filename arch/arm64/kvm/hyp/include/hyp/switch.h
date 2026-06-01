@@ -27,6 +27,7 @@
 #include <asm/kvm_hyp.h>
 #include <asm/kvm_mmu.h>
 #include <asm/kvm_nested.h>
+#include <asm/kvm_ptrauth.h>
 #include <asm/fpsimd.h>
 #include <asm/debug-monitors.h>
 #include <asm/processor.h>
@@ -37,12 +38,6 @@ struct kvm_exception_table_entry {
 
 extern struct kvm_exception_table_entry __start___kvm_ex_table;
 extern struct kvm_exception_table_entry __stop___kvm_ex_table;
-
-/* Check whether the FP regs are owned by the guest */
-static inline bool guest_owns_fp_regs(struct kvm_vcpu *vcpu)
-{
-	return *host_data_ptr(fp_owner) == FP_STATE_GUEST_OWNED;
-}
 
 /* Save the 32-bit only FPSIMD system register state */
 static inline void __fpsimd_save_fpexc32(struct kvm_vcpu *vcpu)
@@ -310,10 +305,8 @@ static inline void __deactivate_traps_common(struct kvm_vcpu *vcpu)
 	__deactivate_traps_mpam();
 }
 
-static inline void ___activate_traps(struct kvm_vcpu *vcpu)
+static inline void ___activate_traps(struct kvm_vcpu *vcpu, u64 hcr)
 {
-	u64 hcr = vcpu->arch.hcr_el2;
-
 	if (cpus_have_final_cap(ARM64_WORKAROUND_CAVIUM_TX2_219_TVM))
 		hcr |= HCR_TVM;
 
@@ -354,7 +347,7 @@ static inline void fpsimd_lazy_switch_to_guest(struct kvm_vcpu *vcpu)
 {
 	u64 zcr_el1, zcr_el2;
 
-	if (!guest_owns_fp_regs(vcpu))
+	if (!guest_owns_fp_regs())
 		return;
 
 	if (vcpu_has_sve(vcpu)) {
@@ -371,7 +364,7 @@ static inline void fpsimd_lazy_switch_to_host(struct kvm_vcpu *vcpu)
 {
 	u64 zcr_el1, zcr_el2;
 
-	if (!guest_owns_fp_regs(vcpu))
+	if (!guest_owns_fp_regs())
 		return;
 
 	/*
@@ -523,64 +516,6 @@ static inline bool handle_tx2_tvm(struct kvm_vcpu *vcpu)
 	return true;
 }
 
-static inline bool esr_is_ptrauth_trap(u64 esr)
-{
-	switch (esr_sys64_to_sysreg(esr)) {
-	case SYS_APIAKEYLO_EL1:
-	case SYS_APIAKEYHI_EL1:
-	case SYS_APIBKEYLO_EL1:
-	case SYS_APIBKEYHI_EL1:
-	case SYS_APDAKEYLO_EL1:
-	case SYS_APDAKEYHI_EL1:
-	case SYS_APDBKEYLO_EL1:
-	case SYS_APDBKEYHI_EL1:
-	case SYS_APGAKEYLO_EL1:
-	case SYS_APGAKEYHI_EL1:
-		return true;
-	}
-
-	return false;
-}
-
-#define __ptrauth_save_key(ctxt, key)					\
-	do {								\
-	u64 __val;                                                      \
-	__val = read_sysreg_s(SYS_ ## key ## KEYLO_EL1);                \
-	ctxt_sys_reg(ctxt, key ## KEYLO_EL1) = __val;                   \
-	__val = read_sysreg_s(SYS_ ## key ## KEYHI_EL1);                \
-	ctxt_sys_reg(ctxt, key ## KEYHI_EL1) = __val;                   \
-} while(0)
-
-#ifdef MODULE
-extern struct kvm_cpu_context __percpu *kvm_hyp_ctxt;
-#else
-DECLARE_PER_CPU(struct kvm_cpu_context, kvm_hyp_ctxt);
-#endif
-
-static bool kvm_hyp_handle_ptrauth(struct kvm_vcpu *vcpu, u64 *exit_code)
-{
-	struct kvm_cpu_context *ctxt;
-	u64 val;
-
-	if (!vcpu_has_ptrauth(vcpu))
-		return false;
-
-	ctxt = this_cpu_ptr_wrapper(kvm_hyp_ctxt);
-	__ptrauth_save_key(ctxt, APIA);
-	__ptrauth_save_key(ctxt, APIB);
-	__ptrauth_save_key(ctxt, APDA);
-	__ptrauth_save_key(ctxt, APDB);
-	__ptrauth_save_key(ctxt, APGA);
-
-	vcpu_ptrauth_enable(vcpu);
-
-	val = read_sysreg(hcr_el2);
-	val |= (HCR_API | HCR_APK);
-	write_sysreg(val, hcr_el2);
-
-	return true;
-}
-
 static bool kvm_hyp_handle_cntpct(struct kvm_vcpu *vcpu)
 {
 	struct arch_timer_context *ctxt;
@@ -668,9 +603,6 @@ static inline bool kvm_hyp_handle_sysreg(struct kvm_vcpu *vcpu, u64 *exit_code)
 	    __vgic_v3_perform_cpuif_access(vcpu) == 1)
 		return true;
 
-	if (esr_is_ptrauth_trap(kvm_vcpu_get_esr(vcpu)))
-		return kvm_hyp_handle_ptrauth(vcpu, exit_code);
-
 	if (kvm_hyp_handle_cntpct(vcpu))
 		return true;
 
@@ -705,7 +637,7 @@ static inline bool kvm_hyp_handle_dabt_low(struct kvm_vcpu *vcpu, u64 *exit_code
 	if (static_branch_unlikely(&vgic_v2_cpuif_trap)) {
 		bool valid;
 
-		valid = kvm_vcpu_trap_get_fault_type(vcpu) == ESR_ELx_FSC_FAULT &&
+		valid = kvm_vcpu_trap_is_translation_fault(vcpu) &&
 			kvm_vcpu_dabt_isvalid(vcpu) &&
 			!kvm_vcpu_abt_issea(vcpu) &&
 			!kvm_vcpu_abt_iss1tw(vcpu);

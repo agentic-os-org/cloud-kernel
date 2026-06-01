@@ -13,7 +13,7 @@ kvm-y += arm.o mmu.o mmio.o psci.o hypercalls.o pvtime.o pvsched.o \
 	 inject_fault.o handle_exit.o pv_cpufreq.o \
 	 guest.o debug.o reset.o sys_regs.o \
 	 vgic-sys-reg-v3.o fpsimd.o \
-	 arch_timer.o trng.o vmid.o emulate-nested.o nested.o \
+	 arch_timer.o trng.o vmid.o emulate-nested.o nested.o at.o \
 	 vgic/vgic.o vgic/vgic-init.o \
 	 vgic/vgic-irqfd.o vgic/vgic-v2.o \
 	 vgic/vgic-v3.o vgic/vgic-v4.o \
@@ -25,6 +25,7 @@ obj-y += kvm_host.o
 
 kvm-$(CONFIG_VIRT_PLAT_DEV)  += vgic/shadow_dev.o
 kvm-$(CONFIG_HW_PERF_EVENTS)  += pmu-emul.o pmu.o
+kvm-$(CONFIG_ARM64_PTR_AUTH)  += pauth.o
 kvm-$(CONFIG_KVM) += hisilicon/hisi_virt.o
 
 ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY

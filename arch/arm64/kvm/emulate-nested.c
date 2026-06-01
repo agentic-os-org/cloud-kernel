@@ -651,15 +651,80 @@ static const struct encoding_to_trap_config encoding_to_cgt[] __initconst = {
 	SR_TRAP(SYS_APGAKEYLO_EL1,	CGT_HCR_APK),
 	SR_TRAP(SYS_APGAKEYHI_EL1,	CGT_HCR_APK),
 	/* All _EL2 registers */
-	SR_RANGE_TRAP(sys_reg(3, 4, 0, 0, 0),
-		      sys_reg(3, 4, 3, 15, 7), CGT_HCR_NV),
+	SR_TRAP(SYS_BRBCR_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_VPIDR_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_VMPIDR_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_SCTLR_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_ACTLR_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_SCTLR2_EL2,		CGT_HCR_NV),
+	SR_RANGE_TRAP(SYS_HCR_EL2,
+		      SYS_HCRX_EL2,	CGT_HCR_NV),
+	SR_TRAP(SYS_SMPRIMAP_EL2,	CGT_HCR_NV),
+	SR_TRAP(SYS_SMCR_EL2,		CGT_HCR_NV),
+	SR_RANGE_TRAP(SYS_TTBR0_EL2,
+		      SYS_TCR2_EL2,	CGT_HCR_NV),
+	SR_TRAP(SYS_VTTBR_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_VTCR_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_VNCR_EL2,		CGT_HCR_NV),
+	SR_RANGE_TRAP(SYS_HDFGRTR_EL2,
+		      SYS_HAFGRTR_EL2,	CGT_HCR_NV),
 	/* Skip the SP_EL1 encoding... */
 	SR_TRAP(SYS_SPSR_EL2,		CGT_HCR_NV),
 	SR_TRAP(SYS_ELR_EL2,		CGT_HCR_NV),
-	SR_RANGE_TRAP(sys_reg(3, 4, 4, 1, 1),
-		      sys_reg(3, 4, 10, 15, 7), CGT_HCR_NV),
-	SR_RANGE_TRAP(sys_reg(3, 4, 12, 0, 0),
-		      sys_reg(3, 4, 14, 15, 7), CGT_HCR_NV),
+	/* Skip SPSR_irq, SPSR_abt, SPSR_und, SPSR_fiq */
+	SR_TRAP(SYS_AFSR0_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_AFSR1_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_ESR_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_VSESR_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_TFSR_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_FAR_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_HPFAR_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_PMSCR_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_MAIR_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_AMAIR_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_MPAMHCR_EL2,	CGT_HCR_NV),
+	SR_TRAP(SYS_MPAMVPMV_EL2,	CGT_HCR_NV),
+	SR_TRAP(SYS_MPAM2_EL2,		CGT_HCR_NV),
+	SR_RANGE_TRAP(SYS_MPAMVPM0_EL2,
+		      SYS_MPAMVPM7_EL2,	CGT_HCR_NV),
+	/*
+	 * Note that the spec. describes a group of MEC registers
+	 * whose access should not trap, therefore skip the following:
+	 * MECID_A0_EL2, MECID_A1_EL2, MECID_P0_EL2,
+	 * MECID_P1_EL2, MECIDR_EL2, VMECID_A_EL2,
+	 * VMECID_P_EL2.
+	 */
+	SR_RANGE_TRAP(SYS_VBAR_EL2,
+		      SYS_RMR_EL2,	CGT_HCR_NV),
+	SR_TRAP(SYS_VDISR_EL2,		CGT_HCR_NV),
+	/* ICH_AP0R<m>_EL2 */
+	SR_RANGE_TRAP(SYS_ICH_AP0R0_EL2,
+		      SYS_ICH_AP0R3_EL2, CGT_HCR_NV),
+	/* ICH_AP1R<m>_EL2 */
+	SR_RANGE_TRAP(SYS_ICH_AP1R0_EL2,
+		      SYS_ICH_AP1R3_EL2, CGT_HCR_NV),
+	SR_TRAP(SYS_ICC_SRE_EL2,	CGT_HCR_NV),
+	SR_RANGE_TRAP(SYS_ICH_HCR_EL2,
+		      SYS_ICH_EISR_EL2,	CGT_HCR_NV),
+	SR_TRAP(SYS_ICH_ELRSR_EL2,	CGT_HCR_NV),
+	SR_TRAP(SYS_ICH_VMCR_EL2,	CGT_HCR_NV),
+	/* ICH_LR<m>_EL2 */
+	SR_RANGE_TRAP(SYS_ICH_LR0_EL2,
+		      SYS_ICH_LR15_EL2, CGT_HCR_NV),
+	SR_TRAP(SYS_CONTEXTIDR_EL2,	CGT_HCR_NV),
+	SR_TRAP(SYS_TPIDR_EL2,		CGT_HCR_NV),
+	SR_TRAP(SYS_SCXTNUM_EL2,	CGT_HCR_NV),
+	/* AMEVCNTVOFF0<n>_EL2, AMEVCNTVOFF1<n>_EL2  */
+	SR_RANGE_TRAP(SYS_AMEVCNTVOFF0n_EL2(0),
+		      SYS_AMEVCNTVOFF1n_EL2(15), CGT_HCR_NV),
+	/* CNT*_EL2 */
+	SR_TRAP(SYS_CNTVOFF_EL2,	CGT_HCR_NV),
+	SR_TRAP(SYS_CNTPOFF_EL2,	CGT_HCR_NV),
+	SR_TRAP(SYS_CNTHCTL_EL2,	CGT_HCR_NV),
+	SR_RANGE_TRAP(SYS_CNTHP_TVAL_EL2,
+		      SYS_CNTHP_CVAL_EL2, CGT_HCR_NV),
+	SR_RANGE_TRAP(SYS_CNTHV_TVAL_EL2,
+		      SYS_CNTHV_CVAL_EL2, CGT_HCR_NV),
 	/* All _EL02, _EL12 registers */
 	SR_RANGE_TRAP(sys_reg(3, 5, 0, 0, 0),
 		      sys_reg(3, 5, 10, 15, 7), CGT_HCR_NV),
@@ -671,6 +736,7 @@ static const struct encoding_to_trap_config encoding_to_cgt[] __initconst = {
 	SR_TRAP(OP_AT_S12E1W,		CGT_HCR_NV),
 	SR_TRAP(OP_AT_S12E0R,		CGT_HCR_NV),
 	SR_TRAP(OP_AT_S12E0W,		CGT_HCR_NV),
+	SR_TRAP(OP_AT_S1E2A,		CGT_HCR_NV),
 	SR_TRAP(OP_TLBI_IPAS2E1,	CGT_HCR_NV),
 	SR_TRAP(OP_TLBI_RIPAS2E1,	CGT_HCR_NV),
 	SR_TRAP(OP_TLBI_IPAS2LE1,	CGT_HCR_NV),
@@ -752,6 +818,7 @@ static const struct encoding_to_trap_config encoding_to_cgt[] __initconst = {
 	SR_TRAP(OP_AT_S1E0W, 		CGT_HCR_AT),
 	SR_TRAP(OP_AT_S1E1RP, 		CGT_HCR_AT),
 	SR_TRAP(OP_AT_S1E1WP, 		CGT_HCR_AT),
+	SR_TRAP(OP_AT_S1E1A,		CGT_HCR_AT),
 	SR_TRAP(SYS_ERXPFGF_EL1,	CGT_HCR_nFIEN),
 	SR_TRAP(SYS_ERXPFGCTL_EL1,	CGT_HCR_nFIEN),
 	SR_TRAP(SYS_ERXPFGCDN_EL1,	CGT_HCR_nFIEN),
@@ -2052,6 +2119,26 @@ inject:
 	return true;
 }
 
+static bool forward_traps(struct kvm_vcpu *vcpu, u64 control_bit)
+{
+	bool control_bit_set;
+
+	if (!vcpu_has_nv(vcpu))
+		return false;
+
+	control_bit_set = __vcpu_sys_reg(vcpu, HCR_EL2) & control_bit;
+	if (!is_hyp_ctxt(vcpu) && control_bit_set) {
+		kvm_inject_nested_sync(vcpu, kvm_vcpu_get_esr(vcpu));
+		return true;
+	}
+	return false;
+}
+
+bool forward_smc_trap(struct kvm_vcpu *vcpu)
+{
+	return forward_traps(vcpu, HCR_TSC);
+}
+
 static u64 kvm_check_illegal_exception_return(struct kvm_vcpu *vcpu, u64 spsr)
 {
 	u64 mode = spsr & PSR_MODE_MASK;
@@ -2087,44 +2174,47 @@ static u64 kvm_check_illegal_exception_return(struct kvm_vcpu *vcpu, u64 spsr)
 
 void kvm_emulate_nested_eret(struct kvm_vcpu *vcpu)
 {
-	u64 spsr, elr, mode;
-	bool direct_eret;
+	u64 spsr, elr, esr;
 
 	/*
-	 * Going through the whole put/load motions is a waste of time
-	 * if this is a VHE guest hypervisor returning to its own
-	 * userspace, or the hypervisor performing a local exception
-	 * return. No need to save/restore registers, no need to
-	 * switch S2 MMU. Just do the canonical ERET.
+	 * Forward this trap to the virtual EL2 if the virtual
+	 * HCR_EL2.NV bit is set and this is coming from !EL2.
 	 */
+	if (forward_traps(vcpu, HCR_NV))
+		return;
+
 	spsr = vcpu_read_sys_reg(vcpu, SPSR_EL2);
 	spsr = kvm_check_illegal_exception_return(vcpu, spsr);
 
-	mode = spsr & (PSR_MODE_MASK | PSR_MODE32_BIT);
-
-	direct_eret  = (mode == PSR_MODE_EL0t &&
-			vcpu_el2_e2h_is_set(vcpu) &&
-			vcpu_el2_tge_is_set(vcpu));
-	direct_eret |= (mode == PSR_MODE_EL2h || mode == PSR_MODE_EL2t);
-
-	if (direct_eret) {
-		*vcpu_pc(vcpu) = vcpu_read_sys_reg(vcpu, ELR_EL2);
-		*vcpu_cpsr(vcpu) = spsr;
-		trace_kvm_nested_eret(vcpu, *vcpu_pc(vcpu), spsr);
-		return;
+	/* Check for an ERETAx */
+	esr = kvm_vcpu_get_esr(vcpu);
+	if (esr_iss_is_eretax(esr) && !kvm_auth_eretax(vcpu, &elr)) {
+		/*
+		 * Oh no, ERETAx failed to authenticate.
+		 *
+		 * If we have FPACCOMBINE and we don't have a pending
+		 * Illegal Execution State exception (which has priority
+		 * over FPAC), deliver an exception right away.
+		 *
+		 * Otherwise, let the mangled ELR value trickle down the
+		 * ERET handling, and the guest will have a little surprise.
+		 */
+		if (kvm_has_pauth(vcpu->kvm, FPACCOMBINE) && !(spsr & PSR_IL_BIT)) {
+			esr &= ESR_ELx_ERET_ISS_ERETA;
+			esr |= FIELD_PREP(ESR_ELx_EC_MASK, ESR_ELx_EC_FPAC);
+			kvm_inject_nested_sync(vcpu, esr);
+			return;
+		}
 	}
 
 	preempt_disable();
 	kvm_arch_vcpu_put(vcpu);
 
-	elr = __vcpu_sys_reg(vcpu, ELR_EL2);
+	if (!esr_iss_is_eretax(esr))
+		elr = __vcpu_sys_reg(vcpu, ELR_EL2);
 
 	trace_kvm_nested_eret(vcpu, elr, spsr);
 
-	/*
-	 * Note that the current exception level is always the virtual EL2,
-	 * since we set HCR_EL2.NV bit only when entering the virtual EL2.
-	 */
 	*vcpu_pc(vcpu) = elr;
 	*vcpu_cpsr(vcpu) = spsr;
 
