@@ -511,6 +511,9 @@ static int select_new_order(int old_order, int max_order, unsigned long orders)
 	 * behaviour is intended to allow ramping up to large folios quickly.
 	 */
 
+	if (max_order < 0 || max_order > MAX_PAGECACHE_ORDER)
+		max_order = min(old_order, MAX_PAGECACHE_ORDER);
+
 	orders &= BIT(max_order + 1) - 1;
 	VM_WARN_ON(!orders);
 	hi_orders = orders & ~(BIT(old_order + 1) - 1);
