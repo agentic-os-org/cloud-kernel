@@ -2397,9 +2397,22 @@ static void __sev_firmware_shutdown(struct sev_device *sev, bool panic)
 
 static void sev_firmware_shutdown(struct sev_device *sev)
 {
-	mutex_lock(&sev_cmd_mutex);
+	int mutex_enabled = READ_ONCE(hygon_psp_hooks.psp_mutex_enabled);
+
+	if (is_vendor_hygon() && mutex_enabled) {
+		if (psp_mutex_lock_timeout(&hygon_psp_hooks.psp_misc->data_pg_aligned->mb_mutex,
+					   PSP_MUTEX_TIMEOUT) != 1)
+			return; /* void return - bail out; cannot propagate -EBUSY */
+	} else {
+		mutex_lock(&sev_cmd_mutex);
+	}
+
 	__sev_firmware_shutdown(sev, false);
-	mutex_unlock(&sev_cmd_mutex);
+
+	if (is_vendor_hygon() && mutex_enabled)
+		psp_mutex_unlock(&hygon_psp_hooks.psp_misc->data_pg_aligned->mb_mutex);
+	else
+		mutex_unlock(&sev_cmd_mutex);
 }
 
 void sev_dev_destroy(struct psp_device *psp)
@@ -2421,17 +2434,29 @@ static int snp_shutdown_on_panic(struct notifier_block *nb,
 				 unsigned long reason, void *arg)
 {
 	struct sev_device *sev = psp_master->sev_data;
+	int mutex_enabled = READ_ONCE(hygon_psp_hooks.psp_mutex_enabled);
 
 	/*
-	 * If sev_cmd_mutex is already acquired, then it's likely
-	 * another PSP command is in flight and issuing a shutdown
-	 * would fail in unexpected ways. Rather than create even
-	 * more confusion during a panic, just bail out here.
+	 * If a PSP command is already in flight, then issuing a shutdown
+	 * would fail in unexpected ways. Rather than create even more
+	 * confusion during a panic, just bail out here.
+	 *
+	 * On Hygon with the PSP mailbox mutex enabled, in-flight commands
+	 * serialize on that mutex rather than sev_cmd_mutex, so check it
+	 * here to match sev_do_cmd()/sev_firmware_shutdown() and avoid
+	 * racing with an in-flight command.
 	 */
-	if (mutex_is_locked(&sev_cmd_mutex))
+	if (is_vendor_hygon() && mutex_enabled) {
+		if (psp_mutex_trylock(&hygon_psp_hooks.psp_misc->data_pg_aligned->mb_mutex) != 1)
+			return NOTIFY_DONE;
+	} else if (mutex_is_locked(&sev_cmd_mutex)) {
 		return NOTIFY_DONE;
+	}
 
 	__sev_firmware_shutdown(sev, true);
+
+	if (is_vendor_hygon() && mutex_enabled)
+		psp_mutex_unlock(&hygon_psp_hooks.psp_misc->data_pg_aligned->mb_mutex);
 
 	return NOTIFY_DONE;
 }
