@@ -17,7 +17,8 @@
  *   verifying contents remain accessible.
  * - Complex multi-session scenarios involving mixed empty and populated files.
  */
-
+#define _GNU_SOURCE
+#include <sys/mman.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
