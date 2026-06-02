@@ -212,7 +212,7 @@ LUA_LSM_INT_DEFINE4(capable, const struct cred *, cred,
  * Default: 0
  */
 LUA_LSM_INT_DEFINE4(quotactl, int, cmds, int, type, int, id,
-		struct super_block *, sb)
+		const struct super_block *, sb)
 {
 	lua_pushinteger(L, (lua_Integer)cmds);
 	lua_pushinteger(L, (lua_Integer)type);
@@ -292,7 +292,7 @@ LUA_LSM_INT_DEFINE1(bprm_check_security, struct linux_binprm *, bprm)
  * bprm_committing_creds
  * Default: LSM_RET_VOID
  */
-LUA_LSM_VOID_DEFINE1(bprm_committing_creds, struct linux_binprm *, bprm)
+LUA_LSM_VOID_DEFINE1(bprm_committing_creds, const struct linux_binprm *, bprm)
 {
 	*(const struct linux_binprm **)newbinprm(L) = bprm;
 }
@@ -301,7 +301,7 @@ LUA_LSM_VOID_DEFINE1(bprm_committing_creds, struct linux_binprm *, bprm)
  * bprm_committed_creds
  * Default: LSM_RET_VOID
  */
-LUA_LSM_VOID_DEFINE1(bprm_committed_creds, struct linux_binprm *, bprm)
+LUA_LSM_VOID_DEFINE1(bprm_committed_creds, const struct linux_binprm *, bprm)
 {
 	*(const struct linux_binprm **)newbinprm(L) = bprm;
 }
@@ -437,7 +437,7 @@ LUA_LSM_INT_DEFINE2(sb_remount, struct super_block *, sb, void *, mnt_opts)
  * sb_kern_mount
  * Default: 0
  */
-LUA_LSM_INT_DEFINE1(sb_kern_mount, struct super_block *, sb)
+LUA_LSM_INT_DEFINE1(sb_kern_mount, const struct super_block *, sb)
 {
 	*(const struct super_block **)newsuperblock(L) = sb;
 }
