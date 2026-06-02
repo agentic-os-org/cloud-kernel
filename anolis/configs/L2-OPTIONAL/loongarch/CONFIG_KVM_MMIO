@@ -1,1 +1,1 @@
-CONFIG_KVM_MMIO=y
+# CONFIG_KVM_MMIO is not set
