@@ -1257,7 +1257,7 @@ LUA_LSM_INT_DEFINE3(inode_remove_acl, struct mnt_idmap *, idmap,
  * inode_need_killpriv
  * Default: 0
  */
-LUA_LSM_INT_DEFINE1(inode_need_killpriv, struct dentry *, dentry)
+LUA_LSM_INT_BOOLERR_DEFINE1(inode_need_killpriv, struct dentry *, dentry)
 {
 	*newdentry(L) = dentry;
 }
@@ -2490,7 +2490,7 @@ LUA_LSM_INT_DEFINE3(setprocattr, const char *, name,
  * ismaclabel
  * Default: 0
  */
-LUA_LSM_INT_DEFINE1(ismaclabel, const char *, name)
+LUA_LSM_INT_BOOL_DEFINE1(ismaclabel, const char *, name)
 {
 	lua_pushstring(L, name);
 }
@@ -3230,8 +3230,9 @@ LUA_LSM_INT_DEFINE2(xfrm_policy_lookup, struct xfrm_sec_ctx *, ctx,
  * TODO: xfrm_state_pol_flow_match
  * Default: 1
  */
-LUA_LSM_INT_DEFINE3(xfrm_state_pol_flow_match, struct xfrm_state *, x,
-		struct xfrm_policy *, xp, const struct flowi_common *, flic)
+LUA_LSM_INT_BOOL_DEFINE3(xfrm_state_pol_flow_match, struct xfrm_state *, x,
+			 struct xfrm_policy *, xp,
+			 const struct flowi_common *, flic)
 {
 	lua_pushnil(L);	/* TODO: x */
 	lua_pushnil(L);	/* TODO: xp */
@@ -3315,7 +3316,7 @@ LUA_LSM_INT_DEFINE5(audit_rule_init, u32, field, u32, op, char *, rulestr,
  * TODO: audit_rule_known
  * Default: 0
  */
-LUA_LSM_INT_DEFINE1(audit_rule_known, struct audit_krule *, krule)
+LUA_LSM_INT_BOOL_DEFINE1(audit_rule_known, struct audit_krule *, krule)
 {
 	lua_pushnil(L);	/* TODO: krule */
 }
@@ -3324,7 +3325,7 @@ LUA_LSM_INT_DEFINE1(audit_rule_known, struct audit_krule *, krule)
  * TODO: audit_rule_match
  * Default: 0
  */
-LUA_LSM_INT_DEFINE4(audit_rule_match, u32, secid, u32, field,
+LUA_LSM_INT_BOOLERR_DEFINE4(audit_rule_match, u32, secid, u32, field,
 		u32, op, void *, lsmrule)
 {
 	lua_pushinteger(L, (lua_Integer)secid);
