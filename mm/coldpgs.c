@@ -1296,18 +1296,27 @@ static void reclaim_coldpgs_from_memcg(struct mem_cgroup *memcg,
 	 * ignored mlock flag is globablly set.
 	 */
 	bitmap_zero(&bitmap, BITS_PER_LONG);
-	if (reclaim_coldpgs_has_mode(filter, RECLAIM_MODE_PGCACHE_OUT)) {
-		bitmap_set(&bitmap, LRU_INACTIVE_FILE, 1);
-		bitmap_set(&bitmap, LRU_ACTIVE_FILE, 1);
-	}
-
 	/*
-	 * When no available swap space, the swapout won't be issued.
+	 * When MGLRU is active, LRU page/anon reclaim conflicts with
+	 * lru_gen: both kidled and lru_gen use page->flags age bits and
+	 * cannot coexist on the LRU path. Skip PGCACHE_OUT and ANON_OUT
+	 * modes. The slab path uses obj_exts via the shrinker interface
+	 * and is independent; it is always allowed.
 	 */
-	if (reclaim_coldpgs_has_mode(filter, RECLAIM_MODE_ANON_OUT) &&
-	    my_mem_cgroup_get_nr_swap_pages(memcg) > 0) {
-		bitmap_set(&bitmap, LRU_INACTIVE_ANON, 1);
-		bitmap_set(&bitmap, LRU_ACTIVE_ANON, 1);
+	if (!lru_gen_enabled()) {
+		if (reclaim_coldpgs_has_mode(filter, RECLAIM_MODE_PGCACHE_OUT)) {
+			bitmap_set(&bitmap, LRU_INACTIVE_FILE, 1);
+			bitmap_set(&bitmap, LRU_ACTIVE_FILE, 1);
+		}
+
+		/*
+		 * When no available swap space, the swapout won't be issued.
+		 */
+		if (reclaim_coldpgs_has_mode(filter, RECLAIM_MODE_ANON_OUT) &&
+		    my_mem_cgroup_get_nr_swap_pages(memcg) > 0) {
+			bitmap_set(&bitmap, LRU_INACTIVE_ANON, 1);
+			bitmap_set(&bitmap, LRU_ACTIVE_ANON, 1);
+		}
 	}
 
 	/*
@@ -1328,7 +1337,22 @@ static void reclaim_coldpgs_from_memcg(struct mem_cgroup *memcg,
 	 * page->mlock_count is used instead, scanning LRU_UNEVICTABLE can
 	 * cause kernel panic.
 	 */
+	/*
+	 * Only add unevictable LRU when LRU page reclaim is active.
+	 *
+	 * NOTE: FLAG_IGNORE_MLOCK has been unconditionally cleared above
+	 * (mlock page reclaim is not supported yet), so the
+	 * reclaim_coldpgs_has_flag() check below is always false and this
+	 * branch is currently dormant -- LRU_UNEVICTABLE is never scanned.
+	 *
+	 * The !lru_gen_enabled() guard is kept as a forward-looking defense
+	 * for when mlock reclaim is re-enabled: when MGLRU is active the
+	 * bitmap may contain only LRU_SLAB (> NR_LRU_LISTS) so bitmap_empty()
+	 * would be false, and we must avoid scanning unevictable folios
+	 * (which use page->flags) while MGLRU owns those age bits.
+	 */
 	if (!bitmap_empty(&bitmap, BITS_PER_LONG) &&
+	    !lru_gen_enabled() &&
 	    reclaim_coldpgs_has_flag(filter, FLAG_IGNORE_MLOCK))
 		bitmap_set(&bitmap, LRU_UNEVICTABLE, 1);
 
@@ -2387,11 +2411,18 @@ static int __init reclaim_coldpgs_init(void)
 	if (mem_cgroup_disabled())
 		return -ENXIO;
 
-	if (lru_gen_enabled()) {
-		pr_warn("%s: Failed to load coldpgs due to MGLRU enabled\n",
+	/*
+	 * MGLRU and coldpgs can coexist when only slab reclaim is used.
+	 * LRU page/anon modes conflict with lru_gen (overlapping
+	 * page->flags age bits), but the slab path uses the shrinker
+	 * interface and obj_exts, which are independent of lru_gen.
+	 * We therefore allow loading and let reclaim_coldpgs_from_memcg()
+	 * skip LRU-based modes at runtime when MGLRU is active.
+	 */
+	if (lru_gen_enabled())
+		pr_info("%s: MGLRU is active; coldpgs LRU page/anon modes "
+			"will be suppressed, slab reclaim remains available\n",
 			__func__);
-		return -EPERM;
-	}
 
 	/* Resolve symbols required by the driver */
 	ret = reclaim_coldpgs_resolve_symbols();
