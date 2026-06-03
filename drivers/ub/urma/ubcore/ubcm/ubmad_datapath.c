@@ -1131,6 +1131,8 @@ int ubmad_post_send(struct ubcore_device *device,
 	if (!IS_ERR_OR_NULL(tjetty)) {
 		ubcore_log_info_rl("tjetty0 already imported. eid " EID_FMT "\n",
 			EID_ARGS(dst_primary_eid));
+
+		ubcore_log_info_rl("tjetty0 imported, vtpn: %u\n", tjetty->tjetty->vtpn->vtpn);
 		/* post send */
 		ret = ubmad_do_post_send(
 			rsrc, tjetty, send_buf,
@@ -1768,6 +1770,9 @@ static void ubmad_recv_work_handler(struct ubmad_device_priv *dev_priv,
 		return;
 	}
 
+	ret = ubcore_rearm_jfc(jfc, false);
+	ubcore_log_info_rl("Rearm recv jfc, jfc_id: %u, ret: %d.\n", jfc->id, ret);
+
 	do {
 		cr_cnt = ubcore_poll_jfc(jfc, 1, &cr);
 		if (cr_cnt < 0) {
@@ -1777,8 +1782,10 @@ static void ubmad_recv_work_handler(struct ubmad_device_priv *dev_priv,
 		if (cr_cnt == 0)
 			break;
 
+		ubcore_log_info_rl("cr_cnt = %d.\n", cr_cnt);
 		/* cr_cnt == 1 */
 		if (cr.status == UBCORE_CR_SUCCESS) {
+			ubcore_log_info_rl("ct.status = success.\n");
 			if (ubmad_process_msg(&cr, rsrc, dev_priv,
 					      jfce_work->agent_priv) != 0)
 				ubcore_log_err_rl("process msg failed\n");
@@ -1789,6 +1796,7 @@ static void ubmad_recv_work_handler(struct ubmad_device_priv *dev_priv,
 			ubcore_log_err(
 				"invalid cr.user_ctx. sge addr should not < seg addr\n");
 		} else {
+			ubcore_log_info_rl("ct.user_ctx >= va.\n");
 			sge_idx = (cr.user_ctx - rsrc->recv_seg->seg.ubva.va) /
 				  UBMAD_SGE_MAX_LEN;
 			// get in ubmad_post_recv()
@@ -1799,6 +1807,8 @@ static void ubmad_recv_work_handler(struct ubmad_device_priv *dev_priv,
 		if (ubmad_post_recv(rsrc) != 0)
 			ubcore_log_err("post recv in jfce handler failed.\n");
 
+		ubcore_log_info_rl("post_recv == 0.\n");
+
 		if (cr.status != UBCORE_CR_SUCCESS) {
 			ubcore_log_err(
 				"Rx status error. cr_cnt %d, status %d, comp_len %u, user_ctx: 0x%llx.\n",
@@ -1808,8 +1818,7 @@ static void ubmad_recv_work_handler(struct ubmad_device_priv *dev_priv,
 		}
 	} while (cr_cnt > 0);
 
-	ret = ubcore_rearm_jfc(jfc, false);
-	ubcore_log_info_rl("Rearm recv jfc, jfc_id: %u, ret: %d.\n", jfc->id, ret);
+	ubcore_log_info_rl("end rearm poll jfc while.\n");
 }
 
 // continue from ubmad_jfce_handler()
