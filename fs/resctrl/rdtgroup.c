@@ -4607,9 +4607,9 @@ int resctrl_init(void)
 
 	thread_throttle_mode_init();
 
-	ret = resctrl_l3_mon_resource_init();
 	io_alloc_init();
 
+	ret = resctrl_l3_mon_resource_init();
 	if (ret)
 		return ret;
 
