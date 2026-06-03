@@ -546,6 +546,7 @@ static void ublk_dev_param_basic_apply(struct ublk_device *ub)
 	blk_queue_max_hw_sectors(q, p->max_sectors);
 	blk_queue_chunk_sectors(q, p->chunk_sectors);
 	blk_queue_virt_boundary(q, p->virt_boundary_mask);
+	blk_queue_max_segments(q, USHRT_MAX);
 
 	if (p->attrs & UBLK_ATTR_READ_ONLY)
 		set_disk_ro(ub->ub_disk, true);
