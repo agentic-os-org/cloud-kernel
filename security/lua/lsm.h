@@ -55,6 +55,9 @@ static inline bool lua_lsm_hook_supported(unsigned int nr)
 	switch (nr) {
 	case __LL_NR_getprocattr:
 	case __LL_NR_setprocattr:
+#ifdef CONFIG_SECURITY_NETWORK_XFRM
+	case __LL_NR_xfrm_state_pol_flow_match:
+#endif
 		return false;
 	default:
 		return nr < __LL_NR_MAX;
