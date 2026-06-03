@@ -836,7 +836,7 @@ static int nf_nat_proto_clean(struct nf_conn *ct, void *data)
 		__nf_nat_cleanup_conntrack(ct);
 
 	/* don't delete conntrack.  Although that would make things a lot
-	 * simpler, we'd end up flushing all conntracks on nat rmmod.
+	 * simpler, we'd end up flushing all conntracks on rmmod.
 	 */
 	return 0;
 }
@@ -1197,6 +1197,7 @@ static void __exit nf_nat_cleanup(void)
 	RCU_INIT_POINTER(nf_nat_hook, NULL);
 
 	synchronize_net();
+	nf_ct_helper_expectfn_destroy(&follow_master_nat);
 	kvfree(nf_nat_bysource);
 	unregister_pernet_subsys(&nat_net_ops);
 }
