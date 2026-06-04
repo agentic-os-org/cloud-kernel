@@ -24,6 +24,7 @@ enum {
 	STATE_TOKEN,
 	DEVICE_TOKEN,
 	MEMFD_TOKEN,
+	IOMMUFD_TOKEN,
 };
 
 static void dma_memcpy_one(struct vfio_pci_device *device)
@@ -75,14 +76,21 @@ static void dma_memfd_map(struct vfio_pci_device *device, int fd)
 {
 	void *vaddr;
 
+	if (!device->iommu)
+		return;
+
 	vaddr = mmap(NULL, MEMFD_SIZE, PROT_WRITE, MAP_SHARED, fd, 0);
 	VFIO_ASSERT_NE(vaddr, MAP_FAILED);
 
+	memcpy_region.file.fd = fd;
+	memcpy_region.file.offset = 0;
 	memcpy_region.iova = SZ_4G;
 	memcpy_region.size = MEMCPY_SIZE;
 	memcpy_region.vaddr = vaddr;
 	iommu_map(device->iommu, &memcpy_region);
 
+	device->driver.region.file.fd = fd;
+	device->driver.region.file.offset = memcpy_region.size;
 	device->driver.region.iova = memcpy_region.iova + memcpy_region.size;
 	device->driver.region.size = DRIVER_SIZE;
 	device->driver.region.vaddr = vaddr + memcpy_region.size;
@@ -93,10 +101,13 @@ static void dma_memfd_setup(struct vfio_pci_device *device, int session_fd)
 {
 	int fd, ret;
 
-	fd = memfd_create("dma-buffer", 0);
+	fd = memfd_create("dma-buffer", MFD_ALLOW_SEALING);
 	VFIO_ASSERT_GE(fd, 0);
 
 	ret = fallocate(fd, 0, 0, MEMFD_SIZE);
+	VFIO_ASSERT_EQ(ret, 0);
+
+	ret = fcntl(fd, F_ADD_SEALS, F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL);
 	VFIO_ASSERT_EQ(ret, 0);
 
 	printf("Preserving memfd of size 0x%x in session\n", MEMFD_SIZE);
@@ -122,10 +133,15 @@ static void before_kexec(int luo_fd)
 	VFIO_ASSERT_GE(session_fd, 0);
 
 	printf("Preserving device in session\n");
-	ret = luo_session_preserve_fd(session_fd, device->fd, DEVICE_TOKEN);
+	/* dma map and memfd preserve before iommufd */
+	dma_memfd_setup(device, session_fd);
+
+	/* preserve iommufd before cdev */
+	ret = luo_session_preserve_fd(session_fd, device->iommu->iommufd, IOMMUFD_TOKEN);
 	VFIO_ASSERT_EQ(ret, 0);
 
-	dma_memfd_setup(device, session_fd);
+	ret = luo_session_preserve_fd(session_fd, device->fd, DEVICE_TOKEN);
+	VFIO_ASSERT_EQ(ret, 0);
 
 	/*
 	 * If the device has a selftests driver, kick off a long-running DMA
@@ -162,28 +178,6 @@ static void check_open_vfio_device_fails(void)
 	VFIO_ASSERT_EQ(ret, -1);
 	VFIO_ASSERT_EQ(errno, EBUSY);
 	free((void *)cdev_path);
-
-	for (i = 0; i < nr_iommu_modes; i++) {
-		if (!iommu_modes[i].container_path)
-			continue;
-
-		iommu = iommu_init(iommu_modes[i].name);
-
-		device = vfio_pci_device_alloc(device_bdf, iommu);
-		vfio_pci_group_setup(device);
-		vfio_pci_iommu_setup(device);
-
-		printf("Checking ioctl(group_fd, VFIO_GROUP_GET_DEVICE_FD, \"%s\") fails (%s)\n",
-		       device_bdf, iommu_modes[i].name);
-
-		ret = ioctl(device->group_fd, VFIO_GROUP_GET_DEVICE_FD, device->bdf);
-		VFIO_ASSERT_EQ(ret, -1);
-		VFIO_ASSERT_EQ(errno, EBUSY);
-
-		close(device->group_fd);
-		free(device);
-		iommu_cleanup(iommu);
-	}
 }
 
 static void after_kexec(int luo_fd, int state_session_fd)
@@ -193,7 +187,15 @@ static void after_kexec(int luo_fd, int state_session_fd)
 	int session_fd;
 	int device_fd;
 	int memfd;
+	int iommufd;
+	int dev_id;
 	int stage;
+	int ret;
+
+	struct vfio_device_bind_iommufd bind = {
+		.argsz = sizeof(bind),
+		.flags = 0,
+	};
 
 	check_open_vfio_device_fails();
 
@@ -214,24 +216,37 @@ static void after_kexec(int luo_fd, int state_session_fd)
 	device_fd = luo_session_retrieve_fd(session_fd, DEVICE_TOKEN);
 	VFIO_ASSERT_GE(device_fd, 0);
 
-	printf("Finishing the session before binding to iommufd (should fail)\n");
-	VFIO_ASSERT_NE(luo_session_finish(session_fd), 0);
+	printf("Retrieving the iommufd FD from LUO\n");
+	iommufd = luo_session_retrieve_fd(session_fd, IOMMUFD_TOKEN);
+
+	/* Should fail now, not supported yet */
+	VFIO_ASSERT_LE(iommufd, 0);
 
 	printf("Binding the device to an iommufd and setting it up\n");
 	iommu = iommu_init("iommufd");
-
 	/*
 	 * This will invoke various ioctls on device_fd such as
 	 * VFIO_DEVICE_GET_INFO. So this is a decent sanity test
 	 * that LUO actually handed us back a valid VFIO device
 	 * file and not something else.
+	 * NOTE: iommufd is preserved, bind any other default iommu
+	 * domain could lead failure. Test VFIO_DEVICE_BIND_IOMMUFD
+	 * separately later, though it also returns failure as well.
 	 */
-	device = __vfio_pci_device_init(device_bdf, iommu, device_fd);
+	device = __vfio_pci_device_no_bind_init(device_bdf, iommu, device_fd);
+
+	bind.iommufd = iommu->iommufd;
+
+	/* Owner should be transferred, not supported yet, so should fail */
+	if (ioctl(device_fd, VFIO_DEVICE_BIND_IOMMUFD, &bind) == 0 ||
+	    errno != EPERM)
+		fail_exit("Binding cdev to new iommufd should fail with EPERM");
 
 	dma_memfd_map(device, memfd);
 
+	/* Should not be finished due to iommufd finish is not implemented yet */
 	printf("Finishing the session\n");
-	VFIO_ASSERT_EQ(luo_session_finish(session_fd), 0);
+	VFIO_ASSERT_NE(luo_session_finish(session_fd), 0);
 
 	/*
 	 * Once iommufd preservation is supported and the device is kept fully

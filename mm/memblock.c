@@ -944,6 +944,8 @@ int __init_memblock memblock_physmem_add(phys_addr_t base, phys_addr_t size)
 }
 #endif
 
+static int __init_memblock memblock_search(struct memblock_type *type, phys_addr_t addr);
+
 #ifdef CONFIG_MEMBLOCK_KHO_SCRATCH
 __init void memblock_set_kho_scratch_only(void)
 {
@@ -955,26 +957,14 @@ __init void memblock_clear_kho_scratch_only(void)
 	kho_scratch_only = false;
 }
 
-__init void memmap_init_kho_scratch_pages(void)
+bool __init_memblock memblock_is_kho_scratch_memory(phys_addr_t addr)
 {
-	phys_addr_t start, end;
-	unsigned long pfn;
-	int nid;
-	u64 i;
+	int i = memblock_search(&memblock.memory, addr);
 
-	if (!IS_ENABLED(CONFIG_DEFERRED_STRUCT_PAGE_INIT))
-		return;
+	if (i == -1)
+		return false;
 
-	/*
-	 * Initialize struct pages for free scratch memory.
-	 * The struct pages for reserved scratch memory will be set up in
-	 * reserve_bootmem_region()
-	 */
-	__for_each_mem_range(i, &memblock.memory, NULL, NUMA_NO_NODE,
-			     MEMBLOCK_KHO_SCRATCH, &start, &end, &nid) {
-		for (pfn = PFN_UP(start); pfn < PFN_DOWN(end); pfn++)
-			init_reserved_page(pfn, nid);
-	}
+	return memblock_is_kho_scratch(&memblock.memory.regions[i]);
 }
 #endif
 
