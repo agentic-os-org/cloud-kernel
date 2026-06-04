@@ -1511,11 +1511,13 @@ out_norqst:
 
 out_badversion:
 	trace_xprtrdma_reply_vers(rep);
-	goto out;
+	rpcrdma_recv_buffer_put(rep);
+	credits = buf->rb_credits;
+	goto out_post;
 
 out_shortreply:
 	trace_xprtrdma_reply_short(rep);
-
-out:
 	rpcrdma_recv_buffer_put(rep);
+	credits = buf->rb_credits;
+	goto out_post;
 }
