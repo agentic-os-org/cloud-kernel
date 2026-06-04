@@ -251,7 +251,6 @@ static int erofs_scan_devices(struct super_block *sb,
 	return err;
 }
 
-#ifdef CONFIG_EROFS_FS_ZIP
 /* read variable-sized metadata, offset will be aligned by 4-byte */
 void *erofs_read_metadata(struct super_block *sb, struct erofs_buf *buf,
 			  erofs_off_t *offset, int *lengthp)
@@ -287,9 +286,9 @@ void *erofs_read_metadata(struct super_block *sb, struct erofs_buf *buf,
 	}
 	return buffer;
 }
-#else
-static int z_erofs_parse_cfgs(struct super_block *sb,
-			      struct erofs_super_block *dsb)
+
+#ifndef CONFIG_EROFS_FS_ZIP
+int z_erofs_parse_cfgs(struct super_block *sb, struct erofs_super_block *dsb)
 {
 	if (!dsb->u1.available_compr_algs)
 		return 0;
