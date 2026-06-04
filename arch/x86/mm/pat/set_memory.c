@@ -2017,8 +2017,10 @@ static int __set_memory_enc_pgtable(unsigned long addr, int numpages, bool enc)
 	 */
 	cpa_flush(&cpa, 0);
 
-	if (csv_active())
+	if (csv_active()) {
 		csv_memory_enc_dec(addr, numpages, enc);
+		clflush_cache_range((void *)addr, numpages << PAGE_SHIFT);
+	}
 
 	/* Notify hypervisor that we have successfully set/clr encryption attribute. */
 	if (!ret) {
