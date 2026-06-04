@@ -359,12 +359,12 @@ static const struct iomap_ops erofs_iomap_ops = {
  */
 static int erofs_readpage(struct file *file, struct page *page)
 {
-	return iomap_readpage(page, &erofs_iomap_ops);
+	return iomap_readpage(page, &erofs_iomap_ops, NULL);
 }
 
 static void erofs_readahead(struct readahead_control *rac)
 {
-	return iomap_readahead(rac, &erofs_iomap_ops);
+	return iomap_readahead(rac, &erofs_iomap_ops, NULL);
 }
 
 static sector_t erofs_bmap(struct address_space *mapping, sector_t block)
