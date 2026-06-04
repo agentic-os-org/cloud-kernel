@@ -96,6 +96,18 @@ mlx5e_xmit_xdp_buff(struct mlx5e_xdpsq *sq, struct mlx5e_rq *rq,
 		xdptxd.dma_addr     = dma_addr;
 		xdpi.frame.xdpf     = xdpf;
 		xdpi.frame.dma_addr = dma_addr;
+
+		if (unlikely(!INDIRECT_CALL_2(sq->xmit_xdp_frame,
+				      mlx5e_xmit_xdp_frame_mpwqe,
+				      mlx5e_xmit_xdp_frame,
+				      sq, &xdptxd, &xdpi, 0))) {
+			dma_unmap_single(sq->pdev, dma_addr, xdptxd.len,
+					 DMA_TO_DEVICE);
+			xdp_return_frame(xdpf);
+			return false;
+		}
+
+		return true;
 	} else {
 		/* Driver assumes that xdp_convert_buff_to_frame returns
 		 * an xdp_frame that points to the same memory region as
