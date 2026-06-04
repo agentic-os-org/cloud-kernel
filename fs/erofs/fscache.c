@@ -286,7 +286,7 @@ static void erofs_fscache_domain_put(struct erofs_domain *domain)
 		}
 		mutex_unlock(&erofs_domain_list_lock);
 		fscache_relinquish_cookie(domain->volume, NULL, false);
-		kfree(domain->domain_id);
+		kfree_sensitive(domain->domain_id);
 		kfree(domain);
 		return;
 	}
@@ -355,7 +355,7 @@ static int erofs_fscache_init_domain(struct super_block *sb)
 	sbi->domain = domain;
 	return 0;
 out:
-	kfree(domain->domain_id);
+	kfree_sensitive(domain->domain_id);
 	kfree(domain);
 	return err;
 }
