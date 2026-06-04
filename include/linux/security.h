@@ -326,7 +326,7 @@ int security_dentry_init_security(struct dentry *dentry, int mode,
 				  const char **xattr_name, void **ctx,
 				  u32 *ctxlen);
 int security_dentry_create_files_as(struct dentry *dentry, int mode,
-					struct qstr *name,
+					const struct qstr *name,
 					const struct cred *old,
 					struct cred *new);
 int security_path_notify(const struct path *path, u64 mask,
@@ -609,7 +609,7 @@ static inline int security_settime64(const struct timespec64 *ts,
 
 static inline int security_vm_enough_memory_mm(struct mm_struct *mm, long pages)
 {
-	return __vm_enough_memory(mm, pages, cap_vm_enough_memory(mm, pages));
+	return __vm_enough_memory(mm, pages, !cap_vm_enough_memory(mm, pages));
 }
 
 static inline int security_bprm_creds_for_exec(struct linux_binprm *bprm)
@@ -763,7 +763,7 @@ static inline int security_dentry_init_security(struct dentry *dentry,
 }
 
 static inline int security_dentry_create_files_as(struct dentry *dentry,
-						  int mode, struct qstr *name,
+						  int mode, const struct qstr *name,
 						  const struct cred *old,
 						  struct cred *new)
 {

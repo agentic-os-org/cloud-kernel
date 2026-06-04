@@ -559,7 +559,7 @@ LUA_LSM_INT_DEFINE6(dentry_init_security, struct dentry *, dentry,
  * Default: 0
  */
 LUA_LSM_INT_DEFINE5(dentry_create_files_as, struct dentry *, dentry,
-		int, mode, struct qstr *, name,
+		int, mode, const struct qstr *, name,
 		const struct cred *, old, struct cred *, new)
 {
 	*newdentry(L) = dentry;
