@@ -29,12 +29,33 @@ EXPORT_SYMBOL_GPL(nf_ct_timeout_find_get_hook);
 void (*nf_ct_timeout_put_hook)(struct nf_ct_timeout *timeout) __read_mostly;
 EXPORT_SYMBOL_GPL(nf_ct_timeout_put_hook);
 
+/* nf_ct_iterate_cleanup() holds the conntrack lock. */
 static int untimeout(struct nf_conn *ct, void *timeout)
 {
 	struct nf_conn_timeout *timeout_ext = nf_ct_timeout_find(ct);
 
-	if (timeout_ext && (!timeout || timeout_ext->timeout == timeout))
-		RCU_INIT_POINTER(timeout_ext->timeout, NULL);
+	if (timeout_ext) {
+		struct nf_ct_timeout *t;
+
+		rcu_read_lock();
+		t = rcu_dereference(timeout_ext->timeout);
+		if (!t) {
+			rcu_read_unlock();
+			return 0;
+		}
+
+		if (!timeout || t == timeout) {
+			RCU_INIT_POINTER(timeout_ext->timeout, NULL);
+
+			/* No race with nf_conntrack_free() which is called
+			 * only after the conntrack has been removed from
+			 * the hashes.
+			 */
+			if (refcount_dec_and_test(&t->refcnt))
+				kfree_rcu(t, rcu);
+		}
+		rcu_read_unlock();
+	}
 
 	/* We are not intended to delete this conntrack. */
 	return 0;
@@ -63,6 +84,8 @@ int nf_ct_set_timeout(struct net *net, struct nf_conn *ct,
 	struct nf_conn_timeout *timeout_ext;
 	const char *errmsg = NULL;
 	int ret = 0;
+
+	WARN_ON_ONCE(!nf_ct_is_template(ct));
 
 	rcu_read_lock();
 	timeout_find_get = rcu_dereference(nf_ct_timeout_find_get_hook);
@@ -119,7 +142,10 @@ EXPORT_SYMBOL_GPL(nf_ct_set_timeout);
 void nf_ct_destroy_timeout(struct nf_conn *ct)
 {
 	struct nf_conn_timeout *timeout_ext;
+	struct nf_ct_timeout *t;
 	typeof(nf_ct_timeout_put_hook) timeout_put;
+
+	WARN_ON_ONCE(!nf_ct_is_template(ct));
 
 	rcu_read_lock();
 	timeout_put = rcu_dereference(nf_ct_timeout_put_hook);
@@ -127,8 +153,11 @@ void nf_ct_destroy_timeout(struct nf_conn *ct)
 	if (timeout_put) {
 		timeout_ext = nf_ct_timeout_find(ct);
 		if (timeout_ext) {
-			timeout_put(timeout_ext->timeout);
+			t = rcu_dereference(timeout_ext->timeout);
+			timeout_put(t);
 			RCU_INIT_POINTER(timeout_ext->timeout, NULL);
+			if (t && refcount_dec_and_test(&t->refcnt))
+				kfree_rcu(t, rcu);
 		}
 	}
 	rcu_read_unlock();

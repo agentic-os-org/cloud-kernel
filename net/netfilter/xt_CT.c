@@ -402,4 +402,3 @@ MODULE_DESCRIPTION("Xtables: connection tracking target");
 MODULE_ALIAS("ipt_CT");
 MODULE_ALIAS("ip6t_CT");
 MODULE_ALIAS("ipt_NOTRACK");
-MODULE_ALIAS("ip6t_NOTRACK");
