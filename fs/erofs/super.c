@@ -817,7 +817,6 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 		return -ENOMEM;
 
 	erofs_shrinker_register(sb);
-#ifdef CONFIG_EROFS_FS_ZIP
 	if (erofs_sb_has_fragments(sbi) && sbi->packed_nid) {
 		sbi->packed_inode = erofs_iget(sb, sbi->packed_nid);
 		if (IS_ERR(sbi->packed_inode)) {
@@ -826,7 +825,6 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 			return err;
 		}
 	}
-#endif
 	err = erofs_init_managed_cache(sb);
 	if (err)
 		return err;
@@ -1033,9 +1031,9 @@ static void erofs_put_super(struct super_block *sb)
 #ifdef CONFIG_EROFS_FS_ZIP
 	iput(sbi->managed_cache);
 	sbi->managed_cache = NULL;
+#endif
 	iput(sbi->packed_inode);
 	sbi->packed_inode = NULL;
-#endif
 	erofs_fscache_unregister_cookie(sbi->s_fscache);
 	sbi->s_fscache = NULL;
 }
