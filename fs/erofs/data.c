@@ -333,9 +333,16 @@ void erofs_onlinepage_end(struct page *page, int err)
 	}
 }
 
+struct erofs_iomap_iter_ctx {
+	struct page *page;
+	void *base;
+};
+
 static int erofs_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 		unsigned int flags, struct iomap *iomap, struct iomap *srcmap)
 {
+	struct iomap_iter *iter = container_of(iomap, struct iomap_iter, iomap);
+	struct erofs_iomap_iter_ctx *ctx = iter->private;
 	int ret;
 	struct super_block *sb = inode->i_sb;
 	struct erofs_map_blocks map;
@@ -351,10 +358,12 @@ static int erofs_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 	iomap->offset = map.m_la;
 	iomap->length = map.m_llen;
 	iomap->flags = 0;
-	iomap->private = NULL;
+	iomap->addr = IOMAP_NULL_ADDR;
+
 	if (!(map.m_flags & EROFS_MAP_MAPPED)) {
 		iomap->type = IOMAP_HOLE;
-		iomap->addr = IOMAP_NULL_ADDR;
+		if (!iomap->length)
+			iomap->length = length;
 		return 0;
 	}
 
@@ -371,16 +380,20 @@ static int erofs_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 	iomap->addr = mdev.m_pa;
 
 	if (map.m_flags & EROFS_MAP_META) {
-		void *ptr;
-		struct erofs_buf buf = __EROFS_BUF_INITIALIZER;
-
 		iomap->type = IOMAP_INLINE;
-		ptr = erofs_read_metabuf(&buf, sb,
-				erofs_blknr(sb, mdev.m_pa), EROFS_KMAP);
-		if (IS_ERR(ptr))
-			return PTR_ERR(ptr);
-		iomap->inline_data = ptr + erofs_blkoff(sb, mdev.m_pa);
-		iomap->private = buf.base;
+		/* read context should read the inlined data */
+		if (ctx) {
+			struct erofs_buf buf = __EROFS_BUF_INITIALIZER;
+			void *ptr;
+
+			ptr = erofs_read_metabuf(&buf, sb,
+					erofs_blknr(sb, mdev.m_pa), EROFS_KMAP);
+			if (IS_ERR(ptr))
+				return PTR_ERR(ptr);
+			iomap->inline_data = ptr + erofs_blkoff(sb, mdev.m_pa);
+			ctx->page = buf.page;
+			ctx->base = buf.base;
+		}
 	} else {
 		iomap->type = IOMAP_MAPPED;
 	}
@@ -390,19 +403,19 @@ static int erofs_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 static int erofs_iomap_end(struct inode *inode, loff_t pos, loff_t length,
 		ssize_t written, unsigned int flags, struct iomap *iomap)
 {
-	void *ptr = iomap->private;
+	struct iomap_iter *iter = container_of(iomap, struct iomap_iter, iomap);
+	struct erofs_iomap_iter_ctx *ctx = iter->private;
 
-	if (ptr) {
+	if (ctx && ctx->base) {
 		struct erofs_buf buf = {
-			.page = kmap_to_page(ptr),
-			.base = ptr,
+			.page = ctx->page,
+			.base = ctx->base,
 			.kmap_type = EROFS_KMAP,
 		};
 
 		DBG_BUGON(iomap->type != IOMAP_INLINE);
 		erofs_put_metabuf(&buf);
-	} else {
-		DBG_BUGON(iomap->type == IOMAP_INLINE);
+		ctx->base = NULL;
 	}
 	return written;
 }
@@ -418,12 +431,19 @@ static const struct iomap_ops erofs_iomap_ops = {
  */
 static int erofs_readpage(struct file *file, struct page *page)
 {
-	return iomap_readpage(page, &erofs_iomap_ops, NULL);
+	struct erofs_iomap_iter_ctx iter_ctx = {};
+
+	trace_erofs_readpage(page, true);
+	return iomap_readpage(page, &erofs_iomap_ops, &iter_ctx);
 }
 
 static void erofs_readahead(struct readahead_control *rac)
 {
-	return iomap_readahead(rac, &erofs_iomap_ops, NULL);
+	struct erofs_iomap_iter_ctx iter_ctx = {};
+
+	trace_erofs_readpages(rac->mapping->host, readahead_index(rac),
+			      readahead_count(rac), true);
+	iomap_readahead(rac, &erofs_iomap_ops, &iter_ctx);
 }
 
 static sector_t erofs_bmap(struct address_space *mapping, sector_t block)
@@ -460,11 +480,12 @@ static ssize_t erofs_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 		return dax_iomap_rw(iocb, to, &erofs_iomap_ops);
 #endif
 	if (iocb->ki_flags & IOCB_DIRECT) {
+		struct erofs_iomap_iter_ctx iter_ctx = {};
 		int err = erofs_prepare_dio(iocb, to);
 
 		if (!err)
 			return iomap_dio_rw(iocb, to, &erofs_iomap_ops,
-					    NULL, 0, NULL);
+					    NULL, 0, &iter_ctx);
 		if (err < 0)
 			return err;
 	}
