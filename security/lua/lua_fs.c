@@ -68,8 +68,9 @@ static int fs_dentry_dput(lua_State *L)
 static int fs_dentry_backing_inode(lua_State *L)
 {
 	struct dentry *dentry = todentry(L, 1);
+	struct inode *inode = d_backing_inode(dentry);
 
-	*newinode(L) = d_backing_inode(dentry);
+	inode ? *newinode(L) = inode : lua_pushnil(L);
 	return 1;
 }
 
@@ -555,13 +556,15 @@ static int fs_filp_open(lua_State *L)
 	const char *filename = luaL_checkstring(L, 1);
 	int flags = luaL_checkinteger(L, 2);
 	umode_t mode = luaL_checkinteger(L, 3);
+	struct file *file;
 	struct file **filp = newgcfile(L);
-	*filp = filp_open(filename, flags, mode);
-	if (IS_ERR(*filp)) {
+	file = filp_open(filename, flags, mode);
+	if (IS_ERR(file)) {
 		lua_pushnil(L);
-		lua_pushinteger(L, PTR_ERR(*filp));
+		lua_pushinteger(L, PTR_ERR(file));
 		return 2;
 	}
+	*filp = file;
 	return 1;
 }
 

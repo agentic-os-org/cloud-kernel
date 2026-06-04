@@ -16,10 +16,13 @@
 #include <linux/compiler.h>
 #include <linux/rwlock.h>
 #include <linux/security.h>
+#include <linux/xattr.h>
 #include <linux/cred.h>
+#include <linux/mnt_idmapping.h>
 #include <linux/prctl.h>
 #include <linux/syscalls.h>     /* for __MAP */
 #include <linux/timekeeping.h>  /* for ktime_get */
+#include <linux/kernel_read_file.h>
 #include <net/ipv6.h>
 #include <linux/lsm_hooks.h>
 #include <linux/lua.h>
@@ -195,16 +198,16 @@ LUA_LSM_INT_DEFINE5(capset, struct cred *, new, const struct cred *, old,
 }
 
 /**
- * TODO: capable
+ * capable
  * Default: 0
  */
 LUA_LSM_INT_DEFINE4(capable, const struct cred *, cred,
 		struct user_namespace *, ns, int, cap, unsigned int, opts)
 {
 	*(const struct cred **)newcred(L) = cred;
-	lua_pushnil(L);	/* TODO: ns */
+	*newuserns(L) = ns;
 	lua_pushinteger(L, (lua_Integer)cap);
-	lua_pushinteger(L, (lua_Integer)opts);
+	table_fromopts(L, lua_lsm_cap_opts, lua_lsm_cap_opt_flags, opts);
 }
 
 /**
@@ -754,6 +757,44 @@ LUA_LSM_VOID_DEFINE1(inode_free_security, struct inode *, inode)
  * Default: LSM_RET_VOID
  */
 
+static int lua_lsm_init_xattr(lua_State *L, int name_idx, int value_idx,
+			      struct xattr *xattr)
+{
+	size_t name_len, value_len;
+	const char *name, *value;
+	char *buffer;
+
+	name = lua_tolstring(L, name_idx, &name_len);
+	value = lua_tolstring(L, value_idx, &value_len);
+
+	if (!name_len || name_len > XATTR_NAME_MAX - XATTR_SECURITY_PREFIX_LEN)
+		return -EINVAL;
+	if (memchr(name, '\0', name_len))
+		return -EINVAL;
+	if (value_len > XATTR_SIZE_MAX)
+		return -E2BIG;
+
+	buffer = kmalloc(value_len + name_len + 1, GFP_NOFS);
+	if (!buffer)
+		return -ENOMEM;
+
+	memcpy(buffer, value, value_len);
+	memcpy(buffer + value_len, name, name_len);
+	buffer[value_len + name_len] = '\0';
+
+	/*
+	 * FIXME: xattr->name must not share xattr->value storage. Some
+	 * initxattrs users, notably OCFS2, duplicate only value and keep
+	 * the name pointer after security_inode_init_security() frees value.
+	 * This needs separate name storage with a lifetime that covers those
+	 * delayed users.
+	 */
+	xattr->value = buffer;
+	xattr->value_len = value_len;
+	xattr->name = buffer + value_len;
+	return 0;
+}
+
 /**
  * inode_init_security
  * Default: -EOPNOTSUPP
@@ -765,7 +806,7 @@ LUA_LSM_VOID_DEFINE1(inode_free_security, struct inode *, inode)
  *   false        : -EPERM
  *   false, errno : -errno
  *   nil, errno   : -errno
- *   name, value  : fill the xattr struct, XXX: name must not be freed
+ *   name, value  : fill the xattr struct
  */
 LUA_LSM_INT_NAKED_DEFINE5(inode_init_security, struct inode *, inode,
 		struct inode *, dir, const struct qstr *, qstr,
@@ -807,23 +848,10 @@ LUA_LSM_INT_NAKED_DEFINE5(inode_init_security, struct inode *, inode,
 				ret = -errno;
 		} else if (lua_isstring(L, top) && lua_isstring(L, top + 1)) {
 			struct xattr *xattr;
-			const char *value;
-			size_t len;
 
 			xattr = lsm_get_xattr_slot(xattrs, xattr_count);
-			if (xattr) {
-				value = lua_tolstring(L, top + 1, &len);
-				xattr->value = kmemdup(value, len, GFP_NOFS);
-				if (xattr->value == NULL) {
-					ret = -ENOMEM;
-					break;
-				}
-				xattr->value_len = len;
-				xattr->name = lua_tostring(L, top);
-				ret = 0;
-			} else {
-				/* TODO */
-			}
+			if (xattr)
+				ret = lua_lsm_init_xattr(L, top, top + 1, xattr);
 		}
 		break;
 	}
@@ -973,15 +1001,108 @@ LUA_LSM_INT_DEFINE2(inode_permission, struct inode *, inode, int, mask)
 	lua_pushinteger(L, (lua_Integer)mask);
 }
 
+static void iattr_set_time(lua_State *L, const char *name,
+			   const struct timespec64 *ts)
+{
+	lua_createtable(L, 0, 2);
+	lua_pushinteger(L, ts->tv_sec);
+	lua_setfield(L, -2, "sec");
+	lua_pushinteger(L, ts->tv_nsec);
+	lua_setfield(L, -2, "nsec");
+	lua_setfield(L, -2, name);
+}
+
+static void iattr_set_integer(lua_State *L, const char *name, long long value)
+{
+	lua_pushinteger(L, value);
+	lua_setfield(L, -2, name);
+}
+
+static void iattr_set_flags(lua_State *L, unsigned int mask)
+{
+	static const struct cflag_opt fields[] = {
+		{ "atime_set",	ATTR_ATIME_SET	},
+		{ "mtime_set",	ATTR_MTIME_SET	},
+		{ "times_set",	ATTR_TIMES_SET	},
+		{ "touch",	ATTR_TOUCH	},
+		{ "force",	ATTR_FORCE	},
+		{ "kill_suid",	ATTR_KILL_SUID	},
+		{ "kill_sgid",	ATTR_KILL_SGID	},
+		{ "kill_priv",	ATTR_KILL_PRIV	},
+		{ "from_file",	ATTR_FILE	},
+		{ "from_open",	ATTR_OPEN	},
+		{ NULL, 0 }
+	};
+	int i;
+
+	for (i = 0; fields[i].name; i++) {
+		if (mask & fields[i].flag) {
+			lua_pushboolean(L, 1);
+			lua_setfield(L, -2, fields[i].name);
+		}
+	}
+}
+
+static void iattr_set_ids(lua_State *L, struct mnt_idmap *idmap,
+			  const struct inode *inode, const struct iattr *attr)
+{
+	unsigned int ia_valid = attr->ia_valid;
+	kuid_t uid;
+	kgid_t gid;
+
+	if (ia_valid & ATTR_UID) {
+		uid = from_vfsuid(idmap, i_user_ns(inode), attr->ia_vfsuid);
+		if (uid_valid(uid)) {
+			lua_pushinteger(L, uid.val);
+			lua_setfield(L, -2, "uid");
+		}
+	}
+	if (ia_valid & ATTR_GID) {
+		gid = from_vfsgid(idmap, i_user_ns(inode), attr->ia_vfsgid);
+		if (gid_valid(gid)) {
+			lua_pushinteger(L, gid.val);
+			lua_setfield(L, -2, "gid");
+		}
+	}
+}
+
+static void newiattr(lua_State *L, struct mnt_idmap *idmap,
+		     struct dentry *dentry, const struct iattr *attr)
+{
+	struct inode *inode = d_backing_inode(dentry);
+	unsigned int ia_valid = attr->ia_valid;
+
+	luaL_checkstack(L, 32, "iattr");
+	lua_createtable(L, 0, 20);
+
+	iattr_set_integer(L, "valid", ia_valid);
+
+	if (ia_valid & ATTR_MODE)
+		iattr_set_integer(L, "mode", attr->ia_mode);
+	if (inode)
+		iattr_set_ids(L, idmap, inode, attr);
+	if (ia_valid & ATTR_SIZE)
+		iattr_set_integer(L, "size", attr->ia_size);
+
+	if (ia_valid & ATTR_ATIME)
+		iattr_set_time(L, "atime", &attr->ia_atime);
+	if (ia_valid & ATTR_MTIME)
+		iattr_set_time(L, "mtime", &attr->ia_mtime);
+	if (ia_valid & ATTR_CTIME)
+		iattr_set_time(L, "ctime", &attr->ia_ctime);
+
+	iattr_set_flags(L, ia_valid);
+}
+
 /**
- * TODO: inode_setattr
+ * inode_setattr
  * Default: 0
  */
 LUA_LSM_INT_DEFINE2(inode_setattr, struct dentry *, dentry,
 		struct iattr *, attr)
 {
 	*newdentry(L) = dentry;
-	lua_pushnil(L);	/* TODO: attr */
+	newiattr(L, &nop_mnt_idmap, dentry, attr);
 }
 
 /**
@@ -1136,7 +1257,7 @@ LUA_LSM_INT_DEFINE3(inode_remove_acl, struct mnt_idmap *, idmap,
  * inode_need_killpriv
  * Default: 0
  */
-LUA_LSM_INT_DEFINE1(inode_need_killpriv, struct dentry *, dentry)
+LUA_LSM_INT_BOOLERR_DEFINE1(inode_need_killpriv, struct dentry *, dentry)
 {
 	*newdentry(L) = dentry;
 }
@@ -1261,7 +1382,7 @@ LUA_LSM_INT_NAKED_DEFINE3(inode_listsecurity, struct inode *, inode,
 				const char *v = lua_tolstring(L, top, &len);
 				ret = (int)len;
 				if (buffer != NULL && len <= buffer_size)
-					memcpy(buffer, v, buffer_size);
+					memcpy(buffer, v, len);
 			}
 			break;
 		default:
@@ -1704,52 +1825,50 @@ LUA_LSM_INT_DEFINE1(kernel_module_request, char *, kmod_name)
 }
 
 /**
- * TODO: kernel_load_data
+ * kernel_load_data
  * Default: 0
  */
 LUA_LSM_INT_DEFINE2(kernel_load_data, enum kernel_load_data_id, id,
 		bool, contents)
 {
-	lua_pushnil(L);	/* TODO: id */
+	lua_pushstring(L, kernel_load_data_id_str(id));
 	lua_pushboolean(L, (int)contents);
 }
 
 /**
- * TODO: kernel_post_load_data
+ * kernel_post_load_data
  * Default: 0
  */
 LUA_LSM_INT_DEFINE4(kernel_post_load_data, char *, buf, loff_t, size,
 		enum kernel_load_data_id, id, char *, description)
 {
-	lua_pushstring(L, (const char *)buf);
-	lua_pushinteger(L, (lua_Integer)size);
-	lua_pushnil(L);	/* TODO: id */
+	lua_pushlstring(L, (const char *)buf, (size_t)size);
+	lua_pushstring(L, kernel_load_data_id_str(id));
 	lua_pushstring(L, (const char *)description);
 }
 
 /**
- * TODO: kernel_read_file
+ * kernel_read_file
  * Default: 0
  */
 LUA_LSM_INT_DEFINE3(kernel_read_file, struct file *, file,
 		enum kernel_read_file_id, id, bool, contents)
 {
 	*newfile(L) = file;
-	lua_pushnil(L);	/* TODO: id */
+	lua_pushstring(L, kernel_read_file_id_str(id));
 	lua_pushboolean(L, (int)contents);
 }
 
 /**
- * TODO: kernel_post_read_file
+ * kernel_post_read_file
  * Default: 0
  */
 LUA_LSM_INT_DEFINE4(kernel_post_read_file, struct file *, file,
 		char *, buf, loff_t, size, enum kernel_read_file_id, id)
 {
 	*newfile(L) = file;
-	lua_pushstring(L, (const char *)buf);
-	lua_pushinteger(L, (lua_Integer)size);
-	lua_pushnil(L);	/* TODO: id */
+	lua_pushlstring(L, (const char *)buf, (size_t)size);
+	lua_pushstring(L, kernel_read_file_id_str(id));
 }
 
 static void build_lsm_setid_flags(lua_State *L, int flags)
@@ -2371,7 +2490,7 @@ LUA_LSM_INT_DEFINE3(setprocattr, const char *, name,
  * ismaclabel
  * Default: 0
  */
-LUA_LSM_INT_DEFINE1(ismaclabel, const char *, name)
+LUA_LSM_INT_BOOL_DEFINE1(ismaclabel, const char *, name)
 {
 	lua_pushstring(L, name);
 }
@@ -3111,8 +3230,9 @@ LUA_LSM_INT_DEFINE2(xfrm_policy_lookup, struct xfrm_sec_ctx *, ctx,
  * TODO: xfrm_state_pol_flow_match
  * Default: 1
  */
-LUA_LSM_INT_DEFINE3(xfrm_state_pol_flow_match, struct xfrm_state *, x,
-		struct xfrm_policy *, xp, const struct flowi_common *, flic)
+LUA_LSM_INT_BOOL_DEFINE3(xfrm_state_pol_flow_match, struct xfrm_state *, x,
+			 struct xfrm_policy *, xp,
+			 const struct flowi_common *, flic)
 {
 	lua_pushnil(L);	/* TODO: x */
 	lua_pushnil(L);	/* TODO: xp */
@@ -3196,7 +3316,7 @@ LUA_LSM_INT_DEFINE5(audit_rule_init, u32, field, u32, op, char *, rulestr,
  * TODO: audit_rule_known
  * Default: 0
  */
-LUA_LSM_INT_DEFINE1(audit_rule_known, struct audit_krule *, krule)
+LUA_LSM_INT_BOOL_DEFINE1(audit_rule_known, struct audit_krule *, krule)
 {
 	lua_pushnil(L);	/* TODO: krule */
 }
@@ -3205,7 +3325,7 @@ LUA_LSM_INT_DEFINE1(audit_rule_known, struct audit_krule *, krule)
  * TODO: audit_rule_match
  * Default: 0
  */
-LUA_LSM_INT_DEFINE4(audit_rule_match, u32, secid, u32, field,
+LUA_LSM_INT_BOOLERR_DEFINE4(audit_rule_match, u32, secid, u32, field,
 		u32, op, void *, lsmrule)
 {
 	lua_pushinteger(L, (lua_Integer)secid);

@@ -17,9 +17,12 @@
 #include <linux/spinlock.h>
 #include <linux/perf_event.h>
 #include <linux/u64_stats_sync.h>
+#include <linux/jump_label.h>
 #include <linux/lua.h>
 #include "bitmap.h"
 #include "kvcache.h"
+
+DECLARE_STATIC_KEY_FALSE(lua_lsm_modules_active);
 
 /* Flag indicating whether initialization completed */
 extern int lua_lsm_initialized __initdata;
@@ -52,6 +55,9 @@ static inline bool lua_lsm_hook_supported(unsigned int nr)
 	switch (nr) {
 	case __LL_NR_getprocattr:
 	case __LL_NR_setprocattr:
+#ifdef CONFIG_SECURITY_NETWORK_XFRM
+	case __LL_NR_xfrm_state_pol_flow_match:
+#endif
 		return false;
 	default:
 		return nr < __LL_NR_MAX;
@@ -124,6 +130,7 @@ struct lvm_state {
 	lua_State *L;
 	atomic_t refcount;
 	struct lvm_state *next;
+	bool dirty;
 #ifdef CONFIG_SECURITY_LUA_LSM_STATS
 	atomic64_t nalloc;
 	atomic64_t nrealloc;
