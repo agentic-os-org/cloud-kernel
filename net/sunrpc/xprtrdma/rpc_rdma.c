@@ -1493,18 +1493,27 @@ void rpcrdma_reply_handler(struct rpcrdma_rep *rep)
 		kref_put(&req->rl_kref, rpcrdma_reply_done);
 	return;
 
-out_badversion:
-	trace_xprtrdma_reply_vers_err(rep);
-	goto out;
-
 out_norqst:
 	spin_unlock(&xprt->queue_lock);
 	trace_xprtrdma_reply_rqst_err(rep);
-	goto out;
+	rpcrdma_rep_put(buf, rep);
+	goto out_post;
+
+out_badversion:
+	trace_xprtrdma_reply_vers_err(rep);
+	rpcrdma_rep_put(buf, rep);
+	goto out_post;
 
 out_shortreply:
 	trace_xprtrdma_reply_short_err(rep);
-
-out:
 	rpcrdma_rep_put(buf, rep);
+
+out_post:
+	/* The credit grant in a malformed or unmatched Reply cannot be
+	 * trusted, so keep the currently granted number of Receive
+	 * buffers posted rather than consuming one permanently.
+	 */
+	credits = buf->rb_credits;
+	rpcrdma_post_recvs(r_xprt, credits + (buf->rb_bc_srv_max_requests << 1),
+			   false);
 }
