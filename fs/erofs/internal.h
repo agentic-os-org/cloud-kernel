@@ -97,6 +97,11 @@ struct erofs_fscache {
 	char *name;
 };
 
+struct erofs_xattr_prefix_item {
+	struct erofs_xattr_long_prefix *prefix;
+	u8 infix_len;
+};
+
 struct erofs_sb_info {
 	struct erofs_mount_opts opt;	/* options */
 #ifdef CONFIG_EROFS_FS_ZIP
@@ -131,6 +136,9 @@ struct erofs_sb_info {
 	u32 meta_blkaddr;
 #ifdef CONFIG_EROFS_FS_XATTR
 	u32 xattr_blkaddr;
+	u32 xattr_prefix_start;
+	u8 xattr_prefix_count;
+	struct erofs_xattr_prefix_item *xattr_prefixes;
 #endif
 	u16 device_id_mask;	/* valid bits of device id to be used */
 
