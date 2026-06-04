@@ -558,10 +558,8 @@ static int erofs_fc_parse_param(struct fs_context *fc,
 		break;
 	case Opt_domain_id:
 #ifdef CONFIG_EROFS_FS_ONDEMAND
-		kfree(sbi->domain_id);
-		sbi->domain_id = kstrdup(param->string, GFP_KERNEL);
-		if (!sbi->domain_id)
-			return -ENOMEM;
+		kfree_sensitive(sbi->domain_id);
+		sbi->domain_id = no_free_ptr(param->string);
 #else
 		errorfc(fc, "domain_id option not supported");
 #endif
@@ -965,7 +963,7 @@ static void erofs_fc_free(struct fs_context *fc)
 
 	erofs_free_dev_context(sbi->devs);
 	kfree(sbi->fsid);
-	kfree(sbi->domain_id);
+	kfree_sensitive(sbi->domain_id);
 	kfree(sbi);
 }
 
@@ -1028,7 +1026,7 @@ static void erofs_kill_sb(struct super_block *sb)
 #endif
 	erofs_fscache_unregister_fs(sb);
 	kfree(sbi->fsid);
-	kfree(sbi->domain_id);
+	kfree_sensitive(sbi->domain_id);
 	if (sbi->fdev)
 		fput(sbi->fdev);
 	kfree(sbi);

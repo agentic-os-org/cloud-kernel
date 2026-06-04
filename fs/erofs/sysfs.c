@@ -207,7 +207,7 @@ int erofs_register_sysfs(struct super_block *sb)
 
 	sbi->s_kobj.kset = &erofs_root;
 	init_completion(&sbi->s_kobj_unregister);
-	if (sbi->domain_id)
+	if (sbi->domain_id && sbi->fsid)
 		err = kobject_init_and_add(&sbi->s_kobj, &erofs_sb_ktype, NULL,
 					   "%s,%s", sbi->domain_id, sysfs_name);
 	else
