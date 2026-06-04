@@ -320,12 +320,13 @@ done:
 }
 
 int
-iomap_readpage(struct page *page, const struct iomap_ops *ops)
+iomap_readpage(struct page *page, const struct iomap_ops *ops, void *private)
 {
 	struct iomap_iter iter = {
 		.inode		= page->mapping->host,
 		.pos		= page_offset(page),
 		.len		= PAGE_SIZE,
+		.private	= private,
 	};
 	struct iomap_readpage_ctx ctx = {
 		.cur_page	= page,
@@ -397,12 +398,14 @@ static loff_t iomap_readahead_iter(const struct iomap_iter *iter,
  * function is called with memalloc_nofs set, so allocations will not cause
  * the filesystem to be reentered.
  */
-void iomap_readahead(struct readahead_control *rac, const struct iomap_ops *ops)
+void iomap_readahead(struct readahead_control *rac, const struct iomap_ops *ops,
+		void *private)
 {
 	struct iomap_iter iter = {
 		.inode	= rac->mapping->host,
 		.pos	= readahead_pos(rac),
 		.len	= readahead_length(rac),
+		.private = private,
 	};
 	struct iomap_readpage_ctx ctx = {
 		.rac	= rac,
