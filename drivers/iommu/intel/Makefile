@@ -7,6 +7,6 @@ obj-$(CONFIG_INTEL_IOMMU_DEBUGFS) += debugfs.o
 obj-$(CONFIG_INTEL_IOMMU_SVM) += svm.o
 ifdef CONFIG_INTEL_IOMMU
 obj-$(CONFIG_IRQ_REMAP) += irq_remapping.o
+obj-$(CONFIG_IOMMU_LIVEUPDATE) += liveupdate.o
 endif
 obj-$(CONFIG_INTEL_IOMMU_PERF_EVENTS) += perfmon.o
-obj-$(CONFIG_IOMMU_LIVEUPDATE) += liveupdate.o
