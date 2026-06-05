@@ -4312,7 +4312,7 @@ operating system that uses the PIT for timing (e.g. Linux 2.4.x).
 4.100 KVM_PPC_CONFIGURE_V3_MMU
 ------------------------------
 
-:Capability: KVM_CAP_PPC_RADIX_MMU or KVM_CAP_PPC_HASH_MMU_V3
+:Capability: KVM_CAP_PPC_MMU_RADIX or KVM_CAP_PPC_MMU_HASH_V3
 :Architectures: ppc
 :Type: vm ioctl
 :Parameters: struct kvm_ppc_mmuv3_cfg (in)
@@ -4346,7 +4346,7 @@ the Power ISA V3.00, Book III section 5.7.6.1.
 4.101 KVM_PPC_GET_RMMU_INFO
 ---------------------------
 
-:Capability: KVM_CAP_PPC_RADIX_MMU
+:Capability: KVM_CAP_PPC_MMU_RADIX
 :Architectures: ppc
 :Type: vm ioctl
 :Parameters: struct kvm_ppc_rmmu_info (out)
@@ -6317,6 +6317,67 @@ a single guest_memfd file, but the bound ranges must not overlap).
 
 See KVM_SET_USER_MEMORY_REGION2 for additional details.
 
+4.143 KVM_PRE_FAULT_MEMORY
+------------------------
+
+:Capability: KVM_CAP_PRE_FAULT_MEMORY
+:Architectures: none
+:Type: vcpu ioctl
+:Parameters: struct kvm_pre_fault_memory (in/out)
+:Returns: 0 if at least one page is processed, < 0 on error
+
+Errors:
+
+  ========== ===============================================================
+  EINVAL     The specified `gpa` and `size` were invalid (e.g. not
+             page aligned, causes an overflow, or size is zero).
+  ENOENT     The specified `gpa` is outside defined memslots.
+  EINTR      An unmasked signal is pending and no page was processed.
+  EFAULT     The parameter address was invalid.
+  EOPNOTSUPP Mapping memory for a GPA is unsupported by the
+             hypervisor, and/or for the current vCPU state/mode.
+  EIO        unexpected error conditions (also causes a WARN)
+  ========== ===============================================================
+
+::
+
+  struct kvm_pre_fault_memory {
+	/* in/out */
+	__u64 gpa;
+	__u64 size;
+	/* in */
+	__u64 flags;
+	__u64 padding[5];
+  };
+
+KVM_PRE_FAULT_MEMORY populates KVM's stage-2 page tables used to map memory
+for the current vCPU state.  KVM maps memory as if the vCPU generated a
+stage-2 read page fault, e.g. faults in memory as needed, but doesn't break
+CoW.  However, KVM does not mark any newly created stage-2 PTE as Accessed.
+
+In the case of confidential VM types where there is an initial set up of
+private guest memory before the guest is 'finalized'/measured, this ioctl
+should only be issued after completing all the necessary setup to put the
+guest into a 'finalized' state so that the above semantics can be reliably
+ensured.
+
+In some cases, multiple vCPUs might share the page tables.  In this
+case, the ioctl can be called in parallel.
+
+When the ioctl returns, the input values are updated to point to the
+remaining range.  If `size` > 0 on return, the caller can just issue
+the ioctl again with the same `struct kvm_map_memory` argument.
+
+Shadow page tables cannot support this ioctl because they
+are indexed by virtual address or nested guest physical address.
+Calling this ioctl when the guest is using shadow page tables (for
+example because it is running a nested guest with nested page tables)
+will fail with `EOPNOTSUPP` even if `KVM_CHECK_EXTENSION` reports
+the capability to be present.
+
+`flags` must currently be zero.
+
+
 5. The kvm_run structure
 ========================
 
@@ -8082,7 +8143,7 @@ capability via KVM_ENABLE_CAP ioctl on the vcpu fd. Note that this
 will disable the use of APIC hardware virtualization even if supported
 by the CPU, as it's incompatible with SynIC auto-EOI behavior.
 
-8.3 KVM_CAP_PPC_RADIX_MMU
+8.3 KVM_CAP_PPC_MMU_RADIX
 -------------------------
 
 :Architectures: ppc
@@ -8092,7 +8153,7 @@ available, means that the kernel can support guests using the
 radix MMU defined in Power ISA V3.00 (as implemented in the POWER9
 processor).
 
-8.4 KVM_CAP_PPC_HASH_MMU_V3
+8.4 KVM_CAP_PPC_MMU_HASH_V3
 ---------------------------
 
 :Architectures: ppc

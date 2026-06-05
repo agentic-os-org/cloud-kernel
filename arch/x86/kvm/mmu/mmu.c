@@ -3345,7 +3345,7 @@ static int kvm_handle_noslot_fault(struct kvm_vcpu *vcpu,
 	return RET_PF_CONTINUE;
 }
 
-static bool page_fault_can_be_fast(struct kvm_page_fault *fault)
+static bool page_fault_can_be_fast(struct kvm *kvm, struct kvm_page_fault *fault)
 {
 	/*
 	 * Page faults with reserved bits set, i.e. faults on MMIO SPTEs, only
@@ -3354,6 +3354,26 @@ static bool page_fault_can_be_fast(struct kvm_page_fault *fault)
 	 * the slow path.  Note, EPT Misconfigs do NOT set the PRESENT flag!
 	 */
 	if (fault->rsvd)
+		return false;
+
+	/*
+	 * For hardware-protected VMs, certain conditions like attempting to
+	 * perform a write to a page which is not in the state that the guest
+	 * expects it to be in can result in a nested/extended #PF. In this
+	 * case, the below code might misconstrue this situation as being the
+	 * result of a write-protected access, and treat it as a spurious case
+	 * rather than taking any action to satisfy the real source of the #PF
+	 * such as generating a KVM_EXIT_MEMORY_FAULT. This can lead to the
+	 * guest spinning on a #PF indefinitely, so don't attempt the fast path
+	 * in this case.
+	 *
+	 * Note that the kvm_mem_is_private() check might race with an
+	 * attribute update, but this will either result in the guest spinning
+	 * on RET_PF_SPURIOUS until the update completes, or an actual spurious
+	 * case might go down the slow path. Either case will resolve itself.
+	 */
+	if (kvm->arch.has_private_mem &&
+	    fault->is_private != kvm_mem_is_private(kvm, fault->gfn))
 		return false;
 
 	/*
@@ -3456,7 +3476,7 @@ static int fast_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
 	u64 *sptep = NULL;
 	uint retry_count = 0;
 
-	if (!page_fault_can_be_fast(fault))
+	if (!page_fault_can_be_fast(vcpu->kvm, fault))
 		return ret;
 
 	walk_shadow_page_lockless_begin(vcpu);
@@ -4245,23 +4265,27 @@ static u32 alloc_apf_token(struct kvm_vcpu *vcpu)
 	return (vcpu->arch.apf.id++ << 12) | vcpu->vcpu_id;
 }
 
-static bool kvm_arch_setup_async_pf(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
-				    gfn_t gfn)
+static bool kvm_arch_setup_async_pf(struct kvm_vcpu *vcpu,
+				    struct kvm_page_fault *fault)
 {
 	struct kvm_arch_async_pf arch;
 
 	arch.token = alloc_apf_token(vcpu);
-	arch.gfn = gfn;
+	arch.gfn = fault->gfn;
+	arch.error_code = fault->error_code;
 	arch.direct_map = vcpu->arch.mmu->root_role.direct;
 	arch.cr3 = kvm_mmu_get_guest_pgd(vcpu, vcpu->arch.mmu);
 
-	return kvm_setup_async_pf(vcpu, cr2_or_gpa,
-				  kvm_vcpu_gfn_to_hva(vcpu, gfn), &arch);
+	return kvm_setup_async_pf(vcpu, fault->addr,
+				  kvm_vcpu_gfn_to_hva(vcpu, fault->gfn), &arch);
 }
 
 void kvm_arch_async_page_ready(struct kvm_vcpu *vcpu, struct kvm_async_pf *work)
 {
 	int r;
+
+	if (WARN_ON_ONCE(work->arch.error_code & PFERR_PRIVATE_ACCESS))
+		return;
 
 	if ((vcpu->arch.mmu->root_role.direct != work->arch.direct_map) ||
 	      work->wakeup_all)
@@ -4275,7 +4299,16 @@ void kvm_arch_async_page_ready(struct kvm_vcpu *vcpu, struct kvm_async_pf *work)
 	      work->arch.cr3 != kvm_mmu_get_guest_pgd(vcpu, vcpu->arch.mmu))
 		return;
 
-	kvm_mmu_do_page_fault(vcpu, work->cr2_or_gpa, 0, true, NULL);
+	r = kvm_mmu_do_page_fault(vcpu, work->cr2_or_gpa, work->arch.error_code,
+				  true, NULL, NULL);
+
+	/*
+	 * Account fixed page faults, otherwise they'll never be counted, but
+	 * ignore stats for all other return times.  Page-ready "faults" aren't
+	 * truly spurious and never trigger emulation
+	 */
+	if (r == RET_PF_FIXED)
+		vcpu->stat.pf_fixed++;
 }
 
 static inline u8 kvm_max_level_for_order(int order)
@@ -4303,6 +4336,25 @@ static void kvm_mmu_prepare_memory_fault_exit(struct kvm_vcpu *vcpu,
 				      fault->is_private);
 }
 
+static u8 kvm_max_private_mapping_level(struct kvm *kvm, kvm_pfn_t pfn,
+					u8 max_level, int gmem_order)
+{
+	u8 req_max_level;
+
+	if (max_level == PG_LEVEL_4K)
+		return PG_LEVEL_4K;
+
+	max_level = min(kvm_max_level_for_order(gmem_order), max_level);
+	if (max_level == PG_LEVEL_4K)
+		return PG_LEVEL_4K;
+
+	req_max_level = static_call(kvm_x86_private_max_mapping_level)(kvm, pfn);
+	if (req_max_level)
+		max_level = min(max_level, req_max_level);
+
+	return req_max_level;
+}
+
 static int kvm_faultin_pfn_private(struct kvm_vcpu *vcpu,
 				   struct kvm_page_fault *fault)
 {
@@ -4320,9 +4372,9 @@ static int kvm_faultin_pfn_private(struct kvm_vcpu *vcpu,
 		return r;
 	}
 
-	fault->max_level = min(kvm_max_level_for_order(max_order),
-			       fault->max_level);
 	fault->map_writable = !(fault->slot->flags & KVM_MEM_READONLY);
+	fault->max_level = kvm_max_private_mapping_level(vcpu->kvm, fault->pfn,
+							 fault->max_level, max_order);
 
 	return RET_PF_CONTINUE;
 }
@@ -4380,7 +4432,7 @@ static int __kvm_faultin_pfn(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault
 			trace_kvm_async_pf_repeated_fault(fault->addr, fault->gfn);
 			kvm_make_request(KVM_REQ_APF_HALT, vcpu);
 			return RET_PF_RETRY;
-		} else if (kvm_arch_setup_async_pf(vcpu, fault->addr, fault->gfn)) {
+		} else if (kvm_arch_setup_async_pf(vcpu, fault)) {
 			return RET_PF_RETRY;
 		}
 	}
@@ -4509,6 +4561,9 @@ int kvm_handle_page_fault(struct kvm_vcpu *vcpu, u64 error_code,
 		return -EFAULT;
 #endif
 
+	/* Ensure the above sanity check also covers KVM-defined flags. */
+	BUILD_BUG_ON(lower_32_bits(PFERR_SYNTHETIC_MASK));
+
 	vcpu->arch.l1tf_flush_l1d = true;
 	if (!flags) {
 		trace_kvm_page_fault(vcpu, fault_address, error_code);
@@ -4600,6 +4655,82 @@ int kvm_tdp_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
 #endif
 
 	return direct_page_fault(vcpu, fault);
+}
+
+static int kvm_tdp_map_page(struct kvm_vcpu *vcpu, gpa_t gpa, u64 error_code,
+			    u8 *level)
+{
+	int r;
+
+	/*
+	 * Restrict to TDP page fault, since that's the only case where the MMU
+	 * is indexed by GPA.
+	 */
+	if (vcpu->arch.mmu->page_fault != kvm_tdp_page_fault)
+		return -EOPNOTSUPP;
+
+	do {
+		if (signal_pending(current))
+			return -EINTR;
+		cond_resched();
+		r = kvm_mmu_do_page_fault(vcpu, gpa, error_code, true, NULL, level);
+	} while (r == RET_PF_RETRY);
+
+	if (r < 0)
+		return r;
+
+	switch (r) {
+	case RET_PF_FIXED:
+	case RET_PF_SPURIOUS:
+		return 0;
+
+	case RET_PF_EMULATE:
+		return -ENOENT;
+
+	case RET_PF_RETRY:
+	case RET_PF_CONTINUE:
+	case RET_PF_INVALID:
+	default:
+		WARN_ONCE(1, "could not fix page fault during prefault");
+		return -EIO;
+	}
+}
+
+long kvm_arch_vcpu_pre_fault_memory(struct kvm_vcpu *vcpu,
+				    struct kvm_pre_fault_memory *range)
+{
+	u64 error_code = PFERR_GUEST_FINAL_MASK;
+	u8 level = PG_LEVEL_4K;
+	u64 end;
+	int r;
+
+	if (!vcpu->kvm->arch.pre_fault_allowed)
+		return -EOPNOTSUPP;
+
+	/*
+	 * reload is efficient when called repeatedly, so we can do it on
+	 * every iteration.
+	 */
+	kvm_mmu_reload(vcpu);
+
+	if (kvm_arch_has_private_mem(vcpu->kvm) &&
+	    kvm_mem_is_private(vcpu->kvm, gpa_to_gfn(range->gpa)))
+		error_code |= PFERR_PRIVATE_ACCESS;
+
+	/*
+	 * Shadow paging uses GVA for kvm page fault, so restrict to
+	 * two-dimensional paging.
+	 */
+	r = kvm_tdp_map_page(vcpu, range->gpa, error_code, &level);
+	if (r < 0)
+		return r;
+
+	/*
+	 * If the mapping that covers range->gpa can use a huge page, it
+	 * may start below it or end after range->gpa + range->size.
+	 */
+	end = (range->gpa & KVM_HPAGE_MASK(level)) + KVM_HPAGE_SIZE(level);
+	return min(range->size, end - range->gpa);
 }
 
 static void nonpaging_init_context(struct kvm_mmu *context)
@@ -5794,19 +5925,22 @@ int noinline kvm_mmu_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa, u64 err
 	int r, emulation_type = EMULTYPE_PF;
 	bool direct = vcpu->arch.mmu->root_role.direct;
 
-	/*
-	 * IMPLICIT_ACCESS is a KVM-defined flag used to correctly perform SMAP
-	 * checks when emulating instructions that triggers implicit access.
-	 * WARN if hardware generates a fault with an error code that collides
-	 * with the KVM-defined value.  Clear the flag and continue on, i.e.
-	 * don't terminate the VM, as KVM can't possibly be relying on a flag
-	 * that KVM doesn't know about.
-	 */
-	if (WARN_ON_ONCE(error_code & PFERR_IMPLICIT_ACCESS))
-		error_code &= ~PFERR_IMPLICIT_ACCESS;
-
 	if (WARN_ON_ONCE(!VALID_PAGE(vcpu->arch.mmu->root.hpa)))
 		return RET_PF_RETRY;
+
+	/*
+	 * Except for reserved faults (emulated MMIO is shared-only), set the
+	 * PFERR_PRIVATE_ACCESS flag for software-protected VMs based on the gfn's
+	 * current attributes, which are the source of truth for such VMs.  Note,
+	 * this wrong for nested MMUs as the GPA is an L2 GPA, but KVM doesn't
+	 * currently supported nested virtualization (among many other things)
+	 * for software-protected VMs.
+	 */
+	if (IS_ENABLED(CONFIG_KVM_SW_PROTECTED_VM) &&
+	    !(error_code & PFERR_RSVD_MASK) &&
+	    vcpu->kvm->arch.vm_type == KVM_X86_SW_PROTECTED_VM &&
+	    kvm_mem_is_private(vcpu->kvm, gpa_to_gfn(cr2_or_gpa)))
+		error_code |= PFERR_PRIVATE_ACCESS;
 
 	r = RET_PF_INVALID;
 	if (unlikely(error_code & PFERR_RSVD_MASK)) {
@@ -5816,15 +5950,22 @@ int noinline kvm_mmu_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa, u64 err
 	}
 
 	if (r == RET_PF_INVALID) {
-		r = kvm_mmu_do_page_fault(vcpu, cr2_or_gpa,
-					  lower_32_bits(error_code), false,
-					  &emulation_type);
+		r = kvm_mmu_do_page_fault(vcpu, cr2_or_gpa, error_code, false,
+					  &emulation_type, NULL);
 		if (KVM_BUG_ON(r == RET_PF_INVALID, vcpu->kvm))
 			return -EIO;
 	}
 
 	if (r < 0)
 		return r;
+
+	if (r == RET_PF_FIXED)
+		vcpu->stat.pf_fixed++;
+	else if (r == RET_PF_EMULATE)
+		vcpu->stat.pf_emulate++;
+	else if (r == RET_PF_SPURIOUS)
+		vcpu->stat.pf_spurious++;
+
 	if (r != RET_PF_EMULATE)
 		return 1;
 
@@ -6698,6 +6839,7 @@ restart:
 
 	return need_tlb_flush;
 }
+EXPORT_SYMBOL_GPL(kvm_zap_gfn_range);
 
 static void kvm_rmap_zap_collapsible_sptes(struct kvm *kvm,
 					   const struct kvm_memory_slot *slot)

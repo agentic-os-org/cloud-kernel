@@ -79,6 +79,7 @@ static const char * const sev_status_feat_names[] = {
 	[MSR_AMD64_SNP_IBS_VIRT_BIT]		= "IBSVirt",
 	[MSR_AMD64_SNP_VMSA_REG_PROT_BIT]	= "VMSARegProt",
 	[MSR_AMD64_SNP_SMT_PROT_BIT]		= "SMTProt",
+	[MSR_AMD64_SNP_IBPB_ON_ENTRY_BIT]	= "IBPBOnEntry",
 };
 
 /* For early boot hypervisor communication in SEV-ES enabled guests */
@@ -649,7 +650,7 @@ static u64 __init get_secrets_page(void)
 
 static u64 __init get_snp_jump_table_addr(void)
 {
-	struct snp_secrets_page_layout *layout;
+	struct snp_secrets_page *secrets;
 	void __iomem *mem;
 	u64 pa, addr;
 
@@ -663,9 +664,9 @@ static u64 __init get_snp_jump_table_addr(void)
 		return 0;
 	}
 
-	layout = (__force struct snp_secrets_page_layout *)mem;
+	secrets = (__force struct snp_secrets_page *)mem;
 
-	addr = layout->os_area.ap_jump_table_pa;
+	addr = secrets->os_area.ap_jump_table_pa;
 	iounmap(mem);
 
 	return addr;

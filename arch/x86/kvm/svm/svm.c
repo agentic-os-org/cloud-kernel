@@ -1442,6 +1442,9 @@ static void svm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_event)
 	svm->spec_ctrl = 0;
 	svm->virt_spec_ctrl = 0;
 
+	if (init_event)
+		sev_snp_init_protected_guest_state(vcpu);
+
 	init_vmcb(vcpu);
 
 	if (!init_event)
@@ -2096,15 +2099,33 @@ static int pf_interception(struct kvm_vcpu *vcpu)
 static int npf_interception(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
+	int rc;
 
 	u64 fault_address = svm->vmcb->control.exit_info_2;
 	u64 error_code = svm->vmcb->control.exit_info_1;
 
+	/*
+	 * WARN if hardware generates a fault with an error code that collides
+	 * with KVM-defined sythentic flags.  Clear the flags and continue on,
+	 * i.e. don't terminate the VM, as KVM can't possibly be relying on a
+	 * flag that KVM doesn't know about.
+	 */
+	if (WARN_ON_ONCE(error_code & PFERR_SYNTHETIC_MASK))
+		error_code &= ~PFERR_SYNTHETIC_MASK;
+
+	if (sev_snp_guest(vcpu->kvm) && (error_code & PFERR_GUEST_ENC_MASK))
+		error_code |= PFERR_PRIVATE_ACCESS;
+
 	trace_kvm_page_fault(vcpu, fault_address, error_code);
-	return kvm_mmu_page_fault(vcpu, fault_address, error_code,
-			static_cpu_has(X86_FEATURE_DECODEASSISTS) ?
-			svm->vmcb->control.insn_bytes : NULL,
-			svm->vmcb->control.insn_len);
+	rc = kvm_mmu_page_fault(vcpu, fault_address, error_code,
+				static_cpu_has(X86_FEATURE_DECODEASSISTS) ?
+				svm->vmcb->control.insn_bytes : NULL,
+				svm->vmcb->control.insn_len);
+
+	if (rc > 0 && error_code & PFERR_GUEST_RMP_MASK)
+		sev_handle_rmp_fault(vcpu, fault_address, error_code);
+
+	return rc;
 }
 
 static int db_interception(struct kvm_vcpu *vcpu)
@@ -2876,9 +2897,23 @@ static int svm_get_msr_feature(struct kvm_msr_entry *msr)
 	return 0;
 }
 
+static bool
+sev_es_prevent_msr_access(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
+{
+	return sev_es_guest(vcpu->kvm) &&
+	       vcpu->arch.guest_state_protected &&
+	       svm_msrpm_offset(msr_info->index) != MSR_INVALID &&
+	       !msr_write_intercepted(vcpu, msr_info->index);
+}
+
 static int svm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
+
+	if (sev_es_prevent_msr_access(vcpu, msr_info)) {
+		msr_info->data = 0;
+		return vcpu->kvm->arch.has_protected_state ? -EINVAL : 0;
+	}
 
 	switch (msr_info->index) {
 	case MSR_AMD64_TSC_RATIO:
@@ -3042,6 +3077,10 @@ static int svm_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr)
 
 	u32 ecx = msr->index;
 	u64 data = msr->data;
+
+	if (sev_es_prevent_msr_access(vcpu, msr))
+		return vcpu->kvm->arch.has_protected_state ? -EINVAL : 0;
+
 	switch (ecx) {
 	case MSR_AMD64_TSC_RATIO:
 
@@ -5067,8 +5106,12 @@ static int svm_vm_init(struct kvm *kvm)
 
 	if (type != KVM_X86_DEFAULT_VM &&
 	    type != KVM_X86_SW_PROTECTED_VM) {
-		kvm->arch.has_protected_state = (type == KVM_X86_SEV_ES_VM);
+		kvm->arch.has_protected_state =
+			(type == KVM_X86_SEV_ES_VM || type == KVM_X86_SNP_VM);
 		to_kvm_sev_info(kvm)->need_init = true;
+
+		kvm->arch.has_private_mem = (type == KVM_X86_SNP_VM);
+		kvm->arch.pre_fault_allowed = !kvm->arch.has_private_mem;
 	}
 
 	if (!pause_filter_count || !pause_filter_thresh)
@@ -5259,6 +5302,10 @@ static struct kvm_x86_ops svm_x86_ops __initdata = {
 	.alloc_apic_backing_page = svm_alloc_apic_backing_page,
 
 	.arch_hypercall = kvm_hygon_arch_hypercall,
+
+	.gmem_prepare = sev_gmem_prepare,
+	.gmem_invalidate = sev_gmem_invalidate,
+	.private_max_mapping_level = sev_private_max_mapping_level,
 };
 
 /*
