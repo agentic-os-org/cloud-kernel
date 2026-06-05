@@ -251,7 +251,6 @@ static int erofs_scan_devices(struct super_block *sb,
 	return err;
 }
 
-#ifdef CONFIG_EROFS_FS_ZIP
 /* read variable-sized metadata, offset will be aligned by 4-byte */
 void *erofs_read_metadata(struct super_block *sb, struct erofs_buf *buf,
 			  erofs_off_t *offset, int *lengthp)
@@ -287,9 +286,9 @@ void *erofs_read_metadata(struct super_block *sb, struct erofs_buf *buf,
 	}
 	return buffer;
 }
-#else
-static int z_erofs_parse_cfgs(struct super_block *sb,
-			      struct erofs_super_block *dsb)
+
+#ifndef CONFIG_EROFS_FS_ZIP
+int z_erofs_parse_cfgs(struct super_block *sb, struct erofs_super_block *dsb)
 {
 	if (!dsb->u1.available_compr_algs)
 		return 0;
@@ -353,6 +352,8 @@ static int erofs_read_superblock(struct super_block *sb)
 	sbi->meta_blkaddr = le32_to_cpu(dsb->meta_blkaddr);
 #ifdef CONFIG_EROFS_FS_XATTR
 	sbi->xattr_blkaddr = le32_to_cpu(dsb->xattr_blkaddr);
+	sbi->xattr_prefix_start = le32_to_cpu(dsb->xattr_prefix_start);
+	sbi->xattr_prefix_count = dsb->xattr_prefix_count;
 #endif
 	sbi->islotbits = ilog2(sizeof(struct erofs_inode_compact));
 	if (erofs_sb_has_48bit(sbi) && dsb->rootnid_8b) {
@@ -817,7 +818,6 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 		return -ENOMEM;
 
 	erofs_shrinker_register(sb);
-#ifdef CONFIG_EROFS_FS_ZIP
 	if (erofs_sb_has_fragments(sbi) && sbi->packed_nid) {
 		sbi->packed_inode = erofs_iget(sb, sbi->packed_nid);
 		if (IS_ERR(sbi->packed_inode)) {
@@ -826,8 +826,11 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 			return err;
 		}
 	}
-#endif
 	err = erofs_init_managed_cache(sb);
+	if (err)
+		return err;
+
+	err = erofs_xattr_prefixes_init(sb);
 	if (err)
 		return err;
 
@@ -1030,12 +1033,13 @@ static void erofs_put_super(struct super_block *sb)
 
 	erofs_unregister_sysfs(sb);
 	erofs_shrinker_unregister(sb);
+	erofs_xattr_prefixes_cleanup(sb);
 #ifdef CONFIG_EROFS_FS_ZIP
 	iput(sbi->managed_cache);
 	sbi->managed_cache = NULL;
+#endif
 	iput(sbi->packed_inode);
 	sbi->packed_inode = NULL;
-#endif
 	erofs_fscache_unregister_cookie(sbi->s_fscache);
 	sbi->s_fscache = NULL;
 }
