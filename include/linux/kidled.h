@@ -96,7 +96,8 @@ enum kidled_scan_type {
 #define KIDLED_IS_BUCKET_INVALID(buckets)	\
 	(buckets[0] == KIDLED_INVALID_BUCKET)
 
-DECLARE_STATIC_KEY_FALSE(kidled_enabled_key);
+DECLARE_STATIC_KEY_FALSE(kidled_lru_page_enabled_key);
+DECLARE_STATIC_KEY_FALSE(kidled_slab_enabled_key);
 
 static inline bool kidled_is_slab_scanned(unsigned short slab_age,
 					  unsigned long scan_rounds)
@@ -299,9 +300,19 @@ static inline void kidled_set_scan_duration(u16 duration)
 			       duration, NULL);
 }
 
+static inline bool is_kidled_lru_page_enabled(void)
+{
+	return static_branch_unlikely(&kidled_lru_page_enabled_key);
+}
+
+static inline bool is_kidled_slab_enabled(void)
+{
+	return static_branch_unlikely(&kidled_slab_enabled_key);
+}
+
 static inline bool is_kidled_enabled(void)
 {
-	return static_branch_unlikely(&kidled_enabled_key);
+	return is_kidled_lru_page_enabled() || is_kidled_slab_enabled();
 }
 
 bool is_kidled_setting(void);
@@ -416,6 +427,16 @@ static inline bool page_has_slab_age(struct slab *slab)
 static inline unsigned int kidled_get_current_scan_duration(void)
 {
 	return 0;
+}
+
+static inline bool is_kidled_lru_page_enabled(void)
+{
+	return false;
+}
+
+static inline bool is_kidled_slab_enabled(void)
+{
+	return false;
 }
 
 static inline bool is_kidled_enabled(void)

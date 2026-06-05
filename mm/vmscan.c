@@ -5422,14 +5422,20 @@ static ssize_t enabled_store(struct kobject *kobj, struct kobj_attribute *attr,
 		return -EINVAL;
 
 	atomic_inc(&lru_gen_setting);
+	/*
+	 * MGLRU only conflicts with kidled page scan path (page->flags age
+	 * bits overlap with lru_gen generations). The kidled slab path uses
+	 * obj_exts and is independent, so we narrow the mutex from the whole
+	 * kidled facility down to its page subsystem only.
+	 */
 	if (is_kidled_setting()) {
-		pr_warn("%s: Failed to enable mglru due to kidled/coldpgs is being set\n",
+		pr_warn("%s: Failed to enable mglru due to kidled/coldpgs page scan is being set\n",
 			__func__);
 		atomic_dec(&lru_gen_setting);
 		return -EBUSY;
 	}
-	if (caps && (is_kidled_enabled())) {
-		pr_warn("%s: Failed to enable mglru due to kidled/coldpgs enabled\n",
+	if (caps && (is_kidled_lru_page_enabled())) {
+		pr_warn("%s: Failed to enable mglru due to kidled/coldpgs page scan enabled\n",
 			__func__);
 		atomic_dec(&lru_gen_setting);
 		return -EINVAL;
