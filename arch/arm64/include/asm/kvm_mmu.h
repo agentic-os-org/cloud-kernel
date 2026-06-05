@@ -11,6 +11,7 @@
 #include <asm/memory.h>
 #include <asm/mmu.h>
 #include <asm/cpufeature.h>
+#include <asm/cputype.h>
 
 /*
  * As ARMv8.0 only has the TTBR0_EL2 register, we cannot express
@@ -100,6 +101,11 @@ alternative_cb_end
 #include <asm/kvm_host.h>
 #include <asm/kvm_nested.h>
 
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+static inline void kvm_compute_layout(void) {}
+static inline void kvm_apply_hyp_relocations(void) {}
+#define kern_hyp_va(v)		(v)
+#else
 void kvm_update_va_mask(struct alt_instr *alt,
 			__le32 *origptr, __le32 *updptr, int nr_inst);
 void kvm_compute_layout(void);
@@ -139,6 +145,7 @@ static __always_inline unsigned long __kern_hyp_va(unsigned long v)
 }
 
 #define kern_hyp_va(v) 	((typeof(v))(__kern_hyp_va((unsigned long)(v))))
+#endif
 
 extern u32 __hyp_va_bits;
 
@@ -233,6 +240,10 @@ static inline size_t __invalidate_icache_max_range(void)
 	u8 iminline;
 	u64 ctr;
 
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+	// For VHE host, we may read ctr_el0 directly.
+	ctr = read_cpuid_cachetype();
+#else
 	asm volatile(ALTERNATIVE_CB("movz %0, #0\n"
 				    "movk %0, #0, lsl #16\n"
 				    "movk %0, #0, lsl #32\n"
@@ -240,6 +251,7 @@ static inline size_t __invalidate_icache_max_range(void)
 				    ARM64_ALWAYS_SYSTEM,
 				    kvm_compute_final_ctr_el0)
 		     : "=r" (ctr));
+#endif
 
 	iminline = SYS_FIELD_GET(CTR_EL0, IminLine, ctr) + 2;
 	return MAX_DVM_OPS << iminline;

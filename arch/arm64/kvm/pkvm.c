@@ -11,12 +11,11 @@
 #include <asm/kvm_mmu.h>
 #include <linux/memblock.h>
 #include <linux/mutex.h>
+#include <linux/kvm_types.h>
 
 #include <asm/kvm_pkvm.h>
 
 #include "hyp_constants.h"
-
-DEFINE_STATIC_KEY_FALSE(kvm_protected_mode_initialized);
 
 static struct memblock_region *hyp_memory = kvm_nvhe_sym(hyp_memory);
 static unsigned int *hyp_memblock_nr_ptr = &kvm_nvhe_sym(hyp_memblock_nr);
@@ -404,6 +403,7 @@ void pkvm_pgtable_stage2_destroy_pgd(struct kvm_pgtable *pgt)
 	/* Expected to be called after all pKVM mappings have been released. */
 	WARN_ON_ONCE(!RB_EMPTY_ROOT(&pgt->pkvm_mappings.rb_root));
 }
+EXPORT_SYMBOL_FOR_KVM(pkvm_pgtable_stage2_destroy_pgd);
 
 int pkvm_pgtable_stage2_map(struct kvm_pgtable *pgt, u64 addr, u64 size,
 			   u64 phys, enum kvm_pgtable_prot prot,
@@ -489,6 +489,7 @@ int pkvm_pgtable_stage2_unmap(struct kvm_pgtable *pgt, u64 addr, u64 size)
 
 	return __pkvm_pgtable_stage2_unshare(pgt, addr, addr + size);
 }
+EXPORT_SYMBOL_FOR_KVM(pkvm_pgtable_stage2_unmap);
 
 int pkvm_pgtable_stage2_wrprotect(struct kvm_pgtable *pgt, u64 addr, u64 size)
 {

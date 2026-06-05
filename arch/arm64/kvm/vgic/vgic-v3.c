@@ -785,6 +785,12 @@ int vgic_v3_map_resources(struct kvm *kvm)
 DEFINE_STATIC_KEY_FALSE(vgic_v3_cpuif_trap);
 DEFINE_STATIC_KEY_FALSE(vgic_v3_has_v2_compat);
 
+#ifdef MODULE
+module_param_named(vgic_v3_group0_trap, group0_trap, bool, 0444);
+module_param_named(vgic_v3_group1_trap, group1_trap, bool, 0444);
+module_param_named(vgic_v3_common_trap, common_trap, bool, 0444);
+module_param_named(vgic_v4_enable, gicv4_enable, bool, 0444);
+#else
 static int __init early_group0_trap_cfg(char *buf)
 {
 	return kstrtobool(buf, &group0_trap);
@@ -808,6 +814,7 @@ static int __init early_gicv4_enable(char *buf)
 	return kstrtobool(buf, &gicv4_enable);
 }
 early_param("kvm-arm.vgic_v4_enable", early_gicv4_enable);
+#endif
 
 static const struct midr_range broken_seis[] = {
 	MIDR_ALL_VERSIONS(MIDR_APPLE_M1_ICESTORM),
@@ -832,11 +839,8 @@ static bool vgic_v3_broken_seis(void)
 		(read_sysreg_s(SYS_ICH_VTR_EL2) & ICH_VTR_EL2_SEIS));
 }
 
-void noinstr kvm_compute_ich_hcr_trap_bits(struct alt_instr *alt,
-					   __le32 *origptr, __le32 *updptr,
-					   int nr_inst)
+u64 __kvm_compute_ich_hcr_trap_bits(void)
 {
-	u32 insn, oinsn, rd;
 	u64 hcr = 0;
 
 	if (cpus_have_cap(ARM64_WORKAROUND_CAVIUM_30115)) {
@@ -863,6 +867,17 @@ void noinstr kvm_compute_ich_hcr_trap_bits(struct alt_instr *alt,
 	if (dir_trap)
 		hcr |= ICH_HCR_EL2_TDIR;
 
+	return hcr;
+}
+
+#ifndef CONFIG_KVM_ARM_HOST_VHE_ONLY
+void noinstr kvm_compute_ich_hcr_trap_bits(struct alt_instr *alt,
+					   __le32 *origptr, __le32 *updptr,
+					   int nr_inst)
+{
+	u32 insn, oinsn, rd;
+	u64 hcr = __kvm_compute_ich_hcr_trap_bits();
+
 	/* Compute target register */
 	oinsn = le32_to_cpu(*origptr);
 	rd = aarch64_insn_decode_register(AARCH64_INSN_REGTYPE_RD, oinsn);
@@ -875,6 +890,7 @@ void noinstr kvm_compute_ich_hcr_trap_bits(struct alt_instr *alt,
 					 AARCH64_INSN_MOVEWIDE_ZERO);
 	*updptr = cpu_to_le32(insn);
 }
+#endif
 
 void vgic_v3_enable_cpuif_traps(void)
 {

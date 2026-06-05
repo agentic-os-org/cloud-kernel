@@ -29,8 +29,13 @@
 #include <asm/vectors.h>
 
 /* VHE specific context */
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+struct kvm_host_data __percpu *kvm_host_data;
+struct kvm_cpu_context __percpu *kvm_hyp_ctxt;
+#else
 DEFINE_PER_CPU(struct kvm_host_data, kvm_host_data);
 DEFINE_PER_CPU(struct kvm_cpu_context, kvm_hyp_ctxt);
+#endif
 DEFINE_PER_CPU(unsigned long, kvm_hyp_vector);
 
 /*

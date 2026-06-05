@@ -186,10 +186,21 @@ int __init kvm_arm_vmid_alloc_init(void)
 	if (!vmid_map)
 		return -ENOMEM;
 
+#ifdef MODULE
+	/*
+	 * When the bitmap is empty, it assumes that the TLB is clean and all
+	 * VMIDs are unused (see flush_context()). However, when KVM is built
+	 * as a module, there may be leftover dirty TLB entries from the
+	 * previous module loading. Therefore, flush TLB during module loading
+	 * to ensure that there are no dirty TLB entries remaining.
+	 */
+	kvm_call_hyp(__kvm_flush_vm_context);
+#endif
+
 	return 0;
 }
 
-void __init kvm_arm_vmid_alloc_free(void)
+void kvm_arm_vmid_alloc_free(void)
 {
 	bitmap_free(vmid_map);
 }

@@ -9,6 +9,7 @@
 #include <linux/errno.h>
 #include <linux/linkage.h>
 #include <linux/init.h>
+#include <linux/kvm_types.h>
 #include <asm/assembler.h>
 #include <asm/cpufeature.h>
 #include <asm/alternative.h>
@@ -98,6 +99,7 @@ alternative_else_nop_endif
 	invalidate_icache_by_line x0, x1, x2, x3
 	ret
 SYM_FUNC_END(icache_inval_pou)
+EXPORT_SYMBOL_FOR_KVM(icache_inval_pou)
 
 /*
  *	dcache_clean_inval_poc(start, end)
@@ -113,6 +115,7 @@ SYM_FUNC_START(__pi_dcache_clean_inval_poc)
 	ret
 SYM_FUNC_END(__pi_dcache_clean_inval_poc)
 SYM_FUNC_ALIAS(dcache_clean_inval_poc, __pi_dcache_clean_inval_poc)
+EXPORT_SYMBOL_FOR_KVM(dcache_clean_inval_poc)
 
 /*
  *	dcache_clean_pou(start, end)

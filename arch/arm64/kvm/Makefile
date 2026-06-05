@@ -8,15 +8,14 @@ ccflags-y += -I $(src)
 include $(srctree)/virt/kvm/Makefile.kvm
 
 obj-$(CONFIG_KVM) += kvm.o
-obj-$(CONFIG_KVM) += hyp/
 
 CFLAGS_sys_regs.o += -Wno-override-init
 CFLAGS_handle_exit.o += -Wno-override-init
 
 kvm-y += arm.o mmu.o mmio.o psci.o hypercalls.o pvtime.o \
-	 inject_fault.o va_layout.o handle_exit.o config.o \
-	 guest.o debug.o reset.o sys_regs.o stacktrace.o \
-	 vgic-sys-reg-v3.o fpsimd.o pkvm.o \
+	 inject_fault.o handle_exit.o config.o \
+	 guest.o debug.o reset.o sys_regs.o \
+	 vgic-sys-reg-v3.o fpsimd.o \
 	 arch_timer.o trng.o vmid.o emulate-nested.o nested.o at.o \
 	 vgic/vgic.o vgic/vgic-init.o \
 	 vgic/vgic-irqfd.o vgic/vgic-v2.o \
@@ -26,7 +25,32 @@ kvm-y += arm.o mmu.o mmio.o psci.o hypercalls.o pvtime.o \
 	 vgic/vgic-its.o vgic/vgic-debug.o vgic/vgic-v3-nested.o \
 	 vgic/vgic-v5.o
 
+obj-y += kvm_host.o
+
 kvm-$(CONFIG_HW_PERF_EVENTS)  += pmu-emul.o pmu.o
+
+ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+ccflags-y += -I $(srctree)/$(src)/hyp/include
+
+kvm-y += $(addprefix hyp/, vgic-v3-sr.o vgic-v5-sr.o aarch32.o vgic-v2-cpuif-proxy.o entry.o \
+	   fpsimd.o hyp-entry.o exception.o pgtable.o)
+kvm-y += $(addprefix hyp/vhe/, debug-sr.o sysreg-sr.o timer-sr.o tlb.o)
+
+$(obj)/hyp.lds: $(src)/hyp/hyp.lds.S FORCE
+	$(call if_changed_dep,cpp_lds_S)
+
+$(obj)/switch.tmp.o: $(src)/hyp/vhe/switch.c FORCE
+	$(call if_changed_rule,cc_o_c)
+
+LDFLAGS_switch.o := -r -T
+$(obj)/switch.o: $(obj)/hyp.lds $(obj)/switch.tmp.o FORCE
+	$(call if_changed,ld)
+
+kvm-y += switch.o
+else
+kvm-y += va_layout.o stacktrace.o pkvm.o
+obj-$(CONFIG_KVM) += hyp/
+
 kvm-$(CONFIG_ARM64_PTR_AUTH)  += pauth.o
 kvm-$(CONFIG_PTDUMP_STAGE2_DEBUGFS) += ptdump.o
 
@@ -47,3 +71,4 @@ $(obj)/hyp_constants.h: $(obj)/hyp-constants.s FORCE
 
 obj-kvm := $(addprefix $(obj)/, $(kvm-y))
 $(obj-kvm): $(obj)/hyp_constants.h
+endif

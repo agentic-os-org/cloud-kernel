@@ -53,8 +53,6 @@
 
 #include "sys_regs.h"
 
-static enum kvm_mode kvm_mode = KVM_MODE_DEFAULT;
-
 enum kvm_wfx_trap_policy {
 	KVM_WFX_NOTRAP_SINGLE_TASK, /* Default option */
 	KVM_WFX_NOTRAP,
@@ -114,7 +112,11 @@ DECLARE_KVM_HYP_PER_CPU(unsigned long, kvm_hyp_vector);
 DEFINE_PER_CPU(unsigned long, kvm_arm_hyp_stack_base);
 DECLARE_KVM_NVHE_PER_CPU(struct kvm_nvhe_init_params, kvm_init_params);
 
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
+extern struct kvm_cpu_context __percpu *kvm_hyp_ctxt;
+#else
 DECLARE_KVM_NVHE_PER_CPU(struct kvm_cpu_context, kvm_hyp_ctxt);
+#endif
 
 static bool vgic_present, kvm_arm_initialised;
 
@@ -616,7 +618,7 @@ static void vcpu_set_pauth_traps(struct kvm_vcpu *vcpu)
 		if (vcpu->arch.hcr_el2 & (HCR_API | HCR_APK)) {
 			struct kvm_cpu_context *ctxt;
 
-			ctxt = this_cpu_ptr_hyp_sym(kvm_hyp_ctxt);
+			ctxt = this_cpu_ptr_wrapper(kvm_hyp_ctxt);
 			ptrauth_save_keys(ctxt);
 		}
 	}
@@ -2052,6 +2054,56 @@ int kvm_arch_vm_ioctl(struct file *filp, unsigned int ioctl, unsigned long arg)
 	}
 }
 
+#ifdef MODULE
+static struct kvm_pmu_ops __kvm_pmu_ops = {
+	.set_pmu_events = kvm_set_pmu_events,
+	.clr_pmu_events = kvm_clr_pmu_events,
+	.set_pmuserenr = kvm_set_pmuserenr,
+	.vcpu_pmu_resync_el0 = kvm_vcpu_pmu_resync_el0,
+};
+
+static void __init register_pmu_handlers(void)
+{
+	kvm_register_pmu_handlers(&__kvm_pmu_ops);
+}
+
+static void unregister_pmu_handlers(void)
+{
+	kvm_unregister_pmu_handlers(&__kvm_pmu_ops);
+}
+
+static int __init kvm_alloc_percpu(void)
+{
+	kvm_host_data = alloc_percpu(struct kvm_host_data);
+	if (!kvm_host_data) {
+		kvm_err("Failed to allocate percpu memory for kvm_host_data.\n");
+		return -ENOMEM;
+	}
+
+	kvm_hyp_ctxt = alloc_percpu(struct kvm_cpu_context);
+	if (!kvm_hyp_ctxt) {
+		free_percpu(kvm_host_data);
+		kvm_host_data = NULL;
+		kvm_err("Failed to allocate percpu memory for kvm_hyp_ctxt.\n");
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+static void kvm_free_percpu(void)
+{
+	free_percpu(kvm_host_data);
+	kvm_host_data = NULL;
+	free_percpu(kvm_hyp_ctxt);
+	kvm_hyp_ctxt = NULL;
+}
+#else
+static inline void __init register_pmu_handlers(void) {}
+static inline void unregister_pmu_handlers(void) {}
+static inline int __init kvm_alloc_percpu(void) { return 0; }
+static void kvm_free_percpu(void) {}
+
 static unsigned long nvhe_percpu_size(void)
 {
 	return (unsigned long)CHOOSE_NVHE_SYM(__per_cpu_end) -
@@ -2069,6 +2121,7 @@ static size_t pkvm_host_sve_state_order(void)
 {
 	return get_order(pkvm_host_sve_state_size());
 }
+#endif
 
 /* A lookup table holding the hypervisor VA for each vector slot */
 static void *hyp_spectre_vector_selector[BP_HARDEN_EL2_SLOTS];
@@ -2102,6 +2155,17 @@ static int kvm_init_vector_slots(void)
 	return 0;
 }
 
+#ifdef MODULE
+static void cpu_hyp_reset(void) {}
+
+static void cpu_set_hyp_vector(void)
+{
+	struct bp_hardening_data *data = this_cpu_ptr(&bp_hardening_data);
+	void *vector = hyp_spectre_vector_selector[data->slot];
+
+	*this_cpu_ptr_hyp_sym(kvm_hyp_vector) = (unsigned long)vector;
+}
+#else
 static void __init cpu_prepare_hyp_mode(int cpu, u32 hyp_va_bits)
 {
 	struct kvm_nvhe_init_params *params = per_cpu_ptr_nvhe_sym(kvm_init_params, cpu);
@@ -2225,14 +2289,17 @@ static void cpu_set_hyp_vector(void)
 	else
 		kvm_call_hyp_nvhe(__pkvm_cpu_set_vector, data->slot);
 }
+#endif
 
 static void cpu_hyp_init_context(void)
 {
 	kvm_init_host_cpu_context(host_data_ptr(host_ctxt));
 	kvm_init_host_debug_data();
 
+#ifndef MODULE
 	if (!is_kernel_in_hyp_mode())
 		cpu_init_hyp_mode();
+#endif
 }
 
 static void cpu_hyp_init_features(void)
@@ -2343,7 +2410,7 @@ static void __init hyp_cpu_pm_init(void)
 	if (!is_protected_kvm_enabled())
 		cpu_pm_register_notifier(&hyp_init_cpu_pm_nb);
 }
-static void __init hyp_cpu_pm_exit(void)
+static void hyp_cpu_pm_exit(void)
 {
 	if (!is_protected_kvm_enabled())
 		cpu_pm_unregister_notifier(&hyp_init_cpu_pm_nb);
@@ -2352,11 +2419,12 @@ static void __init hyp_cpu_pm_exit(void)
 static inline void __init hyp_cpu_pm_init(void)
 {
 }
-static inline void __init hyp_cpu_pm_exit(void)
+static inline void hyp_cpu_pm_exit(void)
 {
 }
 #endif
 
+#ifndef MODULE
 static void __init init_cpu_logical_map(void)
 {
 	unsigned int cpu;
@@ -2397,6 +2465,7 @@ static bool __init init_psci_relay(void)
 	}
 	return true;
 }
+#endif
 
 static int __init init_subsystems(void)
 {
@@ -2442,7 +2511,7 @@ static int __init init_subsystems(void)
 		goto out;
 	}
 
-	if (kvm_mode == KVM_MODE_NV &&
+	if (kvm_get_mode() == KVM_MODE_NV &&
 		!(vgic_present && (kvm_vgic_global_state.type == VGIC_V3 ||
 				   kvm_vgic_global_state.has_gcie_v3_compat))) {
 		kvm_err("NV support requires GICv3 or GICv5 with legacy support, giving up\n");
@@ -2457,15 +2526,23 @@ static int __init init_subsystems(void)
 	if (err)
 		goto out;
 
+	register_pmu_handlers();
+
 	kvm_register_perf_callbacks();
 
 	err = kvm_hyp_trace_init();
-	if (err)
+	if (err) {
 		kvm_err("Failed to initialize Hyp tracing\n");
+		kvm_unregister_perf_callbacks();
+		unregister_pmu_handlers();
+		kvm_timer_hyp_uninit();
+	}
 
 out:
-	if (err)
+	if (err) {
+		kvm_vgic_hyp_uninit();
 		hyp_cpu_pm_exit();
+	}
 
 	if (err || !is_protected_kvm_enabled())
 		on_each_cpu(cpu_hyp_uninit, NULL, 1);
@@ -2473,12 +2550,29 @@ out:
 	return err;
 }
 
-static void __init teardown_subsystems(void)
+static void teardown_subsystems(void)
 {
 	kvm_unregister_perf_callbacks();
+	unregister_pmu_handlers();
+	kvm_timer_hyp_uninit();
+	kvm_vgic_hyp_uninit();
 	hyp_cpu_pm_exit();
+	if (!is_protected_kvm_enabled())
+		on_each_cpu(cpu_hyp_uninit, NULL, 1);
 }
 
+#ifdef MODULE
+static void teardown_hyp_mode(void)
+{
+	kvm_info("teardown hyp mode is not allowed\n");
+}
+
+static int init_hyp_mode(void)
+{
+	kvm_info("init hyp mode is not allowed\n");
+	return -EPERM;
+}
+#else
 static void __init teardown_hyp_mode(void)
 {
 	bool free_sve = system_supports_sve() && is_protected_kvm_enabled();
@@ -2848,6 +2942,7 @@ out_err:
 	kvm_err("error initializing Hyp mode: %d\n", err);
 	return err;
 }
+#endif
 
 struct kvm_vcpu *kvm_mpidr_to_vcpu(struct kvm *kvm, unsigned long mpidr)
 {
@@ -2967,13 +3062,20 @@ static __init int kvm_arm_init(void)
 		return -ENODEV;
 	}
 
+	in_hyp_mode = is_kernel_in_hyp_mode();
+
+#ifdef MODULE
+	if (!in_hyp_mode) {
+		kvm_info("KVM module is only allowed in VHE mode\n");
+		return -ENODEV;
+	}
+#endif
+
 	err = kvm_sys_reg_table_init();
 	if (err) {
 		kvm_info("Error initializing system register tables");
 		return err;
 	}
-
-	in_hyp_mode = is_kernel_in_hyp_mode();
 
 	if (cpus_have_final_cap(ARM64_WORKAROUND_DEVICE_LOAD_ACQUIRE) ||
 	    cpus_have_final_cap(ARM64_WORKAROUND_1508412))
@@ -2994,10 +3096,14 @@ static __init int kvm_arm_init(void)
 		return err;
 	}
 
+	err = kvm_alloc_percpu();
+	if (err)
+		goto out_err;
+
 	if (!in_hyp_mode) {
 		err = init_hyp_mode();
 		if (err)
-			goto out_err;
+			goto out_percpu;
 	}
 
 	err = kvm_init_vector_slots();
@@ -3029,8 +3135,10 @@ static __init int kvm_arm_init(void)
 	 * This should be called after initialization is done and failure isn't
 	 * possible anymore.
 	 */
+#ifndef MODULE
 	if (!in_hyp_mode)
 		finalize_init_hyp_mode();
+#endif
 
 	kvm_arm_initialised = true;
 
@@ -3041,50 +3149,26 @@ out_subs:
 out_hyp:
 	if (!in_hyp_mode)
 		teardown_hyp_mode();
+out_percpu:
+	kvm_free_percpu();
 out_err:
 	kvm_arm_vmid_alloc_free();
 	return err;
 }
+module_init(kvm_arm_init);
 
-static int __init early_kvm_mode_cfg(char *arg)
+#ifdef MODULE
+static void kvm_arm_exit(void)
 {
-	if (!arg)
-		return -EINVAL;
-
-	if (strcmp(arg, "none") == 0) {
-		kvm_mode = KVM_MODE_NONE;
-		return 0;
-	}
-
-	if (!is_hyp_mode_available()) {
-		pr_warn_once("KVM is not available. Ignoring kvm-arm.mode\n");
-		return 0;
-	}
-
-	if (strcmp(arg, "protected") == 0) {
-		if (!is_kernel_in_hyp_mode())
-			kvm_mode = KVM_MODE_PROTECTED;
-		else
-			pr_warn_once("Protected KVM not available with VHE\n");
-
-		return 0;
-	}
-
-	if (strcmp(arg, "nvhe") == 0 && !WARN_ON(is_kernel_in_hyp_mode())) {
-		kvm_mode = KVM_MODE_DEFAULT;
-		return 0;
-	}
-
-	if (strcmp(arg, "nested") == 0 && !WARN_ON(!is_kernel_in_hyp_mode())) {
-		kvm_mode = KVM_MODE_NV;
-		return 0;
-	}
-
-	return -EINVAL;
+	kvm_exit();
+	teardown_subsystems();
+	kvm_free_percpu();
+	kvm_arm_vmid_alloc_free();
 }
-early_param("kvm-arm.mode", early_kvm_mode_cfg);
+module_exit(kvm_arm_exit);
+#endif
 
-static int __init early_kvm_wfx_trap_policy_cfg(char *arg, enum kvm_wfx_trap_policy *p)
+static int early_kvm_wfx_trap_policy_cfg(char *arg, enum kvm_wfx_trap_policy *p)
 {
 	if (!arg)
 		return -EINVAL;
@@ -3099,9 +3183,48 @@ static int __init early_kvm_wfx_trap_policy_cfg(char *arg, enum kvm_wfx_trap_pol
 		return 0;
 	}
 
+	kvm_err("Invalid wfx trap policy value: %s\n", arg);
 	return -EINVAL;
 }
 
+#ifdef MODULE
+static int kvm_wfx_trap_set_policy(const char *val, const struct kernel_param *kp)
+{
+	if (strcmp(kp->name, "wfi_trap_policy") == 0)
+		return early_kvm_wfx_trap_policy_cfg((char *)val, &kvm_wfi_trap_policy);
+
+	if (strcmp(kp->name, "wfe_trap_policy") == 0)
+		return early_kvm_wfx_trap_policy_cfg((char *)val, &kvm_wfe_trap_policy);
+
+	kvm_err("Invalid wfx trap policy parameter: %s\n", kp->name);
+	return -EINVAL;
+}
+
+static int kvm_wfx_trap_get_policy(char *buffer, const struct kernel_param *kp)
+{
+	const char *values[] = {"KVM_WFX_NOTRAP_SINGLE_TASK", "KVM_WFX_NOTRAP", "KVM_WFX_TRAP" };
+
+	if (strcmp(kp->name, "wfi_trap_policy") == 0)
+		return sysfs_emit(buffer, "%s\n",
+				  values[(int)kvm_wfi_trap_policy]);
+
+	if (strcmp(kp->name, "wfe_trap_policy") == 0)
+		return sysfs_emit(buffer, "%s\n",
+				  values[(int)kvm_wfe_trap_policy]);
+
+	return 0;
+}
+
+static const struct kernel_param_ops kvm_wfx_trap_ops = {
+	.set = kvm_wfx_trap_set_policy,
+	.get = kvm_wfx_trap_get_policy,
+};
+
+module_param_cb(wfi_trap_policy, &kvm_wfx_trap_ops, NULL, 0444);
+MODULE_PARM_DESC(wfi_trap_policy, "WFI trap policy (trap, notrap, notrap_single_task)");
+module_param_cb(wfe_trap_policy, &kvm_wfx_trap_ops, NULL, 0444);
+MODULE_PARM_DESC(wfe_trap_policy, "WFE trap policy (trap, notrap, notrap_single_task)");
+#else
 static int __init early_kvm_wfi_trap_policy_cfg(char *arg)
 {
 	return early_kvm_wfx_trap_policy_cfg(arg, &kvm_wfi_trap_policy);
@@ -3113,10 +3236,4 @@ static int __init early_kvm_wfe_trap_policy_cfg(char *arg)
 	return early_kvm_wfx_trap_policy_cfg(arg, &kvm_wfe_trap_policy);
 }
 early_param("kvm-arm.wfe_trap_policy", early_kvm_wfe_trap_policy_cfg);
-
-enum kvm_mode kvm_get_mode(void)
-{
-	return kvm_mode;
-}
-
-module_init(kvm_arm_init);
+#endif
