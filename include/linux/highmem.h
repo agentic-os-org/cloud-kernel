@@ -371,22 +371,18 @@ static inline int copy_mc_highpage(struct page *to, struct page *from)
 	return ret;
 }
 #else
-#ifndef __HAVE_ARCH_COPY_MC_USER_HIGHPAGE
 static inline int copy_mc_user_highpage(struct page *to, struct page *from,
 					unsigned long vaddr, struct vm_area_struct *vma)
 {
 	copy_user_highpage(to, from, vaddr, vma);
 	return 0;
 }
-#endif
 
-#ifndef __HAVE_ARCH_COPY_MC_HIGHPAGE
 static inline int copy_mc_highpage(struct page *to, struct page *from)
 {
 	copy_highpage(to, from);
 	return 0;
 }
-#endif
 #endif
 
 static inline void memcpy_page(struct page *dst_page, size_t dst_off,
