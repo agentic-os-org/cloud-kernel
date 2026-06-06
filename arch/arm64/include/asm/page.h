@@ -36,16 +36,6 @@ struct folio *vma_alloc_zeroed_movable_folio(struct vm_area_struct *vma,
 void tag_clear_highpage(struct page *to);
 #define __HAVE_ARCH_TAG_CLEAR_HIGHPAGE
 
-#ifdef CONFIG_ARCH_HAS_COPY_MC
-int copy_mc_page(void *to, const void *from);
-int copy_mc_highpage(struct page *to, struct page *from);
-#define __HAVE_ARCH_COPY_MC_HIGHPAGE
-
-int copy_mc_user_highpage(struct page *to, struct page *from,
-		unsigned long vaddr, struct vm_area_struct *vma);
-#define __HAVE_ARCH_COPY_MC_USER_HIGHPAGE
-#endif
-
 #define clear_user_page(page, vaddr, pg)	clear_page(page)
 #define copy_user_page(to, from, vaddr, pg)	copy_page(to, from)
 
