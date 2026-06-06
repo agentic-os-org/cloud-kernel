@@ -12,6 +12,7 @@
 #include <linux/zalloc.h>
 #include "cpumap.h"
 #include "dso.h"
+#include "env.h"
 #include "event.h"
 #include "debug.h"
 #include "hist.h"
@@ -743,7 +744,11 @@ int machine__resolve(struct machine *machine, struct addr_location *al,
 	if (al->cpu >= 0) {
 		struct perf_env *env = machine->env;
 
-		if (env && env->cpu)
+		/*
+		 * Bounds-check al->cpu before indexing env->cpu[]: al->cpu comes
+		 * from the untrusted perf.data sample.
+		 */
+		if (env && env->cpu && al->cpu < env->nr_cpus_avail)
 			al->socket = env->cpu[al->cpu].socket_id;
 	}
 
