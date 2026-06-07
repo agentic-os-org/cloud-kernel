@@ -1233,8 +1233,8 @@ int ksmbd_vfs_kern_path_locked(struct ksmbd_work *work, char *name,
 
 	err = ksmbd_vfs_path_lookup_locked(share_conf, name, flags, parent_path,
 					   path);
-	if (!err)
-		return 0;
+	if (!err || err != -ENOENT || !caseless)
+		return err;
 
 	if (caseless) {
 		char *filepath;
