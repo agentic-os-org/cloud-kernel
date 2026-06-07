@@ -80,9 +80,9 @@ static struct erofs_fileio_rq *erofs_fileio_rq_alloc(struct super_block *sb,
 	return rq;
 }
 
-static int erofs_fileio_scan_folio(struct erofs_fileio *io, struct page *page)
+static int erofs_fileio_scan_folio(struct erofs_fileio *io,
+				   struct inode *inode, struct page *page)
 {
-	struct inode *inode = page->mapping->host;
 	struct erofs_map_blocks *map = &io->map;
 	unsigned int cur = 0, end = PAGE_SIZE, len, attached = 0;
 	loff_t pos = page->index << PAGE_SHIFT, ofs;
@@ -152,31 +152,38 @@ io_retry:
 
 static int erofs_fileio_readpage(struct file *file, struct page *page)
 {
+	bool need_iput;
+	struct inode *realinode = erofs_real_inode(page->mapping->host, &need_iput);
 	struct erofs_fileio io = {};
 	int err;
 
-	trace_erofs_readpage(page->mapping->host, page, true);
-	err = erofs_fileio_scan_folio(&io, page);
+	trace_erofs_readpage(realinode, page, true);
+	err = erofs_fileio_scan_folio(&io, realinode, page);
 	erofs_fileio_rq_submit(io.rq);
+	if (need_iput)
+		iput(realinode);
 	return err;
 }
 
 static void erofs_fileio_readahead(struct readahead_control *rac)
 {
-	struct inode *inode = rac->mapping->host;
+	bool need_iput;
+	struct inode *realinode = erofs_real_inode(rac->mapping->host, &need_iput);
 	struct erofs_fileio io = {};
 	struct page *page;
 	int err;
 
-	trace_erofs_readpages(inode, readahead_index(rac),
+	trace_erofs_readpages(realinode, readahead_index(rac),
 			      readahead_count(rac), true);
 	while ((page = readahead_page(rac))) {
-		err = erofs_fileio_scan_folio(&io, page);
+		err = erofs_fileio_scan_folio(&io, realinode, page);
 		if (err && err != -EINTR)
-			erofs_err(inode->i_sb, "readahead error at page %lu @ nid %llu",
-				  page->index, EROFS_I(inode)->nid);
+			erofs_err(realinode->i_sb, "readahead error at page %lu @ nid %llu",
+				  page->index, EROFS_I(realinode)->nid);
 	}
 	erofs_fileio_rq_submit(io.rq);
+	if (need_iput)
+		iput(realinode);
 }
 
 const struct address_space_operations erofs_fileio_aops = {
