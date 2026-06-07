@@ -1527,7 +1527,7 @@ static int z_erofs_readpage(struct file *file, struct page *page)
 	struct z_erofs_decompress_frontend f = DECOMPRESS_FRONTEND_INIT(inode);
 	int err;
 
-	trace_erofs_readpage(page, false);
+	trace_erofs_readpage(inode, page, false);
 	f.headoffset = (erofs_off_t)page->index << PAGE_SHIFT;
 
 	z_erofs_pcluster_readmore(&f, NULL, true);

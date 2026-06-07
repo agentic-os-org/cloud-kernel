@@ -76,9 +76,9 @@ TRACE_EVENT(erofs_fill_inode,
 
 TRACE_EVENT(erofs_readpage,
 
-	TP_PROTO(struct page *page, bool raw),
+	TP_PROTO(struct inode *inode, struct page *page, bool raw),
 
-	TP_ARGS(page, raw),
+	TP_ARGS(inode, page, raw),
 
 	TP_STRUCT__entry(
 		__field(dev_t,		dev	)
@@ -90,9 +90,9 @@ TRACE_EVENT(erofs_readpage,
 	),
 
 	TP_fast_assign(
-		__entry->dev	= page->mapping->host->i_sb->s_dev;
-		__entry->nid	= EROFS_I(page->mapping->host)->nid;
-		__entry->dir	= S_ISDIR(page->mapping->host->i_mode);
+		__entry->dev	= inode->i_sb->s_dev;
+		__entry->nid	= EROFS_I(inode)->nid;
+		__entry->dir	= S_ISDIR(inode->i_mode);
 		__entry->index	= page->index;
 		__entry->uptodate = PageUptodate(page);
 		__entry->raw = raw;

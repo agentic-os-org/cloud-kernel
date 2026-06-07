@@ -433,7 +433,7 @@ static int erofs_readpage(struct file *file, struct page *page)
 {
 	struct erofs_iomap_iter_ctx iter_ctx = {};
 
-	trace_erofs_readpage(page, true);
+	trace_erofs_readpage(page->mapping->host, page, true);
 	return iomap_readpage(page, &erofs_iomap_ops, &iter_ctx);
 }
 
