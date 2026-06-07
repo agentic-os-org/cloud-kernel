@@ -155,7 +155,7 @@ static int erofs_fileio_readpage(struct file *file, struct page *page)
 	struct erofs_fileio io = {};
 	int err;
 
-	trace_erofs_readpage(page, true);
+	trace_erofs_readpage(page->mapping->host, page, true);
 	err = erofs_fileio_scan_folio(&io, page);
 	erofs_fileio_rq_submit(io.rq);
 	return err;
