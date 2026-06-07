@@ -356,8 +356,8 @@ int lzo_decompress_bio(struct list_head *ws, struct compressed_bio *cb)
 	if (len_in > min_t(size_t, BTRFS_MAX_COMPRESSED, cb->compressed_len) ||
 	    round_up(len_in, sectorsize) < cb->compressed_len) {
 		btrfs_err(fs_info,
-			"invalid lzo header, lzo len %u compressed len %u",
-			len_in, cb->compressed_len);
+			  "invalid lzo header, lzo len %u compressed len %u",
+			  len_in, cb->compressed_len);
 		return -EUCLEAN;
 	}
 
@@ -390,6 +390,17 @@ int lzo_decompress_bio(struct list_head *ws, struct compressed_bio *cb)
 			btrfs_err(fs_info, "unexpectedly large lzo segment len %u",
 					seg_len);
 			return -EIO;
+		}
+
+		/* The segment must not extend beyond the compressed input. */
+		if (unlikely(cur_in + seg_len > cb->compressed_len)) {
+			struct btrfs_inode *inode = cb->bbio.inode;
+
+			btrfs_err(fs_info,
+			"lzo segment overflows compressed input, root %llu inode %llu offset %llu cur_in %u len %u compressed len %u",
+				  btrfs_root_id(inode->root), btrfs_ino(inode),
+				  cb->start, cur_in, seg_len, cb->compressed_len);
+			return -EUCLEAN;
 		}
 
 		/* Copy the compressed segment payload into workspace */
