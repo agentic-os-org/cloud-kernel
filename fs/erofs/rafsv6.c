@@ -428,10 +428,10 @@ void erofs_rafsv6_set_fops(struct inode *inode)
 	}
 }
 
-void erofs_rafsv6_set_aops(struct inode *inode)
+const struct address_space_operations *erofs_rafsv6_get_aops(struct inode *inode)
 {
 	if (!S_ISREG(inode->i_mode))
 		inode_nohighmem(inode);
 
-	inode->i_mapping->a_ops = &rafs_v6_access_aops;
+	return &rafs_v6_access_aops;
 }
