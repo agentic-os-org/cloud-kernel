@@ -43,10 +43,14 @@ bool erofs_ishare_fill_inode(struct inode *inode)
 	static const struct file_operations empty_fops = {};
 	struct erofs_sb_info *sbi = EROFS_SB(inode->i_sb);
 	struct erofs_inode *vi = EROFS_I(inode);
+	const struct address_space_operations *aops;
 	struct erofs_inode_fingerprint fp;
 	struct inode *sharedinode;
 	unsigned long hash;
 
+	aops = erofs_get_aops(inode, true);
+	if (IS_ERR(aops))
+		return false;
 	if (erofs_xattr_fill_inode_fingerprint(&fp, inode, sbi->domain_id))
 		return false;
 	hash = xxh32(fp.opaque, fp.size, 0);
@@ -59,16 +63,16 @@ bool erofs_ishare_fill_inode(struct inode *inode)
 	}
 
 	if (sharedinode->i_state & I_NEW) {
-		if (erofs_inode_set_aops(sharedinode, sharedinode, true)) {
-			iget_failed(sharedinode);
-			kfree(fp.opaque);
-			return false;
-		}
 		sharedinode->i_fop = &empty_fops;
+		sharedinode->i_mapping->a_ops = aops;
 		sharedinode->i_size = vi->vfs_inode.i_size;
 		unlock_new_inode(sharedinode);
 	} else {
 		kfree(fp.opaque);
+		if (aops != sharedinode->i_mapping->a_ops) {
+			iput(sharedinode);
+			return false;
+		}
 		if (sharedinode->i_size != vi->vfs_inode.i_size) {
 			pr_warn_ratelimited("erofs: size(%lld:%lld) not matches for the same fingerprint\n",
 					    vi->vfs_inode.i_size, sharedinode->i_size);
