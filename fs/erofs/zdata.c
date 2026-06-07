@@ -341,7 +341,7 @@ enum z_erofs_pclustermode {
 };
 
 struct z_erofs_decompress_frontend {
-	struct inode *const inode;
+	struct inode *inode, *sharedinode;
 	struct erofs_map_blocks map;
 	struct z_erofs_bvec_iter biter;
 
@@ -359,8 +359,8 @@ struct z_erofs_decompress_frontend {
 	unsigned int icur;
 };
 
-#define DECOMPRESS_FRONTEND_INIT(__i) { \
-	.inode = __i, .owned_head = Z_EROFS_PCLUSTER_TAIL, \
+#define DECOMPRESS_FRONTEND_INIT(__i, __si) { \
+	.inode = __i, .sharedinode = __si, .owned_head = Z_EROFS_PCLUSTER_TAIL, \
 	.mode = Z_EROFS_PCLUSTER_FOLLOWED, .backmost = true }
 
 static bool z_erofs_should_alloc_cache(struct z_erofs_decompress_frontend *fe)
@@ -1505,7 +1505,7 @@ static void z_erofs_pcluster_readmore(struct z_erofs_decompress_frontend *f,
 		pgoff_t index = cur >> PAGE_SHIFT;
 		struct page *page;
 
-		page = erofs_grab_cache_page_nowait(inode->i_mapping, index);
+		page = erofs_grab_cache_page_nowait(f->sharedinode->i_mapping, index);
 		if (page) {
 			if (PageUptodate(page))
 				unlock_page(page);
@@ -1522,12 +1522,14 @@ static void z_erofs_pcluster_readmore(struct z_erofs_decompress_frontend *f,
 
 static int z_erofs_readpage(struct file *file, struct page *page)
 {
-	struct inode *const inode = page->mapping->host;
-	struct erofs_sb_info *const sbi = EROFS_I_SB(inode);
-	struct z_erofs_decompress_frontend f = DECOMPRESS_FRONTEND_INIT(inode);
+	struct inode *sharedinode = page->mapping->host;
+	bool need_iput;
+	struct inode *realinode = erofs_real_inode(sharedinode, &need_iput);
+	struct erofs_sb_info *const sbi = EROFS_I_SB(realinode);
+	struct z_erofs_decompress_frontend f = DECOMPRESS_FRONTEND_INIT(realinode, sharedinode);
 	int err;
 
-	trace_erofs_readpage(inode, page, false);
+	trace_erofs_readpage(realinode, page, false);
 	f.headoffset = (erofs_off_t)page->index << PAGE_SHIFT;
 
 	z_erofs_pcluster_readmore(&f, NULL, true);
@@ -1539,19 +1541,24 @@ static int z_erofs_readpage(struct file *file, struct page *page)
 	z_erofs_runqueue(&f, z_erofs_is_sync_decompress(sbi, 0), false);
 
 	if (err && err != -EINTR)
-		erofs_err(inode->i_sb, "read error %d @ %lu of nid %llu",
-			  err, page->index, EROFS_I(inode)->nid);
+		erofs_err(realinode->i_sb, "read error %d @ %lu of nid %llu",
+			  err, page->index, EROFS_I(realinode)->nid);
 
 	erofs_put_metabuf(&f.map.buf);
 	erofs_release_pages(&f.pagepool);
+
+	if (need_iput)
+		iput(realinode);
 	return err;
 }
 
 static void z_erofs_readahead(struct readahead_control *rac)
 {
-	struct inode *const inode = rac->mapping->host;
-	struct erofs_sb_info *const sbi = EROFS_I_SB(inode);
-	struct z_erofs_decompress_frontend f = DECOMPRESS_FRONTEND_INIT(inode);
+	struct inode *sharedinode = rac->mapping->host;
+	bool need_iput;
+	struct inode *realinode = erofs_real_inode(sharedinode, &need_iput);
+	struct erofs_sb_info *const sbi = EROFS_I_SB(realinode);
+	struct z_erofs_decompress_frontend f = DECOMPRESS_FRONTEND_INIT(realinode, sharedinode);
 	struct page *head = NULL, *page;
 	unsigned int nr_pages;
 
@@ -1559,7 +1566,7 @@ static void z_erofs_readahead(struct readahead_control *rac)
 
 	z_erofs_pcluster_readmore(&f, rac, true);
 	nr_pages = readahead_count(rac);
-	trace_erofs_readpages(inode, readahead_index(rac), nr_pages, false);
+	trace_erofs_readpages(realinode, readahead_index(rac), nr_pages, false);
 
 	while ((page = readahead_page(rac))) {
 		set_page_private(page, (unsigned long)head);
@@ -1575,8 +1582,8 @@ static void z_erofs_readahead(struct readahead_control *rac)
 
 		err = z_erofs_do_read_page(&f, page);
 		if (err && err != -EINTR)
-			erofs_err(inode->i_sb, "readahead error %d @ %lu of nid %llu",
-				  err, page->index, EROFS_I(inode)->nid);
+			erofs_err(realinode->i_sb, "readahead error %d @ %lu of nid %llu",
+				  err, page->index, EROFS_I(realinode)->nid);
 		put_page(page);
 	}
 	z_erofs_pcluster_readmore(&f, rac, false);
@@ -1585,6 +1592,9 @@ static void z_erofs_readahead(struct readahead_control *rac)
 	z_erofs_runqueue(&f, z_erofs_is_sync_decompress(sbi, nr_pages), true);
 	erofs_put_metabuf(&f.map.buf);
 	erofs_release_pages(&f.pagepool);
+
+	if (need_iput)
+		iput(realinode);
 }
 
 const struct address_space_operations z_erofs_aops = {
