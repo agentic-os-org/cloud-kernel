@@ -1247,7 +1247,7 @@ static int erofs_show_options(struct seq_file *seq, struct dentry *root)
 #ifdef CONFIG_EROFS_FS_ONDEMAND
 	if (sbi->fsid)
 		seq_printf(seq, ",fsid=%s", sbi->fsid);
-	if (sbi->domain_id)
+	if (sbi->domain_id && !test_opt(opt, INODE_SHARE))
 		seq_printf(seq, ",domain_id=%s", sbi->domain_id);
 #endif
 	if (erofs_is_rafsv6_mode(root->d_sb)) {
