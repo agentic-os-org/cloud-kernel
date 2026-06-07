@@ -201,6 +201,7 @@ err_out:
 
 static int erofs_fill_inode(struct inode *inode)
 {
+	const struct address_space_operations *aops;
 	struct erofs_inode *vi = EROFS_I(inode);
 	int err;
 
@@ -238,7 +239,11 @@ static int erofs_fill_inode(struct inode *inode)
 		return 0;
 	}
 
-	return erofs_inode_set_aops(inode, inode, false);
+	aops = erofs_get_aops(inode, false);
+	if (IS_ERR(aops))
+		return PTR_ERR(aops);
+	inode->i_mapping->a_ops = aops;
+	return 0;
 }
 
 /*
