@@ -12,11 +12,11 @@
 #include "../internal.h"
 
 static struct vfsmount *erofs_ishare_mnt;
+static const struct file_operations erofs_pcs_fops = {};
 
 static inline bool erofs_is_ishare_inode(struct inode *inode)
 {
-	/* assumed FS_ONDEMAND is excluded with FS_PAGE_CACHE_SHARE feature */
-	return inode->i_sb->s_type == &erofs_anon_fs_type;
+	return inode->i_fop == &erofs_pcs_fops;
 }
 
 static int erofs_ishare_iget5_eq(struct inode *inode, void *data)
@@ -40,7 +40,6 @@ static int erofs_ishare_iget5_set(struct inode *inode, void *data)
 
 bool erofs_ishare_fill_inode(struct inode *inode)
 {
-	static const struct file_operations empty_fops = {};
 	struct erofs_sb_info *sbi = EROFS_SB(inode->i_sb);
 	struct erofs_inode *vi = EROFS_I(inode);
 	const struct address_space_operations *aops;
@@ -63,7 +62,7 @@ bool erofs_ishare_fill_inode(struct inode *inode)
 	}
 
 	if (sharedinode->i_state & I_NEW) {
-		sharedinode->i_fop = &empty_fops;
+		sharedinode->i_fop = &erofs_pcs_fops;
 		sharedinode->i_mapping->a_ops = aops;
 		sharedinode->i_size = vi->vfs_inode.i_size;
 		unlock_new_inode(sharedinode);
