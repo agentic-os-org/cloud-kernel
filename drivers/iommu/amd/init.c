@@ -1578,12 +1578,12 @@ static int __init init_iommu_from_acpi(struct amd_iommu *iommu,
 				    PCI_FUNC(e->devid));
 
 			devid = e->devid;
-			for (dev_i = devid_start; dev_i <= devid; ++dev_i) {
-				if (alias)
+			if (alias) {
+				for (dev_i = devid_start; dev_i <= devid; ++dev_i)
 					pci_seg->alias_table[dev_i] = devid_to;
+				set_dev_entry_from_acpi(iommu, devid_to, flags, ext_flags);
 			}
 			set_dev_entry_from_acpi_range(iommu, devid_start, devid, flags, ext_flags);
-			set_dev_entry_from_acpi(iommu, devid_to, flags, ext_flags);
 			break;
 		case IVHD_DEV_SPECIAL: {
 			u8 handle, type;
@@ -2355,12 +2355,8 @@ static int iommu_setup_msi(struct amd_iommu *iommu)
 	if (r)
 		return r;
 
-	r = request_threaded_irq(iommu->dev->irq,
-				 amd_iommu_int_handler,
-				 amd_iommu_int_thread,
-				 0, "AMD-Vi",
-				 iommu);
-
+	r = request_threaded_irq(iommu->dev->irq, NULL, amd_iommu_int_thread,
+				 IRQF_ONESHOT, "AMD-Vi", iommu);
 	if (r) {
 		pci_disable_msi(iommu->dev);
 		return r;
@@ -2534,8 +2530,8 @@ static int __iommu_setup_intcapxt(struct amd_iommu *iommu, const char *devname,
 		return irq;
 	}
 
-	ret = request_threaded_irq(irq, amd_iommu_int_handler,
-				   thread_fn, 0, devname, iommu);
+	ret = request_threaded_irq(irq, NULL, thread_fn, IRQF_ONESHOT, devname,
+				   iommu);
 	if (ret) {
 		irq_domain_free_irqs(irq, 1);
 		irq_domain_remove(domain);
@@ -3207,7 +3203,8 @@ static int __init early_amd_iommu_init(void)
 
 	if (!boot_cpu_has(X86_FEATURE_CX16)) {
 		pr_err("Failed to initialize. The CMPXCHG16B feature is required.\n");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
 
 	/*
