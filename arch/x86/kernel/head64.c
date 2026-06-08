@@ -339,7 +339,11 @@ void __ref early_clflush_bss_decrypted_section(void)
 	if (read_cr3_pa() != __pa_nodebug(early_top_pgt))
 		return;
 
-	if (sme_get_me_mask()) {
+	/*
+	 * Flushing .bss..decrypted section for SNP guest makes the vm to hang.
+	 * So skipping the flush for SNP guest.
+	 */
+	if (sme_get_me_mask() && !(sev_status & MSR_AMD64_SEV_SNP_ENABLED)) {
 		unsigned long vaddr, vaddr_end;
 		char *cl, *start, *end;
 
