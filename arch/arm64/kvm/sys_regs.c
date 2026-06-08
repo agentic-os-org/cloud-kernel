@@ -4131,6 +4131,9 @@ void kvm_reset_sys_regs(struct kvm_vcpu *vcpu)
 		if (r->reset)
 			r->reset(vcpu, r);
 	}
+
+	if (kvm_vcpu_has_pmu(vcpu))
+		kvm_make_request(KVM_REQ_RELOAD_PMU, vcpu);
 }
 
 /**
