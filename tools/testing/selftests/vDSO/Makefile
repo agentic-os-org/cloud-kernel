@@ -8,9 +8,13 @@ TEST_GEN_PROGS := $(OUTPUT)/vdso_test_gettimeofday $(OUTPUT)/vdso_test_getcpu
 TEST_GEN_PROGS += $(OUTPUT)/vdso_test_abi
 TEST_GEN_PROGS += $(OUTPUT)/vdso_test_clock_getres
 ifeq ($(ARCH),$(filter $(ARCH),x86 x86_64))
-TEST_GEN_PROGS += $(OUTPUT)/vdso_standalone_test_x86
+TEST_GEN_PROGS += vdso_standalone_test_x86
 endif
-TEST_GEN_PROGS += $(OUTPUT)/vdso_test_correctness
+TEST_GEN_PROGS += vdso_test_correctness
+ifeq ($(ARCH)$(CONFIG_X86_32),$(filter $(ARCH)$(CONFIG_X86_32),x86 x86_64 loongarch arm64 powerpc s390))
+TEST_GEN_PROGS += vdso_test_getrandom
+endif
+TEST_GEN_PROGS += vdso_test_chacha
 
 CFLAGS := -std=gnu99
 CFLAGS_vdso_standalone_test_x86 := -nostdlib -fno-asynchronous-unwind-tables -fno-stack-protector
@@ -29,7 +33,10 @@ $(OUTPUT)/vdso_standalone_test_x86: vdso_standalone_test_x86.c parse_vdso.c
 		vdso_standalone_test_x86.c parse_vdso.c \
 		-o $@
 $(OUTPUT)/vdso_test_correctness: vdso_test_correctness.c
-	$(CC) $(CFLAGS) \
-		vdso_test_correctness.c \
-		-o $@ \
-		$(LDFLAGS_vdso_test_correctness)
+
+$(OUTPUT)/vdso_test_chacha: vgetrandom-chacha.S
+$(OUTPUT)/vdso_test_chacha: CFLAGS += -idirafter $(top_srcdir)/tools/include \
+                                      -idirafter $(top_srcdir)/tools/include/generated \
+                                      -idirafter $(top_srcdir)/arch/$(SRCARCH)/include \
+                                      -idirafter $(top_srcdir)/include \
+                                      -Wa,--noexecstack
