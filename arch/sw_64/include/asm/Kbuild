@@ -5,6 +5,7 @@ generic-y += clkdev.h
 generic-y += export.h
 generic-y += mcs_spinlock.h
 generic-y += param.h
+generic-y += mmzone.h
 generic-y += qrwlock.h
 generic-y += rwsem.h
 generic-y += seccomp.h
