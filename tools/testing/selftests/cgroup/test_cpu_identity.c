@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/sysinfo.h>
@@ -310,7 +311,8 @@ static int set_affinity_single(int cpu)
 }
 
 static int worker_main(int start_fd, int result_fd, int cpu0, int cpu1,
-		       bool pair_affinity, unsigned int duration_ms)
+		       bool pair_affinity, unsigned int duration_ms,
+		       volatile struct timespec *shared_start)
 {
 	char start;
 	struct timespec start_ts, now;
@@ -325,13 +327,23 @@ static int worker_main(int start_fd, int result_fd, int cpu0, int cpu1,
 	if (read(start_fd, &start, 1) != 1)
 		_exit(101);
 
-	clock_gettime(CLOCK_MONOTONIC, &start_ts);
+	if (shared_start) {
+		while (shared_start->tv_sec == 0 && shared_start->tv_nsec == 0)
+			;
+		start_ts = *(const struct timespec *)shared_start;
+	} else {
+		clock_gettime(CLOCK_MONOTONIC, &start_ts);
+	}
+
 	for (;;) {
 		iters++;
 		if ((iters & 0x3ffff) == 0) {
+			long long elapsed_ms;
+
 			clock_gettime(CLOCK_MONOTONIC, &now);
-			if ((now.tv_sec - start_ts.tv_sec) * 1000ULL +
-			    (now.tv_nsec - start_ts.tv_nsec) / 1000000ULL >= duration_ms)
+			elapsed_ms = (long long)(now.tv_sec - start_ts.tv_sec) * 1000 +
+				     (long long)(now.tv_nsec - start_ts.tv_nsec) / 1000000;
+			if (elapsed_ms >= (long long)duration_ms)
 				break;
 		}
 	}
@@ -346,7 +358,8 @@ static int worker_main(int start_fd, int result_fd, int cpu0, int cpu1,
 
 static int spawn_worker(struct worker_proc *worker, const char *cgroup,
 			int cpu0, int cpu1, bool pair_affinity,
-			unsigned int duration_ms)
+			unsigned int duration_ms,
+			volatile struct timespec *shared_start)
 {
 	int start_pipe[2], result_pipe[2];
 	pid_t pid;
@@ -362,7 +375,7 @@ static int spawn_worker(struct worker_proc *worker, const char *cgroup,
 		close(start_pipe[1]);
 		close(result_pipe[0]);
 		worker_main(start_pipe[0], result_pipe[1], cpu0, cpu1,
-			    pair_affinity, duration_ms);
+			    pair_affinity, duration_ms, shared_start);
 	}
 
 	close(start_pipe[0]);
@@ -918,6 +931,7 @@ static int test_identity_hierarchy_counts(const struct cgroup_test_env *env, con
 	char parent_path[PATH_MAX];
 	char expeller_path[PATH_MAX];
 	char expellee_path[PATH_MAX];
+	volatile struct timespec *shared_start = NULL;
 	int i;
 	int ret = KSFT_FAIL;
 
@@ -929,14 +943,25 @@ static int test_identity_hierarchy_counts(const struct cgroup_test_env *env, con
 	    cg_write(normal, env->identity_ctrl, "0"))
 		goto out;
 
-	if (spawn_worker(&workers[0], expeller, 0, 0, false, 1200) ||
-	    spawn_worker(&workers[1], expellee, 0, 0, false, 1200) ||
-	    spawn_worker(&workers[2], normal, 0, 0, false, 1200))
+	shared_start = mmap(NULL, sizeof(struct timespec), PROT_READ | PROT_WRITE,
+			    MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	if (shared_start == MAP_FAILED) {
+		shared_start = NULL;
+		goto out;
+	}
+	shared_start->tv_sec = 0;
+	shared_start->tv_nsec = 0;
+
+	if (spawn_worker(&workers[0], expeller, 0, 0, false, 1200, shared_start) ||
+	    spawn_worker(&workers[1], expellee, 0, 0, false, 1200, shared_start) ||
+	    spawn_worker(&workers[2], normal, 0, 0, false, 1200, shared_start))
 		goto out;
 
 	for (i = 0; i < 3; i++)
 		if (start_worker(&workers[i]))
 			goto out;
+
+	clock_gettime(CLOCK_MONOTONIC, (struct timespec *)shared_start);
 
 	usleep(200000);
 	snprintf(parent_path, sizeof(parent_path), "/%s", strrchr(parent, '/') + 1);
@@ -965,6 +990,8 @@ static int test_identity_hierarchy_counts(const struct cgroup_test_env *env, con
 
 	ret = KSFT_PASS;
 out:
+	if (shared_start)
+		munmap((void *)shared_start, sizeof(struct timespec));
 	for (i = 0; i < 3; i++) {
 		if (workers[i].pid > 0) {
 			kill(workers[i].pid, SIGKILL);
@@ -993,7 +1020,7 @@ static int test_core_sched_cookie(const struct cgroup_test_env *env, const char 
 	    cg_write(expellee, env->identity_ctrl, "-1"))
 		goto out;
 
-	if (spawn_worker(&worker, expeller, 0, 0, false, 1200) || start_worker(&worker))
+	if (spawn_worker(&worker, expeller, 0, 0, false, 1200, NULL) || start_worker(&worker))
 		goto out;
 
 	if (wait_for_cookie_nonzero(worker.pid, &cookie_expeller, 30, 20000))
@@ -1033,7 +1060,7 @@ static int test_identity_switch_onrq_counts(const struct cgroup_test_env *env, c
 	if (make_cpucg_tree(env, root, &parent, &expeller, &expellee, &normal))
 		return KSFT_FAIL;
 
-	if (spawn_worker(&worker, normal, 0, 0, false, 900) || start_worker(&worker))
+	if (spawn_worker(&worker, normal, 0, 0, false, 900, NULL) || start_worker(&worker))
 		goto out;
 
 	usleep(150000);
@@ -1086,7 +1113,7 @@ static int test_identity_migration_interleaving(const struct cgroup_test_env *en
 		goto out;
 	}
 
-	if (spawn_worker(&worker, expeller, 0, 0, false, 2200) ||
+	if (spawn_worker(&worker, expeller, 0, 0, false, 2200, NULL) ||
 	    start_worker(&worker)) {
 		ksft_print_msg("migration: spawn/start worker failed\n");
 		goto out;
@@ -1156,7 +1183,7 @@ static int test_identity_throttle_switch_counts(const struct cgroup_test_env *en
 
 	if (enable_cfs_throttle(env, normal))
 		goto out;
-	if (spawn_worker(&worker, normal, 0, 0, false, 1500) || start_worker(&worker))
+	if (spawn_worker(&worker, normal, 0, 0, false, 1500, NULL) || start_worker(&worker))
 		goto out;
 
 	usleep(200000);
@@ -1201,6 +1228,7 @@ static int test_nested_identity_throttle_pressure(const struct cgroup_test_env *
 	struct worker_proc workers[4] = {};
 	char parent_path[PATH_MAX];
 	struct sched_debug_counts counts;
+	volatile struct timespec *shared_start = NULL;
 	int i;
 	int ret = KSFT_FAIL;
 
@@ -1227,10 +1255,20 @@ static int test_nested_identity_throttle_pressure(const struct cgroup_test_env *
 
 	snprintf(parent_path, sizeof(parent_path), "/%s", strrchr(parent, '/') + 1);
 
-	if (spawn_worker(&workers[0], expeller, 0, 0, false, 1800) ||
-	    spawn_worker(&workers[1], expellee, 0, 0, false, 1800) ||
-	    spawn_worker(&workers[2], nested_hot, 0, 0, false, 1800) ||
-	    spawn_worker(&workers[3], nested_cold, 1, 1, false, 1800)) {
+	shared_start = mmap(NULL, sizeof(struct timespec), PROT_READ | PROT_WRITE,
+			    MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	if (shared_start == MAP_FAILED) {
+		shared_start = NULL;
+		ksft_print_msg("nested shared_start mmap failed\n");
+		goto out;
+	}
+	shared_start->tv_sec = 0;
+	shared_start->tv_nsec = 0;
+
+	if (spawn_worker(&workers[0], expeller, 0, 0, false, 1800, shared_start) ||
+	    spawn_worker(&workers[1], expellee, 0, 0, false, 1800, shared_start) ||
+	    spawn_worker(&workers[2], nested_hot, 0, 0, false, 1800, shared_start) ||
+	    spawn_worker(&workers[3], nested_cold, 1, 1, false, 1800, shared_start)) {
 		ksft_print_msg("spawn nested workers failed\n");
 		goto out;
 	}
@@ -1240,6 +1278,8 @@ static int test_nested_identity_throttle_pressure(const struct cgroup_test_env *
 			ksft_print_msg("start nested worker %d failed\n", i);
 			goto out;
 		}
+
+	clock_gettime(CLOCK_MONOTONIC, (struct timespec *)shared_start);
 
 	if (cg_write(expeller, env->identity_ctrl, "1") ||
 	    cg_write(expellee, env->identity_ctrl, "-1") ||
@@ -1296,6 +1336,8 @@ static int test_nested_identity_throttle_pressure(const struct cgroup_test_env *
 	ret = KSFT_PASS;
 out:
 	cleanup_workers(workers, 4);
+	if (shared_start)
+		munmap((void *)shared_start, sizeof(struct timespec));
 	if (nested_cold)
 		cg_destroy(nested_cold);
 	if (nested_hot)
@@ -1316,6 +1358,7 @@ static int test_identity_repeated_flip_pressure(const struct cgroup_test_env *en
 	struct worker_proc workers[3] = {};
 	char parent_path[PATH_MAX];
 	struct sched_debug_counts counts;
+	volatile struct timespec *shared_start = NULL;
 	int i;
 	int ret = KSFT_FAIL;
 
@@ -1324,14 +1367,25 @@ static int test_identity_repeated_flip_pressure(const struct cgroup_test_env *en
 
 	snprintf(parent_path, sizeof(parent_path), "/%s", strrchr(parent, '/') + 1);
 
-	if (spawn_worker(&workers[0], normal, 0, 0, false, 2200) ||
-	    spawn_worker(&workers[1], normal, 1, 1, false, 2200) ||
-	    spawn_worker(&workers[2], normal, 2, 2, false, 2200))
+	shared_start = mmap(NULL, sizeof(struct timespec), PROT_READ | PROT_WRITE,
+			    MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	if (shared_start == MAP_FAILED) {
+		shared_start = NULL;
+		goto out;
+	}
+	shared_start->tv_sec = 0;
+	shared_start->tv_nsec = 0;
+
+	if (spawn_worker(&workers[0], normal, 0, 0, false, 2200, shared_start) ||
+	    spawn_worker(&workers[1], normal, 1, 1, false, 2200, shared_start) ||
+	    spawn_worker(&workers[2], normal, 2, 2, false, 2200, shared_start))
 		goto out;
 
 	for (i = 0; i < 3; i++)
 		if (start_worker(&workers[i]))
 			goto out;
+
+	clock_gettime(CLOCK_MONOTONIC, (struct timespec *)shared_start);
 
 	for (i = 0; i < 12; i++) {
 		const char *val;
@@ -1370,6 +1424,8 @@ static int test_identity_repeated_flip_pressure(const struct cgroup_test_env *en
 	ret = KSFT_PASS;
 out:
 	cleanup_workers(workers, 3);
+	if (shared_start)
+		munmap((void *)shared_start, sizeof(struct timespec));
 	free_cpucg_tree(parent, expeller, expellee, normal);
 	return ret;
 }
@@ -1382,6 +1438,7 @@ static int test_identity_combo_matrix(const struct cgroup_test_env *env,
 	char parent_path[PATH_MAX];
 	struct sched_debug_counts counts;
 	unsigned long long cookie_expeller, cookie_expellee, cookie_normal;
+	volatile struct timespec *shared_start = NULL;
 	int i;
 	int ret = KSFT_FAIL;
 
@@ -1400,9 +1457,19 @@ static int test_identity_combo_matrix(const struct cgroup_test_env *env,
 		ksft_print_msg("combo: enable throttle failed\n");
 		goto out;
 	}
-	if (spawn_worker(&workers[0], expeller, 0, 0, false, 2600) ||
-	    spawn_worker(&workers[1], expellee, 1, 1, false, 2600) ||
-	    spawn_worker(&workers[2], normal, 2, 2, false, 2600)) {
+	shared_start = mmap(NULL, sizeof(struct timespec), PROT_READ | PROT_WRITE,
+			    MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	if (shared_start == MAP_FAILED) {
+		shared_start = NULL;
+		ksft_print_msg("combo: shared_start mmap failed\n");
+		goto out;
+	}
+	shared_start->tv_sec = 0;
+	shared_start->tv_nsec = 0;
+
+	if (spawn_worker(&workers[0], expeller, 0, 0, false, 2600, shared_start) ||
+	    spawn_worker(&workers[1], expellee, 1, 1, false, 2600, shared_start) ||
+	    spawn_worker(&workers[2], normal, 2, 2, false, 2600, shared_start)) {
 		ksft_print_msg("combo: spawn workers failed\n");
 		goto out;
 	}
@@ -1412,6 +1479,8 @@ static int test_identity_combo_matrix(const struct cgroup_test_env *env,
 			ksft_print_msg("combo: start worker %d failed\n", i);
 			goto out;
 		}
+
+	clock_gettime(CLOCK_MONOTONIC, (struct timespec *)shared_start);
 
 	if (wait_for_counts_ge(parent_path, 1, 1, 30, 20000)) {
 		if (!read_sched_debug_counts(parent_path, &counts))
@@ -1493,6 +1562,8 @@ static int test_identity_combo_matrix(const struct cgroup_test_env *env,
 	ret = KSFT_PASS;
 out:
 	cleanup_workers(workers, 3);
+	if (shared_start)
+		munmap((void *)shared_start, sizeof(struct timespec));
 	free_cpucg_tree(parent, expeller, expellee, normal);
 	return ret;
 }
@@ -1514,6 +1585,7 @@ run_multi_child_parent_throttle_pressure(const struct cgroup_test_env *env,
 	unsigned long long cookie_expeller, cookie_expellee;
 	char parent_path[PATH_MAX];
 	char throttle_parent_path[PATH_MAX];
+	volatile struct timespec *shared_start = NULL;
 	int worker_idx = 0;
 	int i;
 	int ret = KSFT_FAIL;
@@ -1584,24 +1656,34 @@ run_multi_child_parent_throttle_pressure(const struct cgroup_test_env *env,
 			goto out;
 		}
 
-	if (spawn_worker(&workers[worker_idx], expeller, 0, 0, false, 2600)) {
+	shared_start = mmap(NULL, sizeof(struct timespec), PROT_READ | PROT_WRITE,
+			    MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	if (shared_start == MAP_FAILED) {
+		shared_start = NULL;
+		ksft_print_msg("%s: shared_start mmap failed\n", tag);
+		goto out;
+	}
+	shared_start->tv_sec = 0;
+	shared_start->tv_nsec = 0;
+
+	if (spawn_worker(&workers[worker_idx], expeller, 0, 0, false, 2600, shared_start)) {
 		ksft_print_msg("%s: expeller worker spawn failed\n", tag);
 		goto out;
 	}
 	worker_idx++;
-	if (spawn_worker(&workers[worker_idx], expellee, 1, 1, false, 2600)) {
+	if (spawn_worker(&workers[worker_idx], expellee, 1, 1, false, 2600, shared_start)) {
 		ksft_print_msg("%s: expellee worker spawn failed\n", tag);
 		goto out;
 	}
 	worker_idx++;
 
 	for (i = 0; i < nr_children; i++) {
-		if (spawn_worker(&workers[worker_idx], children[i], 0, 0, false, 2600)) {
+		if (spawn_worker(&workers[worker_idx], children[i], 0, 0, false, 2600, shared_start)) {
 			ksft_print_msg("%s: child%d worker0 failed\n", tag, i);
 			goto out;
 		}
 		worker_idx++;
-		if (spawn_worker(&workers[worker_idx], children[i], 1, 1, false, 2600)) {
+		if (spawn_worker(&workers[worker_idx], children[i], 1, 1, false, 2600, shared_start)) {
 			ksft_print_msg("%s: child%d worker1 failed\n", tag, i);
 			goto out;
 		}
@@ -1613,6 +1695,8 @@ run_multi_child_parent_throttle_pressure(const struct cgroup_test_env *env,
 			ksft_print_msg("%s: start worker %d failed\n", tag, i);
 			goto out;
 		}
+
+	clock_gettime(CLOCK_MONOTONIC, (struct timespec *)shared_start);
 
 	if (wait_for_cookie_nonzero(workers[0].pid, &cookie_expeller, 50, 20000) ||
 	    wait_for_cookie_nonzero(workers[1].pid, &cookie_expellee, 50, 20000) ||
@@ -1736,6 +1820,8 @@ run_multi_child_parent_throttle_pressure(const struct cgroup_test_env *env,
 	ret = KSFT_PASS;
 out:
 	cleanup_workers(workers, ARRAY_SIZE(workers));
+	if (shared_start)
+		munmap((void *)shared_start, sizeof(struct timespec));
 	for (i = nr_children - 1; i >= 0; i--) {
 		if (children[i])
 			cg_destroy(children[i]);
@@ -1791,6 +1877,7 @@ static int run_smt_benchmark_once(const struct cgroup_test_env *env, const char 
 	char *parent = NULL, *expeller = NULL, *expellee = NULL, *normal = NULL;
 	struct worker_proc wexpeller = {}, wexpellee = {};
 	struct cpu_pair pair;
+	volatile struct timespec *shared_start = NULL;
 	int old_smt, old_share;
 	int ret = -1;
 
@@ -1811,12 +1898,24 @@ static int run_smt_benchmark_once(const struct cgroup_test_env *env, const char 
 	    cg_write(expellee, env->identity_ctrl, "-1"))
 		goto out;
 
-	if (spawn_worker(&wexpeller, expeller, pair.cpu0, pair.cpu1, true, BENCH_DURATION_MS) ||
-	    spawn_worker(&wexpellee, expellee, pair.cpu0, pair.cpu1, true, BENCH_DURATION_MS))
+	shared_start = mmap(NULL, sizeof(struct timespec), PROT_READ | PROT_WRITE,
+			    MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	if (shared_start == MAP_FAILED) {
+		shared_start = NULL;
+		goto out;
+	}
+	shared_start->tv_sec = 0;
+	shared_start->tv_nsec = 0;
+
+	if (spawn_worker(&wexpeller, expeller, pair.cpu0, pair.cpu1, true, BENCH_DURATION_MS, shared_start) ||
+	    spawn_worker(&wexpellee, expellee, pair.cpu0, pair.cpu1, true, BENCH_DURATION_MS, shared_start))
 		goto out;
 
 	if (start_worker(&wexpeller) || start_worker(&wexpellee))
 		goto out;
+
+	clock_gettime(CLOCK_MONOTONIC, (struct timespec *)shared_start);
+
 	if (reap_worker(&wexpeller) || reap_worker(&wexpellee))
 		goto out;
 
@@ -1832,6 +1931,8 @@ out:
 		kill(wexpellee.pid, SIGKILL);
 		waitpid(wexpellee.pid, NULL, 0);
 	}
+	if (shared_start)
+		munmap((void *)shared_start, sizeof(struct timespec));
 	free_cpucg_tree(parent, expeller, expellee, normal);
 out_restore:
 	set_feature_enabled("ID_SMT_EXPEL", old_smt);
