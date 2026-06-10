@@ -2926,6 +2926,7 @@ static int csv_get_shared_memory(struct kvm *kvm,
 	u64 hva;
 	gfn_t gfn = gpa_to_gfn(params->gpa);
 	u32 num_pages = params->num_pages;
+	enum csv_smr_source source = get_csv_smr_source();
 	int i, npinned, try_pin, try_alloc_sp;
 	int ret = 0;
 
@@ -2954,7 +2955,8 @@ static int csv_get_shared_memory(struct kvm *kvm,
 		 * Reject hugetlbfs-backed pages to prevent severe page
 		 * migration pressure when 2M hugetlb is used with CMA.
 		 */
-		if (!vm_flags || (vm_flags & VM_HUGETLB)) {
+		if (!vm_flags ||
+		    ((vm_flags & VM_HUGETLB) && (source != USE_HUGETLB))) {
 			ret = -EINVAL;
 			goto out;
 		}
