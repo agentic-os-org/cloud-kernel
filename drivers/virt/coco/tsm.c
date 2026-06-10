@@ -7,6 +7,7 @@
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <linux/rwsem.h>
+#include <linux/mutex.h>
 #include <linux/string.h>
 #include <linux/module.h>
 #include <linux/cleanup.h>
@@ -19,6 +20,7 @@ static struct tsm_provider {
 	void *data;
 } provider;
 static DECLARE_RWSEM(tsm_rwsem);
+static DEFINE_MUTEX(tsm_report_group_lock);
 
 /**
  * DOC: Trusted Security Module (TSM) Attestation Report Interface
@@ -354,6 +356,8 @@ static struct configfs_subsystem tsm_configfs = {
 	.su_mutex = __MUTEX_INITIALIZER(tsm_configfs.su_mutex),
 };
 
+static struct config_group *tsm_report_group;
+
 int tsm_register(const struct tsm_ops *ops, void *priv,
 		 const struct config_item_type *type)
 {
@@ -363,6 +367,19 @@ int tsm_register(const struct tsm_ops *ops, void *priv,
 		type = &tsm_report_default_type;
 	if (!(type == &tsm_report_default_type || type == &tsm_report_extra_type))
 		return -EINVAL;
+
+	guard(mutex)(&tsm_report_group_lock);
+
+	if (!tsm_report_group) {
+		struct config_group *grp;
+
+		grp = configfs_register_default_group(
+				&tsm_configfs.su_group, "report",
+				&tsm_reports_type);
+		if (IS_ERR(grp))
+			return PTR_ERR(grp);
+		tsm_report_group = grp;
+	}
 
 	guard(rwsem_write)(&tsm_rwsem);
 	conflict = provider.ops;
@@ -380,44 +397,40 @@ EXPORT_SYMBOL_GPL(tsm_register);
 
 int tsm_unregister(const struct tsm_ops *ops)
 {
-	guard(rwsem_write)(&tsm_rwsem);
-	if (ops != provider.ops)
-		return -EBUSY;
-	provider.ops = NULL;
-	provider.data = NULL;
-	provider.type = NULL;
+	guard(mutex)(&tsm_report_group_lock);
+
+	{
+		guard(rwsem_write)(&tsm_rwsem);
+		if (ops != provider.ops)
+			return -EBUSY;
+		provider.ops = NULL;
+		provider.data = NULL;
+		provider.type = NULL;
+	}
+
+	if (tsm_report_group) {
+		configfs_unregister_default_group(tsm_report_group);
+		tsm_report_group = NULL;
+	}
 	return 0;
 }
 EXPORT_SYMBOL_GPL(tsm_unregister);
 
-static struct config_group *tsm_report_group;
-
 static int __init tsm_init(void)
 {
-	struct config_group *root = &tsm_configfs.su_group;
-	struct config_group *tsm;
-	int rc;
-
-	config_group_init(root);
-	rc = configfs_register_subsystem(&tsm_configfs);
-	if (rc)
-		return rc;
-
-	tsm = configfs_register_default_group(root, "report",
-					      &tsm_reports_type);
-	if (IS_ERR(tsm)) {
-		configfs_unregister_subsystem(&tsm_configfs);
-		return PTR_ERR(tsm);
-	}
-	tsm_report_group = tsm;
-
-	return 0;
+	config_group_init(&tsm_configfs.su_group);
+	return configfs_register_subsystem(&tsm_configfs);
 }
 module_init(tsm_init);
 
 static void __exit tsm_exit(void)
 {
-	configfs_unregister_default_group(tsm_report_group);
+	mutex_lock(&tsm_report_group_lock);
+	if (tsm_report_group) {
+		configfs_unregister_default_group(tsm_report_group);
+		tsm_report_group = NULL;
+	}
+	mutex_unlock(&tsm_report_group_lock);
 	configfs_unregister_subsystem(&tsm_configfs);
 }
 module_exit(tsm_exit);
