@@ -1215,8 +1215,9 @@ retry:
 
 		/* The userspace membackend must be 1G hugetlb. */
 		if (compound_order(compound_head(page)) != (PUD_SHIFT - PAGE_SHIFT)) {
+			kfree(hugetlb);
 			put_page(page);
-			goto retry;
+			goto err;
 		}
 		put_page(page);
 		hugetlb->page = page;
