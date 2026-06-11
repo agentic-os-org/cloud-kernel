@@ -1,0 +1,5 @@
+* Thu Jun 11 2026 Tianchen Ding <dtcccc@linux.alibaba.com> [5.10.134-19.7_rc1%%DIST%%]
+- anolis: virt: coco: remove duplicate csv-guest build rule from Makefile (Jiaqi Gao)
+- anolis: tsm: defer configfs report group registration (Jiaqi Gao)
+- anolis: virt: csv-guest: Add a build rule for CONFIG_CSV_GUEST to the Makefile (hanliyang)
+
