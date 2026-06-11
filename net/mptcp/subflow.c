@@ -628,6 +628,7 @@ out:
 dispose_child:
 	subflow_drop_ctx(child);
 	tcp_rsk(req)->drop_req = true;
+	tcp_clear_sock_ops_cb_flags(child);
 	inet_csk_prepare_for_destroy_sock(child);
 	tcp_done(child);
 	req->rsk_ops->send_reset(sk, skb);

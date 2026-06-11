@@ -1396,6 +1396,7 @@ static struct sock *tcp_v6_syn_recv_sock(const struct sock *sk, struct sk_buff *
 #endif
 
 	if (__inet_inherit_port(sk, newsk) < 0) {
+		tcp_clear_sock_ops_cb_flags(newsk);
 		inet_csk_prepare_forced_close(newsk);
 		tcp_done(newsk);
 		goto out;
