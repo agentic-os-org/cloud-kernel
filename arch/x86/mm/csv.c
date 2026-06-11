@@ -98,7 +98,7 @@ static unsigned int smr_entry_shift;
 #ifdef CONFIG_SYSFS
 
 /**
- * Global counters exposed via /sys/kernel/mm/csv3_cma/mem_info. Updated
+ * Global counters exposed via /sys/kernel/csv3/meminfo. Updated
  * atomically during VM creation/destruction.
  *
  * csv3_npt_size: total size of NPT tables allocated.
@@ -878,10 +878,11 @@ EXPORT_SYMBOL_GPL(get_csv_smr_source);
 #ifdef CONFIG_SYSFS
 
 /*
- * The "free_size" file where the free size of csv cma is read from.
+ * The meminfo file provides statistics for CSV3 CMA, shared memory, NPT
+ * memory, and metadata usage at both the per-NUMA and overall levels.
  */
-static ssize_t mem_info_show(struct kobject *kobj,
-			      struct kobj_attribute *attr, char *buf)
+static ssize_t meminfo_show(struct kobject *kobj,
+			    struct kobj_attribute *attr, char *buf)
 {
 	int node;
 	int offset = 0;
@@ -940,35 +941,35 @@ static ssize_t mem_info_show(struct kobject *kobj,
 	return offset;
 }
 
-static struct kobj_attribute csv_cma_attr = __ATTR(mem_info, 0444,	mem_info_show, NULL);
+static struct kobj_attribute csv_mem_attr = __ATTR(meminfo, 0444, meminfo_show, NULL);
 
 /*
  * Create a group of attributes so that we can create and destroy them all
  * at once.
  */
-static struct attribute *csv_cma_attrs[] = {
-	&csv_cma_attr.attr,
+static struct attribute *csv_mem_attrs[] = {
+	&csv_mem_attr.attr,
 	NULL,	/* need to NULL terminate the list of attributes */
 };
 
-static const struct attribute_group csv_cma_attr_group = {
-	.attrs = csv_cma_attrs,
+static const struct attribute_group csv_mem_attr_group = {
+	.attrs = csv_mem_attrs,
 };
 
-static struct kobject *csv_cma_kobj_root;
+static struct kobject *csv_kobj_root;
 
-static int __init csv_cma_sysfs_init(void)
+static int __init csv_sysfs_init(void)
 {
 	int err, i;
 
 	if (!is_x86_vendor_hygon() || !boot_cpu_has(X86_FEATURE_CSV3))
 		return 0;
 
-	csv_cma_kobj_root = kobject_create_and_add("csv3_cma", mm_kobj);
-	if (!csv_cma_kobj_root)
+	csv_kobj_root = kobject_create_and_add("csv3", kernel_kobj);
+	if (!csv_kobj_root)
 		return -ENOMEM;
 
-	err = sysfs_create_group(csv_cma_kobj_root, &csv_cma_attr_group);
+	err = sysfs_create_group(csv_kobj_root, &csv_mem_attr_group);
 	if (err)
 		goto out;
 
@@ -978,30 +979,30 @@ static int __init csv_cma_sysfs_init(void)
 	return 0;
 
 out:
-	kobject_put(csv_cma_kobj_root);
+	kobject_put(csv_kobj_root);
 	return err;
 }
 
-static void csv_cma_sysfs_exit(void)
+static void csv_sysfs_exit(void)
 {
 	/*
-	 * @csv_cma_kobj_root is initialized only when it is the host platform
+	 * @csv_kobj_root is initialized only when it is the host platform
 	 * and supports Hygon CSV3.
 	 */
-	if (csv_cma_kobj_root) {
-		sysfs_remove_group(csv_cma_kobj_root, &csv_cma_attr_group);
-		kobject_put(csv_cma_kobj_root);
+	if (csv_kobj_root) {
+		sysfs_remove_group(csv_kobj_root, &csv_mem_attr_group);
+		kobject_put(csv_kobj_root);
 	}
 }
 
 #else	/* !CONFIG_SYSFS */
 
-static int __init csv_cma_sysfs_init(void)
+static int __init csv_sysfs_init(void)
 {
 	return 0;
 }
 
-static void csv_cma_sysfs_exit(void)
+static void csv_sysfs_exit(void)
 {
 }
 
@@ -1014,14 +1015,14 @@ static int __init csv_mm_init(void)
 	spin_lock_init(&control.lock);
 	control.enabled_counts = 0;
 
-	ret = csv_cma_sysfs_init();
+	ret = csv_sysfs_init();
 
 	return ret;
 }
 
 static void __exit csv_mm_exit(void)
 {
-	csv_cma_sysfs_exit();
+	csv_sysfs_exit();
 }
 
 module_init(csv_mm_init);
