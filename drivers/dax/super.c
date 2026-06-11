@@ -351,6 +351,16 @@ void kill_dax(struct dax_device *dax_dev)
 }
 EXPORT_SYMBOL_GPL(kill_dax);
 
+/*
+ * Drain in-flight dax faults: the whole fault handler runs under
+ * dax_read_lock(), so a synchronize_srcu() guarantees no fault can still
+ * insert a PTE into a range that is about to lose its struct pages.
+ */
+void dax_drain_faults(void)
+{
+	synchronize_srcu(&dax_srcu);
+}
+
 void run_dax(struct dax_device *dax_dev)
 {
 	set_bit(DAXDEV_ALIVE, &dax_dev->flags);

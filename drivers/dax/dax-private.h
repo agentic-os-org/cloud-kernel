@@ -119,6 +119,7 @@ struct dev_dax {
  * outside of drivers/dax/
  */
 void run_dax(struct dax_device *dax_dev);
+void dax_drain_faults(void);
 
 static inline struct dev_dax *to_dev_dax(struct device *dev)
 {
