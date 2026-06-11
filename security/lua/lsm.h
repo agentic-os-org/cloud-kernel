@@ -23,6 +23,7 @@
 #include "kvcache.h"
 
 DECLARE_STATIC_KEY_FALSE(lua_lsm_modules_active);
+DECLARE_STATIC_KEY_FALSE(lua_lsm_inactive_cleanup_armed);
 
 /* Flag indicating whether initialization completed */
 extern int lua_lsm_initialized __initdata;
@@ -112,6 +113,7 @@ extern struct srcu_struct modules_ss;
 
 lua_State *lvm_get(void);
 void lvm_put(lua_State *L);
+bool lvm_current_task_teardown(void);
 
 int lua_lsm_module_register(const char *code, size_t len);
 int lua_lsm_module_unregister(const char *name);
@@ -140,6 +142,7 @@ struct lvm_state {
 
 struct lua_lsm_task {
 	struct lvm_state *lvm;
+	bool lvm_teardown;
 	struct kvcache_dict dict;
 };
 

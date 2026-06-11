@@ -6,10 +6,12 @@
  */
 
 #include "debug.h"
+#include <linux/bottom_half.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/errname.h>
 #include <linux/rwlock.h>
+#include <linux/processor.h>
 #include <linux/lua.h>
 #include <linux/lualib.h>
 #include <linux/lauxlib.h>
@@ -59,6 +61,67 @@ static int kvcache_node_cmp(struct kvcache_node *n1, struct kvcache_node *n2)
 }
 
 RB_GENERATE_STATIC(kvcache, kvcache_node, node, kvcache_node_cmp);
+
+static void __kvcache_dict_init(struct kvcache_dict *dict)
+{
+	rwlock_init(&dict->lock);
+	RB_INIT(&dict->root);
+	atomic_set(&dict->count, 0);
+	dict->capacity = CACHE_CAPACITY;
+}
+
+static bool kvcache_dict_ready(struct kvcache_dict *dict)
+{
+	int state;
+
+	for (;;) {
+		state = atomic_read_acquire(&dict->state);
+		if (likely(state == KVCACHE_DICT_READY))
+			return true;
+		if (state != KVCACHE_DICT_INITING)
+			return false;
+		cpu_relax();
+	}
+}
+
+static int kvcache_dict_init_once(struct kvcache_dict *dict)
+{
+	int state;
+
+	for (;;) {
+		local_bh_disable();
+		state = atomic_read_acquire(&dict->state);
+		if (likely(state == KVCACHE_DICT_READY))
+			goto out_bh;
+		if (state == KVCACHE_DICT_INITING) {
+			local_bh_enable();
+			cpu_relax();
+			continue;
+		}
+		if (WARN_ON_ONCE(state != KVCACHE_DICT_UNINIT)) {
+			local_bh_enable();
+			return -EINVAL;
+		}
+
+		/*
+		 * Readers busy-wait while the dictionary is INITING. Keep the
+		 * UNINIT->READY transition within a softirq-disabled window so a
+		 * same-CPU softirq cannot observe INITING and spin before the
+		 * initializer publishes READY.
+		 */
+		if (atomic_try_cmpxchg(&dict->state, &state,
+				       KVCACHE_DICT_INITING)) {
+			__kvcache_dict_init(dict);
+			atomic_set_release(&dict->state, KVCACHE_DICT_READY);
+			goto out_bh;
+		}
+		local_bh_enable();
+	}
+
+out_bh:
+	local_bh_enable();
+	return 0;
+}
 
 static int kvcache_result(lua_State *L, int err)
 {
@@ -133,6 +196,9 @@ kvcache_lookup(struct kvcache_dict *dict,
 {
 	struct kvcache_node tmp, *node;
 	unsigned long flags;
+
+	if (!kvcache_dict_ready(dict))
+		return NULL;
 
 	tmp.key = key;
 	tmp.module = module;
@@ -269,6 +335,10 @@ static int kvcache_set(lua_State *L, struct kvcache_dict *dict,
 	struct kvcache_node *node, *prev;
 	int err;
 
+	err = kvcache_dict_init_once(dict);
+	if (err)
+		return kvcache_result(L, err);
+
 	node = kvcache_lookup(dict, module, key);
 	if (!node) {
 		if (tt == LUA_TNIL)
@@ -365,6 +435,10 @@ static int kvcache_incr(lua_State *L, struct kvcache_dict *dict,
 	unsigned long flags;
 	int err;
 
+	err = kvcache_dict_init_once(dict);
+	if (err)
+		return kvcache_result(L, err);
+
 	node = kvcache_lookup(dict, module, key);
 	if (!node) {
 		node = kvcache_node_alloc(dict, module, key, len);
@@ -450,6 +524,9 @@ void kvcache_dict_free(struct kvcache_dict *dict)
 	struct kvcache_node *node, *n;
 	struct lua_lsm_module *module;
 
+	if (!kvcache_dict_ready(dict))
+		return;
+
 	if (atomic_read(&dict->count) == 0)
 		return;
 
@@ -474,10 +551,9 @@ void kvcache_dict_free(struct kvcache_dict *dict)
 
 void kvcache_dict_init(struct kvcache_dict *dict)
 {
-	rwlock_init(&dict->lock);
-	RB_INIT(&dict->root);
-	atomic_set(&dict->count, 0);
-	dict->capacity = CACHE_CAPACITY;
+	atomic_set(&dict->state, KVCACHE_DICT_INITING);
+	__kvcache_dict_init(dict);
+	atomic_set_release(&dict->state, KVCACHE_DICT_READY);
 }
 
 /******************************** object cache *******************************/
