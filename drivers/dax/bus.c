@@ -187,6 +187,21 @@ bool growable_dev_dax(struct dev_dax *dev_dax)
 }
 EXPORT_SYMBOL_GPL(growable_dev_dax);
 
+/*
+ * Online resize requires the device_dax driver. kmem sizes its data->res[]
+ * from nr_range at probe and walks it by the remove-time nr_range, so a grow
+ * that bumps nr_range under a bound kmem would overrun res[] on unbind (GPF
+ * in remove_resource). Only device_dax tracks ranges dynamically.
+ */
+static bool dev_dax_online_resize_capable(struct dev_dax *dev_dax)
+{
+	struct device *dev = &dev_dax->dev;
+
+	if (!is_growable(dev_dax->region) || !dev->driver)
+		return false;
+	return to_dax_drv(dev->driver)->type == DAXDRV_DEVICE_TYPE;
+}
+
 static u64 dev_dax_size(struct dev_dax *dev_dax)
 {
 	u64 size = 0;
@@ -1250,6 +1265,133 @@ static int adjust_dev_dax_range(struct dev_dax *dev_dax, struct resource *res, r
 	return 0;
 }
 
+/*
+ * Online extend for growable regions: append a physical range while bound.
+ * struct page coverage comes up before the snapshot is published, so the
+ * fault path never sees a range without a live pgmap.
+ */
+static int dev_dax_extend_range(struct dev_dax *dev_dax, u64 start, u64 size)
+{
+	struct dax_region *dax_region = dev_dax->region;
+	struct device *dev = &dev_dax->dev;
+	struct dev_dax_ranges *rollback = NULL;
+	struct dev_dax_range *ranges;
+	struct resource *alloc;
+	unsigned long pgoff = 0;
+	int i, rc, range_idx;
+
+	device_lock_assert(dax_region->dev);
+	device_lock_assert(dev);
+
+	if (!size || !is_growable(dax_region))
+		return -EINVAL;
+
+	/* defense in depth: callers gate on this, never extend under kmem */
+	if (dev_WARN_ONCE(dev,
+			  !dev->driver ||
+			  to_dax_drv(dev->driver)->type != DAXDRV_DEVICE_TYPE,
+			  "online extend requires the device_dax driver\n"))
+		return -EBUSY;
+
+	/*
+	 * Prepare the standalone rollback snapshot before any state change,
+	 * so unwinding never allocates. With no old ranges, NULL is the
+	 * legitimate target-state snapshot.
+	 */
+	range_idx = dev_dax->nr_range;
+	if (range_idx) {
+		rollback = kzalloc(struct_size(rollback, ranges, range_idx),
+				   GFP_KERNEL);
+		if (!rollback)
+			return -ENOMEM;
+		rollback->nr_range = range_idx;
+		memcpy(rollback->ranges, dev_dax->ranges,
+		       range_idx * sizeof(struct dev_dax_range));
+	}
+
+	alloc = __request_region(&dax_region->res, start, size,
+				 dev_name(dev), 0);
+	if (!alloc) {
+		rc = -EBUSY;
+		goto err_rollback;
+	}
+
+	rc = dev_dax_add_pgmap(dev_dax, start, size);
+	if (rc)
+		goto err_region;
+
+	ranges = krealloc(dev_dax->ranges,
+			  sizeof(*ranges) * (dev_dax->nr_range + 1),
+			  GFP_KERNEL);
+	if (!ranges) {
+		rc = -ENOMEM;
+		goto err_pgmap;
+	}
+	for (i = 0; i < dev_dax->nr_range; i++)
+		pgoff += PHYS_PFN(range_len(&ranges[i].range));
+	dev_dax->ranges = ranges;
+	ranges[range_idx] = (struct dev_dax_range) {
+		.pgoff = pgoff,
+		.range = {
+			.start = alloc->start,
+			.end   = alloc->end,
+		},
+	};
+	dev_dax->nr_range = range_idx + 1;
+
+	dev_dbg(dev, "extend range[%d]: %pa:%pa\n", range_idx,
+		&alloc->start, &alloc->end);
+
+	rc = dev_dax_publish_ranges(dev_dax);
+	if (rc) {
+		/*
+		 * Undo the writable-state bump, else the next publish would
+		 * expose a ghost range whose span and pgmap are already gone.
+		 */
+		dev_dax->nr_range = range_idx;
+		if (!dev_dax->nr_range) {
+			kfree(dev_dax->ranges);
+			dev_dax->ranges = NULL;
+		}
+		goto err_pgmap;
+	}
+
+	rc = devm_register_dax_mapping(dev_dax, range_idx);
+	if (rc)
+		goto err_published;
+
+	kfree(rollback);	/* never published, safe to drop */
+	return 0;
+
+	/*
+	 * The mapping registration failed while the new tail range was
+	 * briefly visible to the fault path. Hide it without allocating,
+	 * then drain faults, zap PTEs and tear down the pgmap. The
+	 * pre-built snapshot - NULL when the legitimate target state is
+	 * empty - is committed as is; the failed mapping object is never
+	 * revisited, and the local pointer is cleared once the snapshot
+	 * takes ownership.
+	 */
+err_published:
+	dev_dax->nr_range = range_idx;
+	if (!dev_dax->nr_range) {
+		kfree(dev_dax->ranges);
+		dev_dax->ranges = NULL;
+	}
+	dev_dax_commit_snapshot(dev_dax, rollback);
+	rollback = NULL;
+	dax_drain_faults();
+	unmap_mapping_range(dax_inode(dev_dax->dax_dev)->i_mapping,
+			    (loff_t)pgoff << PAGE_SHIFT, size, 1);
+err_pgmap:
+	dev_dax_remove_pgmap(dev_dax, start);
+err_region:
+	__release_region(&dax_region->res, alloc->start, resource_size(alloc));
+err_rollback:
+	kfree(rollback);
+	return rc;
+}
+
 static ssize_t size_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -1287,8 +1429,17 @@ static int dev_dax_shrink(struct dev_dax *dev_dax, resource_size_t size)
 
 		shrink = min_t(u64, to_shrink, range_len(range));
 		if (shrink >= range_len(range)) {
-			devm_release_action(dax_region->dev,
-					unregister_dax_mapping, &mapping->dev);
+			/*
+			 * @mapping is NULL only for a range that never got
+			 * registered: one appended while the dev_dax was
+			 * still unregistered, or one whose registration
+			 * failed. Both are trimmed back out, so this is
+			 * defensive -- it keeps the shared offline path
+			 * off a NULL deref.
+			 */
+			if (mapping)
+				devm_release_action(dax_region->dev,
+						unregister_dax_mapping, &mapping->dev);
 			trim_dev_dax_range(dev_dax);
 			to_shrink -= shrink;
 			if (!to_shrink)
@@ -1467,6 +1618,11 @@ static ssize_t range_parse(const char *opt, size_t len, struct range *range)
 		goto err;
 	range->end = addr;
 
+	if (range->end < range->start) {
+		rc = -EINVAL;
+		goto err;
+	}
+
 err:
 	kfree(str);
 	return rc;
@@ -1494,7 +1650,13 @@ static ssize_t mapping_store(struct device *dev, struct device_attribute *attr,
 	device_lock(dev);
 
 	to_alloc = range_len(&r);
-	if (alloc_is_aligned(dev_dax, to_alloc))
+	if (!alloc_is_aligned(dev_dax, to_alloc))
+		rc = -EINVAL;
+	else if (dev_dax_online_resize_capable(dev_dax))
+		rc = dev_dax_extend_range(dev_dax, r.start, to_alloc);
+	else if (dev->driver)
+		rc = -EBUSY;	/* bound but not device_dax: no online extend */
+	else
 		rc = alloc_dev_dax_range(dev_dax, r.start, to_alloc);
 	device_unlock(dev);
 	device_unlock(dax_region->dev);
@@ -1636,6 +1798,7 @@ static umode_t dev_dax_visible(struct kobject *kobj, struct attribute *a, int n)
 		return 0;
 	if (a == &dev_attr_numa_node.attr && !IS_ENABLED(CONFIG_NUMA))
 		return 0;
+	/* GROWABLE and STATIC are mutually exclusive (hmem.c region_idle) */
 	if (a == &dev_attr_mapping.attr && is_static(dax_region))
 		return 0;
 	if ((a == &dev_attr_align.attr ||
