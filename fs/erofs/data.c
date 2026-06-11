@@ -420,12 +420,12 @@ static const struct iomap_ops erofs_iomap_ops = {
  */
 static int erofs_readpage(struct file *file, struct page *page)
 {
-	return iomap_readpage(page, &erofs_iomap_ops);
+	return iomap_readpage(page, &erofs_iomap_ops, NULL);
 }
 
 static void erofs_readahead(struct readahead_control *rac)
 {
-	return iomap_readahead(rac, &erofs_iomap_ops);
+	return iomap_readahead(rac, &erofs_iomap_ops, NULL);
 }
 
 static sector_t erofs_bmap(struct address_space *mapping, sector_t block)
@@ -466,7 +466,7 @@ static ssize_t erofs_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 
 		if (!err)
 			return iomap_dio_rw(iocb, to, &erofs_iomap_ops,
-					    NULL, 0);
+					    NULL, 0, NULL);
 		if (err < 0)
 			return err;
 	}

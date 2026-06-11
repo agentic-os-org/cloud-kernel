@@ -8084,10 +8084,10 @@ ssize_t btrfs_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
 	 */
 	if (current->journal_info)
 		ret = iomap_dio_rw(iocb, iter, &btrfs_dio_iomap_ops,
-				   &btrfs_sync_dops, 0);
+				   &btrfs_sync_dops, 0, NULL);
 	else
 		ret = iomap_dio_rw(iocb, iter, &btrfs_dio_iomap_ops,
-				   &btrfs_dio_ops, 0);
+				   &btrfs_dio_ops, 0, NULL);
 
 	if (ret == -ENOTBLK)
 		ret = 0;
