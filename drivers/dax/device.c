@@ -54,10 +54,21 @@ static int check_vma(struct dev_dax *dev_dax, struct vm_area_struct *vma,
 __weak phys_addr_t dax_pgoff_to_phys(struct dev_dax *dev_dax, pgoff_t pgoff,
 		unsigned long size)
 {
+	struct dev_dax_ranges *r;
+	phys_addr_t result = -1;
 	int i;
 
-	for (i = 0; i < dev_dax->nr_range; i++) {
-		struct dev_dax_range *dax_range = &dev_dax->ranges[i];
+	/*
+	 * Walk the RCU snapshot, not the writable ranges[]; writers publish a
+	 * fresh one under device_lock(&dax_region->dev).
+	 */
+	rcu_read_lock();
+	r = rcu_dereference(dev_dax->ranges_rcu);
+	if (!r)
+		goto out;
+
+	for (i = 0; i < r->nr_range; i++) {
+		struct dev_dax_range *dax_range = &r->ranges[i];
 		struct range *range = &dax_range->range;
 		unsigned long long pgoff_end;
 		phys_addr_t phys;
@@ -66,11 +77,15 @@ __weak phys_addr_t dax_pgoff_to_phys(struct dev_dax *dev_dax, pgoff_t pgoff,
 		if (pgoff < dax_range->pgoff || pgoff > pgoff_end)
 			continue;
 		phys = PFN_PHYS(pgoff - dax_range->pgoff) + range->start;
-		if (phys + size - 1 <= range->end)
-			return phys;
+		if (phys + size - 1 <= range->end) {
+			result = phys;
+			goto out;
+		}
 		break;
 	}
-	return -1;
+out:
+	rcu_read_unlock();
+	return result;
 }
 
 static int dax_set_mapping(struct vm_fault *vmf, pfn_t pfn,
