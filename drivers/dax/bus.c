@@ -410,13 +410,74 @@ void kill_dev_dax(struct dev_dax *dev_dax)
 }
 EXPORT_SYMBOL_GPL(kill_dev_dax);
 
+/*
+ * Swap in a pre-built snapshot. Infallible, so a caller that must not fail
+ * after teardown started can allocate up front (see dev_dax_extend_range).
+ */
+static void dev_dax_commit_snapshot(struct dev_dax *dev_dax,
+				    struct dev_dax_ranges *new)
+{
+	struct dev_dax_ranges *old;
+
+	device_lock_assert(dev_dax->region->dev);
+
+	old = rcu_dereference_protected(dev_dax->ranges_rcu,
+			lockdep_is_held(&dev_dax->region->dev->mutex));
+
+	rcu_assign_pointer(dev_dax->ranges_rcu, new);
+	if (old)
+		kfree_rcu(old, rcu);
+}
+
+/*
+ * Publish an immutable RCU snapshot of dev_dax->ranges so the fault path
+ * (dax_pgoff_to_phys) can walk it without device_lock. Callers hold
+ * device_lock on dax_region->dev. On -ENOMEM the previous snapshot stays,
+ * so a caller that cannot tolerate a lag must roll back its ranges[] change.
+ */
+static int dev_dax_publish_ranges(struct dev_dax *dev_dax)
+{
+	struct dev_dax_ranges *new = NULL;
+
+	device_lock_assert(dev_dax->region->dev);
+
+	if (dev_dax->nr_range) {
+		new = kzalloc(struct_size(new, ranges, dev_dax->nr_range),
+			      GFP_KERNEL);
+		if (!new)
+			return -ENOMEM;
+		new->nr_range = dev_dax->nr_range;
+		memcpy(new->ranges, dev_dax->ranges,
+		       dev_dax->nr_range * sizeof(struct dev_dax_range));
+	}
+
+	dev_dax_commit_snapshot(dev_dax, new);
+	return 0;
+}
+
+/* Trim the last range and republish */
 static void trim_dev_dax_range(struct dev_dax *dev_dax)
 {
-	int i = dev_dax->nr_range - 1;
-	struct range *range = &dev_dax->ranges[i].range;
 	struct dax_region *dax_region = dev_dax->region;
+	struct dev_dax_ranges *new = NULL;
+	struct dev_dax_range *dax_range;
+	struct range *range;
+	int i = dev_dax->nr_range - 1;
 
 	device_lock_assert(dax_region->dev);
+
+	if (dev_WARN_ONCE(&dev_dax->dev, !dev_dax->nr_range,
+			  "%s: invalid range count\n", __func__))
+		return;
+
+	dax_range = &dev_dax->ranges[i];
+	range = &dax_range->range;
+
+	if (i) {
+		new = kzalloc(struct_size(new, ranges, i),
+			      GFP_KERNEL | __GFP_NOFAIL);
+	}
+
 	dev_dbg(&dev_dax->dev, "delete range[%d]: %#llx:%#llx\n", i,
 		(unsigned long long)range->start,
 		(unsigned long long)range->end);
@@ -426,12 +487,39 @@ static void trim_dev_dax_range(struct dev_dax *dev_dax)
 		kfree(dev_dax->ranges);
 		dev_dax->ranges = NULL;
 	}
+
+	/* Commit the pre-allocated snapshot; infallible from here on. */
+	if (new) {
+		new->nr_range = dev_dax->nr_range;
+		memcpy(new->ranges, dev_dax->ranges,
+		       dev_dax->nr_range * sizeof(struct dev_dax_range));
+	}
+	dev_dax_commit_snapshot(dev_dax, new);
 }
 
+/*
+ * Teardown path: kill_dev_dax() and device_del() have already run, so no
+ * fault can reach dax_pgoff_to_phys() and no driver is bound. Release every
+ * range directly instead of looping over the now-fallible trim, then commit
+ * NULL to preserve the "nr_range == 0 => snapshot == NULL" invariant. The
+ * commit is infallible, so this never fails.
+ */
 static void free_dev_dax_ranges(struct dev_dax *dev_dax)
 {
-	while (dev_dax->nr_range)
-		trim_dev_dax_range(dev_dax);
+	struct dax_region *dax_region = dev_dax->region;
+	int i;
+
+	for (i = dev_dax->nr_range - 1; i >= 0; i--) {
+		struct dev_dax_range *dax_range = &dev_dax->ranges[i];
+
+		__release_region(&dax_region->res, dax_range->range.start,
+				 range_len(&dax_range->range));
+	}
+	dev_dax->nr_range = 0;
+	kfree(dev_dax->ranges);
+	dev_dax->ranges = NULL;
+
+	dev_dax_commit_snapshot(dev_dax, NULL);
 }
 
 static void unregister_dev_dax(void *dev)
@@ -674,75 +762,76 @@ static void unregister_dax_mapping(void *data)
 	device_unregister(dev);
 }
 
-static struct dev_dax_range *get_dax_range(struct device *dev)
-{
-	struct dax_mapping *mapping = to_dax_mapping(dev);
-	struct dev_dax *dev_dax = to_dev_dax(dev->parent);
-	struct dax_region *dax_region = dev_dax->region;
-
-	device_lock(dax_region->dev);
-	if (mapping->range_id < 0) {
-		device_unlock(dax_region->dev);
-		return NULL;
-	}
-
-	return &dev_dax->ranges[mapping->range_id];
-}
-
-static void put_dax_range(struct dev_dax_range *dax_range)
-{
-	struct dax_mapping *mapping = dax_range->mapping;
-	struct dev_dax *dev_dax = to_dev_dax(mapping->dev.parent);
-	struct dax_region *dax_region = dev_dax->region;
-
-	device_unlock(dax_region->dev);
-}
-
+/*
+ * start/end/page_offset are read without device_lock(): they walk the RCU
+ * snapshot of dev_dax->ranges instead of the writable array, so they can
+ * never block on the same lock size_store() holds while it drains these
+ * very sysfs files (kernfs_drain), which would otherwise be an ABBA
+ * deadlock against device_lock(dax_region->dev).
+ */
 static ssize_t start_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
-	struct dev_dax_range *dax_range;
-	ssize_t rc;
+	struct dax_mapping *mapping = to_dax_mapping(dev);
+	struct dev_dax *dev_dax = to_dev_dax(dev->parent);
+	struct dev_dax_ranges *ranges;
+	resource_size_t start;
 
-	dax_range = get_dax_range(dev);
-	if (!dax_range)
+	rcu_read_lock();
+	ranges = rcu_dereference(dev_dax->ranges_rcu);
+	if (!ranges || mapping->range_id < 0 ||
+	    mapping->range_id >= ranges->nr_range) {
+		rcu_read_unlock();
 		return -ENXIO;
-	rc = sprintf(buf, "%#llx\n", dax_range->range.start);
-	put_dax_range(dax_range);
+	}
+	start = ranges->ranges[mapping->range_id].range.start;
+	rcu_read_unlock();
 
-	return rc;
+	return sprintf(buf, "%#llx\n", (unsigned long long)start);
 }
 static DEVICE_ATTR(start, 0400, start_show, NULL);
 
 static ssize_t end_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
-	struct dev_dax_range *dax_range;
-	ssize_t rc;
+	struct dax_mapping *mapping = to_dax_mapping(dev);
+	struct dev_dax *dev_dax = to_dev_dax(dev->parent);
+	struct dev_dax_ranges *ranges;
+	resource_size_t end;
 
-	dax_range = get_dax_range(dev);
-	if (!dax_range)
+	rcu_read_lock();
+	ranges = rcu_dereference(dev_dax->ranges_rcu);
+	if (!ranges || mapping->range_id < 0 ||
+	    mapping->range_id >= ranges->nr_range) {
+		rcu_read_unlock();
 		return -ENXIO;
-	rc = sprintf(buf, "%#llx\n", dax_range->range.end);
-	put_dax_range(dax_range);
+	}
+	end = ranges->ranges[mapping->range_id].range.end;
+	rcu_read_unlock();
 
-	return rc;
+	return sprintf(buf, "%#llx\n", (unsigned long long)end);
 }
 static DEVICE_ATTR(end, 0400, end_show, NULL);
 
 static ssize_t pgoff_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
-	struct dev_dax_range *dax_range;
-	ssize_t rc;
+	struct dax_mapping *mapping = to_dax_mapping(dev);
+	struct dev_dax *dev_dax = to_dev_dax(dev->parent);
+	struct dev_dax_ranges *ranges;
+	unsigned long pgoff;
 
-	dax_range = get_dax_range(dev);
-	if (!dax_range)
+	rcu_read_lock();
+	ranges = rcu_dereference(dev_dax->ranges_rcu);
+	if (!ranges || mapping->range_id < 0 ||
+	    mapping->range_id >= ranges->nr_range) {
+		rcu_read_unlock();
 		return -ENXIO;
-	rc = sprintf(buf, "%#lx\n", dax_range->pgoff);
-	put_dax_range(dax_range);
+	}
+	pgoff = ranges->ranges[mapping->range_id].pgoff;
+	rcu_read_unlock();
 
-	return rc;
+	return sprintf(buf, "%#lx\n", pgoff);
 }
 static DEVICE_ATTR(page_offset, 0400, pgoff_show, NULL);
 
@@ -815,10 +904,11 @@ static int alloc_dev_dax_range(struct dev_dax *dev_dax, u64 start,
 	struct dax_region *dax_region = dev_dax->region;
 	struct resource *res = &dax_region->res;
 	struct device *dev = &dev_dax->dev;
+	struct dev_dax_ranges *rollback = NULL;
 	struct dev_dax_range *ranges;
 	unsigned long pgoff = 0;
 	struct resource *alloc;
-	int i, rc;
+	int i, rc, old_nr;
 
 	device_lock_assert(dax_region->dev);
 
@@ -835,10 +925,32 @@ static int alloc_dev_dax_range(struct dev_dax *dev_dax, u64 start,
 	if (!alloc)
 		return -ENOMEM;
 
+	/*
+	 * Pre-build the rollback snapshot (the current, pre-append state)
+	 * before any mutation so the error paths below never allocate. This
+	 * mirrors dev_dax_extend_range(): the commit on the mapping-failure
+	 * path is then infallible, so the published snapshot can never be
+	 * left a superset of the writable ranges[] (which would let a fault
+	 * reach a range whose region we are about to release).
+	 */
+	old_nr = dev_dax->nr_range;
+	if (old_nr) {
+		rollback = kzalloc(struct_size(rollback, ranges, old_nr),
+				   GFP_KERNEL);
+		if (!rollback) {
+			__release_region(res, alloc->start, resource_size(alloc));
+			return -ENOMEM;
+		}
+		rollback->nr_range = old_nr;
+		memcpy(rollback->ranges, dev_dax->ranges,
+		       old_nr * sizeof(struct dev_dax_range));
+	}
+
 	ranges = krealloc(dev_dax->ranges, sizeof(*ranges)
 			* (dev_dax->nr_range + 1), GFP_KERNEL);
 	if (!ranges) {
 		__release_region(res, alloc->start, resource_size(alloc));
+		kfree(rollback);
 		return -ENOMEM;
 	}
 
@@ -855,17 +967,64 @@ static int alloc_dev_dax_range(struct dev_dax *dev_dax, u64 start,
 
 	dev_dbg(dev, "alloc range[%d]: %pa:%pa\n", dev_dax->nr_range - 1,
 			&alloc->start, &alloc->end);
+
+	rc = dev_dax_publish_ranges(dev_dax);
+	if (rc) {
+		/*
+		 * Publish failed, so the snapshot still holds the old @old_nr
+		 * entries and matches reality once the writable append is
+		 * undone. No commit is needed; the snapshot is a subset at
+		 * worst, never a superset. This path is unbound-only (no live
+		 * char device), so no fault can be in flight.
+		 */
+		dev_dax->nr_range = old_nr;
+		if (!dev_dax->nr_range) {
+			kfree(dev_dax->ranges);
+			dev_dax->ranges = NULL;
+		}
+		__release_region(res, alloc->start, resource_size(alloc));
+		kfree(rollback);
+		return rc;
+	}
+
 	/*
 	 * A dev_dax instance must be registered before mapping device
 	 * children can be added. Defer to devm_create_dev_dax() to add
 	 * the initial mapping device.
 	 */
-	if (!device_is_registered(&dev_dax->dev))
+	if (!device_is_registered(&dev_dax->dev)) {
+		kfree(rollback);
 		return 0;
+	}
 
 	rc = devm_register_dax_mapping(dev_dax, dev_dax->nr_range - 1);
-	if (rc)
-		trim_dev_dax_range(dev_dax);
+	if (rc) {
+		/*
+		 * Mapping registration failed after the new tail range was
+		 * published. Commit the pre-built @old_nr snapshot first
+		 * (infallible) so the fault path can no longer see the range
+		 * we are about to release, then undo the writable append.
+		 * Committing before __release_region() keeps the snapshot a
+		 * subset of reality throughout. This path is unbound-only, so
+		 * no drain/zap is required (matching the previous behaviour).
+		 */
+		dev_dax_commit_snapshot(dev_dax, rollback);
+		rollback = NULL;
+		dev_dax->nr_range = old_nr;
+		if (!dev_dax->nr_range) {
+			kfree(dev_dax->ranges);
+			dev_dax->ranges = NULL;
+		}
+		__release_region(res, alloc->start, resource_size(alloc));
+	}
+
+	/*
+	 * On success @rollback is still the pre-append snapshot and was
+	 * never published, so it is safe to drop here; on the failure path
+	 * above it has already been handed to dev_dax_commit_snapshot() and
+	 * cleared to NULL, making this a no-op.
+	 */
+	kfree(rollback);
 
 	return rc;
 }
@@ -878,6 +1037,7 @@ static int adjust_dev_dax_range(struct dev_dax *dev_dax, struct resource *res, r
 	bool is_shrink = resource_size(res) > size;
 	struct range *range = &dax_range->range;
 	struct device *dev = &dev_dax->dev;
+	struct dev_dax_ranges *new;
 	int rc;
 
 	device_lock_assert(dax_region->dev);
@@ -885,9 +1045,19 @@ static int adjust_dev_dax_range(struct dev_dax *dev_dax, struct resource *res, r
 	if (dev_WARN_ONCE(dev, !size, "deletion is handled by dev_dax_shrink\n"))
 		return -EINVAL;
 
+	/*
+	 * Preallocate the post-adjust snapshot before mutating any state so the
+	 * commit below is infallible.
+	 */
+	new = kzalloc(struct_size(new, ranges, dev_dax->nr_range), GFP_KERNEL);
+	if (!new)
+		return -ENOMEM;
+
 	rc = adjust_resource(res, range->start, size);
-	if (rc)
+	if (rc) {
+		kfree(new);
 		return rc;
+	}
 
 	*range = (struct range) {
 		.start = range->start,
@@ -897,6 +1067,11 @@ static int adjust_dev_dax_range(struct dev_dax *dev_dax, struct resource *res, r
 	dev_dbg(dev, "%s range[%d]: %#llx:%#llx\n", is_shrink ? "shrink" : "extend",
 			last_range, (unsigned long long) range->start,
 			(unsigned long long) range->end);
+
+	new->nr_range = dev_dax->nr_range;
+	memcpy(new->ranges, dev_dax->ranges,
+	       dev_dax->nr_range * sizeof(struct dev_dax_range));
+	dev_dax_commit_snapshot(dev_dax, new);
 
 	return 0;
 }
@@ -1240,12 +1415,20 @@ static ssize_t resource_show(struct device *dev,
 {
 	struct dev_dax *dev_dax = to_dev_dax(dev);
 	struct dax_region *dax_region = dev_dax->region;
+	struct dev_dax_ranges *r;
 	unsigned long long start;
 
-	if (dev_dax->nr_range < 1)
-		start = dax_region->res.start;
+	/*
+	 * Read through the RCU snapshot: online grow krealloc()s ranges[] and
+	 * can move it out from under a concurrent reader.
+	 */
+	rcu_read_lock();
+	r = rcu_dereference(dev_dax->ranges_rcu);
+	if (r && r->nr_range > 0)
+		start = r->ranges[0].range.start;
 	else
-		start = dev_dax->ranges[0].range.start;
+		start = dax_region->res.start;
+	rcu_read_unlock();
 
 	return sprintf(buf, "%#llx\n", start);
 }
@@ -1312,10 +1495,14 @@ static void dev_dax_release(struct device *dev)
 {
 	struct dev_dax *dev_dax = to_dev_dax(dev);
 	struct dax_device *dax_dev = dev_dax->dax_dev;
+	struct dev_dax_ranges *r;
 
 	put_dax(dax_dev);
 	free_dev_dax_id(dev_dax);
 	kfree(dev_dax->pgmap);
+	/* last reference, no readers left: free the snapshot synchronously */
+	r = rcu_dereference_protected(dev_dax->ranges_rcu, true);
+	kfree(r);
 	kfree(dev_dax);
 }
 

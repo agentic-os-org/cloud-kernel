@@ -9,10 +9,17 @@
 phys_addr_t dax_pgoff_to_phys(struct dev_dax *dev_dax, pgoff_t pgoff,
 		unsigned long size)
 {
+	struct dev_dax_ranges *r;
+	phys_addr_t result = -1;
 	int i;
 
-	for (i = 0; i < dev_dax->nr_range; i++) {
-		struct dev_dax_range *dax_range = &dev_dax->ranges[i];
+	rcu_read_lock();
+	r = rcu_dereference(dev_dax->ranges_rcu);
+	if (!r)
+		goto out;
+
+	for (i = 0; i < r->nr_range; i++) {
+		struct dev_dax_range *dax_range = &r->ranges[i];
 		struct range *range = &dax_range->range;
 		unsigned long long pgoff_end;
 		phys_addr_t addr;
@@ -25,15 +32,21 @@ phys_addr_t dax_pgoff_to_phys(struct dev_dax *dev_dax, pgoff_t pgoff,
 			if (get_nfit_res(addr)) {
 				struct page *page;
 
-				if (dev_dax->region->align > PAGE_SIZE)
-					return -1;
+				if (dev_dax->region->align > PAGE_SIZE) {
+					result = -1;
+					goto out;
+				}
 
 				page = vmalloc_to_page((void *)addr);
-				return PFN_PHYS(page_to_pfn(page));
+				result = PFN_PHYS(page_to_pfn(page));
+				goto out;
 			}
-			return addr;
+			result = addr;
+			goto out;
 		}
 		break;
 	}
-	return -1;
+out:
+	rcu_read_unlock();
+	return result;
 }
