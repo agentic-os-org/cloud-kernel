@@ -31,11 +31,11 @@
 #define NO_ENTITYN_RO 0
 #define ENTITYN_RO 0xFFFFFFFFU
 
-/* Now, this attr control just support at byte granularity */
+/* Now, this attr control just supports at byte granularity */
 enum {
 	FUNC_EXIST = 0x00000000, /* idev and ub device have this register */
-	IDEV_NO_EXIST = 0x01010101, /* idev do not has this register */
-	UDEV_NO_EXIST = 0x02020202, /* ub device do not has have this register */
+	IDEV_NO_EXIST = 0x01010101, /* idev does not have this register */
+	UDEV_NO_EXIST = 0x02020202, /* ub device does not have this register */
 	FUNC_NO_EXIST = 0x03030303, /* idev and ub device do not have this register */
 };
 
@@ -216,7 +216,7 @@ static struct perm_bits cap_perms[UB_CFG1_MAX_CAP + 1] = {};
 
 static struct perm_bits port_basic_perms = {.readfn = vfio_ub_default_config_read };
 
-/* when call this function, cap_id is always exist */
+/* when called this function, cap_id is always exist */
 static struct perm_bits *vfio_ub_find_cap_perm(u32 cap_id)
 {
 	if (cap_id <= UB_CFG1_MAX_CAP)
@@ -240,7 +240,7 @@ static int vfio_ub_user_config_read(struct ub_entity *uent, u64 pos,
 	memcpy(&attr.ent0eo, perm->ent0eo + offset, count);
 	memcpy(&attr.exist, perm->exist + offset, count);
 
-	/* quick processing for most situation */
+	/* quick processing for most situations */
 	if (likely(attr.exist == FUNC_EXIST && attr.ent0eo == NO_ENTITY0_EO))
 		return vfio_ub_do_user_config_read(uent, pos, val, count);
 
@@ -287,7 +287,7 @@ static int vfio_ub_user_config_write(struct ub_entity *uent, u64 pos,
 	memcpy(&attr.exist, perm->exist + offset, count);
 	memcpy(&attr.entnro, perm->entnro + offset, count);
 
-	/* quick processing for most situation */
+	/* quick processing for most situations */
 	if (likely(attr.exist == FUNC_EXIST && attr.ent0eo == NO_ENTITY0_EO
 	    && attr.entnro == NO_ENTITYN_RO))
 		return vfio_ub_do_user_config_write(uent, pos, val, count);
@@ -408,7 +408,7 @@ static int vfio_ub_default_config_write(struct vfio_ub_core_device *vdev,
 		memcpy(buf + offset, &virt_val, count);
 	}
 
-	/* Non-virtualzed and writable bits go to hardware */
+	/* Non-virtualized and writable bits go to hardware */
 	if (write & ~virt) {
 		struct ub_entity *uent = vdev->uent;
 		__le32 phys_val = 0;
@@ -451,7 +451,7 @@ static int alloc_perm_bits(struct perm_bits *perm, int size)
 
 	/*
 	 * Zero state is
-	 * - All Readable, None Writeable, None Virtualized
+	 * - All Readable, None Writable, None Virtualized
 	 */
 	perm->virt = vzalloc(tmp);
 	perm->write = vzalloc(tmp);
@@ -610,7 +610,7 @@ static int vfio_ub_cfg1_basic_write(struct vfio_ub_core_device *vdev, u64 pos,
 		*elr = *elr & (u8)~UB_ELR_BIT;
 		ret = ub_reset_entity(vdev->uent);
 		if (ret) {
-			ub_warn(vdev->uent, "do elr reset failed, ret=%d\n", ret);
+			ub_warn(vdev->uent, "ELR reset failed, ret=%d\n", ret);
 			return ret;
 		}
 	}
@@ -889,7 +889,7 @@ static int vfio_ub_fill_slice_vconfig(struct vfio_ub_core_device *vdev,
 	for (u32 i = 0; i < size; i += DWORD_SIZE) {
 		ret = vfio_ub_user_config_read(vdev->uent, pos + i, &val, DWORD_SIZE);
 		if (ret) {
-			ub_warn(vdev->uent, "read cfgspace pos[%#x] failed, used default val 0\n",
+			ub_warn(vdev->uent, "read cfgspace pos[%#x] failed, using default val 0\n",
 				pos + i);
 			val = 0;
 		}
@@ -897,7 +897,7 @@ static int vfio_ub_fill_slice_vconfig(struct vfio_ub_core_device *vdev,
 		*dwordp = cpu_to_le32(val);
 	}
 
-	/* vfio-ub support no port caps for userspace */
+	/* vfio-ub supports no port caps for userspace */
 	if (cap_id >= UB_PORT0_BASIC_CAP)
 		memset(&vdev->vconfig.slice[num].cfg[UB_CFG0_PORT_BITMAP], 0, UB_CFG_BITMAP_SIZE);
 
