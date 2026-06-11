@@ -704,6 +704,19 @@ int erofs_xattr_prefixes_init(struct super_block *sb)
 	}
 
 	erofs_put_metabuf(&buf);
+	if (!ret && erofs_sb_has_ishare_xattrs(sbi)) {
+		struct erofs_xattr_prefix_item *pf = pfs + sbi->ishare_xattr_prefix_id;
+		struct erofs_xattr_long_prefix *newpfx;
+
+		newpfx = krealloc(pf->prefix,
+			sizeof(*newpfx) + pf->infix_len + 1, GFP_KERNEL);
+		if (newpfx) {
+			newpfx->infix[pf->infix_len] = '\0';
+			pf->prefix = newpfx;
+		} else {
+			ret = -ENOMEM;
+		}
+	}
 	sbi->xattr_prefixes = pfs;
 	if (ret)
 		erofs_xattr_prefixes_cleanup(sb);
@@ -747,5 +760,39 @@ struct posix_acl *erofs_get_acl(struct inode *inode, int type, bool rcu)
 		acl = posix_acl_from_xattr(&init_user_ns, value, rc);
 	kfree(value);
 	return acl;
+}
+#endif
+
+#ifdef CONFIG_EROFS_FS_PAGE_CACHE_SHARE
+int erofs_xattr_fill_inode_fingerprint(struct erofs_inode_fingerprint *fp,
+				       struct inode *inode, const char *domain_id)
+{
+	struct erofs_sb_info *sbi = EROFS_SB(inode->i_sb);
+	struct erofs_xattr_prefix_item *prefix;
+	const char *infix;
+	int valuelen, base_index;
+
+	if (!test_opt(&sbi->opt, INODE_SHARE))
+		return -EOPNOTSUPP;
+	if (!sbi->xattr_prefixes)
+		return -EINVAL;
+	prefix = sbi->xattr_prefixes + sbi->ishare_xattr_prefix_id;
+	infix = prefix->prefix->infix;
+	base_index = prefix->prefix->base_index;
+	valuelen = erofs_getxattr(inode, base_index, infix, NULL, 0);
+	if (valuelen <= 0 || valuelen > (1 << sbi->blkszbits))
+		return -EFSCORRUPTED;
+	fp->size = valuelen + (domain_id ? strlen(domain_id) : 0);
+	fp->opaque = kmalloc(fp->size, GFP_KERNEL);
+	if (!fp->opaque)
+		return -ENOMEM;
+	if (valuelen != erofs_getxattr(inode, base_index, infix,
+				       fp->opaque, valuelen)) {
+		kfree(fp->opaque);
+		fp->opaque = NULL;
+		return -EFSCORRUPTED;
+	}
+	memcpy(fp->opaque + valuelen, domain_id, fp->size - valuelen);
+	return 0;
 }
 #endif
