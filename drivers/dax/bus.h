@@ -13,6 +13,8 @@ struct dax_region;
 /* dax bus specific ioresource flags */
 #define IORESOURCE_DAX_STATIC BIT(0)
 #define IORESOURCE_DAX_KMEM BIT(1)
+/* accepts ranges appended while driver-bound. */
+#define IORESOURCE_DAX_GROWABLE BIT(2)
 
 struct dax_region *alloc_dax_region(struct device *parent, int region_id,
 		struct range *range, int target_node, unsigned int align,
@@ -47,6 +49,10 @@ int __dax_driver_register(struct dax_device_driver *dax_drv,
 void dax_driver_unregister(struct dax_device_driver *dax_drv);
 void kill_dev_dax(struct dev_dax *dev_dax);
 bool static_dev_dax(struct dev_dax *dev_dax);
+bool growable_dev_dax(struct dev_dax *dev_dax);
+
+/* Caller must hold device_lock(&dev_dax->dev). */
+int dev_dax_install_pgmaps(struct dev_dax *dev_dax);
 
 #define MODULE_ALIAS_DAX_DEVICE(type) \
 	MODULE_ALIAS("dax:t" __stringify(type) "*")

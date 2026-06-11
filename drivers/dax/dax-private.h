@@ -8,6 +8,8 @@
 #include <linux/device.h>
 #include <linux/cdev.h>
 #include <linux/idr.h>
+#include <linux/list.h>
+#include <linux/memremap.h>
 #include <linux/rcupdate.h>
 #include <linux/range.h>
 
@@ -71,6 +73,14 @@ struct dev_dax_ranges {
 	struct dev_dax_range ranges[];
 };
 
+/* Per-range pgmap of a growable region: an extend maps only the new range. */
+struct dev_dax_pgmap {
+	struct list_head node;
+	u64 start;
+	struct resource *iomem_res;
+	struct dev_pagemap pgmap;
+};
+
 /**
  * struct dev_dax - instance data for a subdivision of a dax region, and
  * data while the device is activated in the driver.
@@ -85,6 +95,7 @@ struct dev_dax_ranges {
  * @nr_range: size of @ranges
  * @ranges: resource-span + pgoff tuples for the instance
  * @ranges_rcu: RCU-protected snapshot of @ranges, read by the fault path
+ * @pgmaps: per-range &struct dev_dax_pgmap list of a growable region
  */
 struct dev_dax {
 	struct dax_region *region;
@@ -99,6 +110,7 @@ struct dev_dax {
 	int nr_range;
 	struct dev_dax_range *ranges;
 	struct dev_dax_ranges __rcu *ranges_rcu;
+	struct list_head pgmaps;
 };
 
 /*
