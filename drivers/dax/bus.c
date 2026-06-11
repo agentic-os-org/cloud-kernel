@@ -175,6 +175,18 @@ bool static_dev_dax(struct dev_dax *dev_dax)
 }
 EXPORT_SYMBOL_GPL(static_dev_dax);
 
+/* A growable region accepts new ranges while the driver is bound. */
+static bool is_growable(struct dax_region *dax_region)
+{
+	return (dax_region->res.flags & IORESOURCE_DAX_GROWABLE) != 0;
+}
+
+bool growable_dev_dax(struct dev_dax *dev_dax)
+{
+	return is_growable(dev_dax->region);
+}
+EXPORT_SYMBOL_GPL(growable_dev_dax);
+
 static u64 dev_dax_size(struct dev_dax *dev_dax)
 {
 	u64 size = 0;
@@ -898,6 +910,118 @@ static int devm_register_dax_mapping(struct dev_dax *dev_dax, int range_id)
 	return 0;
 }
 
+/*
+ * Bring up struct page coverage for [start, start+size-1] and chain the pgmap
+ * onto dev_dax->pgmaps; teardown is dev_dax_release_pgmap_dxps().
+ *
+ * One pgmap backs one whole range and derives vmemmap_shift from
+ * dev_dax->align, so memremap_pages() lays compound folios of
+ * 1 << vmemmap_shift pfns across the span. That is only self-consistent if
+ * the span is aligned to, and a multiple of, the device align: otherwise its
+ * struct page metadata would be initialized past this pgmap's own vmemmap.
+ */
+static int dev_dax_add_pgmap(struct dev_dax *dev_dax, u64 start, u64 size)
+{
+	unsigned long align = max_t(unsigned long, dev_dax->align,
+				    memremap_compat_align());
+	struct dev_dax_pgmap *dxp;
+	void *addr;
+
+	device_lock_assert(&dev_dax->dev);
+
+	if (!IS_ALIGNED(start | size, align)) {
+		dev_warn(&dev_dax->dev,
+			 "growable range %#llx+%#llx not %#lx aligned\n",
+			 start, size, align);
+		return -EINVAL;
+	}
+
+	dxp = kzalloc(sizeof(*dxp), GFP_KERNEL);
+	if (!dxp)
+		return -ENOMEM;
+
+	dxp->start = start;
+	dxp->pgmap.nr_range = 1;
+	dxp->pgmap.range = (struct range) {
+		.start = start,
+		.end = start + size - 1,
+	};
+	dxp->pgmap.type = MEMORY_DEVICE_GENERIC;
+	if (dev_dax->align > PAGE_SIZE)
+		dxp->pgmap.vmemmap_shift =
+			order_base_2(dev_dax->align >> PAGE_SHIFT);
+
+	addr = memremap_pages(&dxp->pgmap, dev_to_node(&dev_dax->dev));
+	if (IS_ERR(addr)) {
+		kfree(dxp);
+		return PTR_ERR(addr);
+	}
+
+	list_add_tail(&dxp->node, &dev_dax->pgmaps);
+	return 0;
+}
+
+/* tear down the pgmap that backs the range starting at @start */
+static void dev_dax_remove_pgmap(struct dev_dax *dev_dax, u64 start)
+{
+	struct dev_dax_pgmap *dxp, *tmp;
+
+	device_lock_assert(&dev_dax->dev);
+
+	list_for_each_entry_safe(dxp, tmp, &dev_dax->pgmaps, node) {
+		if (dxp->start != start)
+			continue;
+		list_del(&dxp->node);
+		memunmap_pages(&dxp->pgmap);
+		kfree(dxp);
+		return;
+	}
+	dev_WARN(&dev_dax->dev, "no per-range pgmap for %#llx\n", start);
+}
+
+/* devm action: tear down every per-range pgmap of this dev_dax. */
+static void dev_dax_release_pgmap_dxps(void *_dev_dax)
+{
+	struct dev_dax *dev_dax = _dev_dax;
+	struct dev_dax_pgmap *dxp, *tmp;
+
+	list_for_each_entry_safe(dxp, tmp, &dev_dax->pgmaps, node) {
+		list_del(&dxp->node);
+		memunmap_pages(&dxp->pgmap);
+		kfree(dxp);
+	}
+}
+
+/*
+ * Claim each range of a freshly bound growable dev_dax in iomem_resource and
+ * install its pgmap. The teardown action is registered first so that it runs
+ * last during devm unwinding.
+ */
+int dev_dax_install_pgmaps(struct dev_dax *dev_dax)
+{
+	struct device *dev = &dev_dax->dev;
+	int rc, i;
+
+	device_lock_assert(dev);
+
+	rc = devm_add_action_or_reset(dev, dev_dax_release_pgmap_dxps,
+				      dev_dax);
+	if (rc)
+		return rc;
+
+	for (i = 0; i < dev_dax->nr_range; i++) {
+		struct range *range = &dev_dax->ranges[i].range;
+
+		rc = dev_dax_add_pgmap(dev_dax, range->start,
+				       range_len(range));
+		if (rc)
+			return rc;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(dev_dax_install_pgmaps);
+
 static int alloc_dev_dax_range(struct dev_dax *dev_dax, u64 start,
 		resource_size_t size)
 {
@@ -924,6 +1048,23 @@ static int alloc_dev_dax_range(struct dev_dax *dev_dax, u64 start,
 	alloc = __request_region(res, start, size, dev_name(dev), 0);
 	if (!alloc)
 		return -ENOMEM;
+
+	/*
+	 * Every range of a growable region gets a pgmap whose vmemmap_shift
+	 * derives from dev_dax->align, so the span must be aligned to, and a
+	 * multiple of, max(align, memremap_compat_align()). Enforce it here
+	 * rather than deferring the failure to dev_dax_add_pgmap() at probe.
+	 */
+	if (is_growable(dax_region) &&
+	    !IS_ALIGNED(alloc->start | resource_size(alloc),
+			max_t(unsigned long, dev_dax->align,
+			      memremap_compat_align()))) {
+		dev_warn(dev, "growable range %#llx+%#llx misaligned\n",
+			 (unsigned long long)alloc->start,
+			 (unsigned long long)resource_size(alloc));
+		__release_region(res, alloc->start, resource_size(alloc));
+		return -EINVAL;
+	}
 
 	/*
 	 * Pre-build the rollback snapshot (the current, pre-append state)
@@ -1044,6 +1185,17 @@ static int adjust_dev_dax_range(struct dev_dax *dev_dax, struct resource *res, r
 
 	if (dev_WARN_ONCE(dev, !size, "deletion is handled by dev_dax_shrink\n"))
 		return -EINVAL;
+
+	/* same alignment contract as alloc_dev_dax_range / dev_dax_add_pgmap */
+	if (is_growable(dax_region) &&
+	    !IS_ALIGNED(range->start | size,
+			max_t(unsigned long, dev_dax->align,
+			      memremap_compat_align()))) {
+		dev_warn(dev, "growable adjust to %#llx+%#llx misaligned\n",
+			 (unsigned long long)range->start,
+			 (unsigned long long)size);
+		return -EINVAL;
+	}
 
 	/*
 	 * Preallocate the post-adjust snapshot before mutating any state so the
@@ -1526,6 +1678,7 @@ struct dev_dax *devm_create_dev_dax(struct dev_dax_data *data)
 		return ERR_PTR(-ENOMEM);
 
 	dev_dax->region = dax_region;
+	INIT_LIST_HEAD(&dev_dax->pgmaps);
 	if (is_static(dax_region)) {
 		if (dev_WARN_ONCE(parent, data->id < 0,
 				"dynamic id specified to static region\n")) {
