@@ -585,6 +585,9 @@ size_t cpu_map__snprint(struct perf_cpu_map *map, char *buf, size_t size)
 		struct perf_cpu cpu = { .cpu = INT_MAX };
 		bool last = i == perf_cpu_map__nr(map);
 
+		if (ret >= size)
+			break;
+
 		if (!last)
 			cpu = perf_cpu_map__cpu(map, i);
 
