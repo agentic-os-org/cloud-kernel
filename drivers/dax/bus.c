@@ -940,6 +940,16 @@ static int dev_dax_add_pgmap(struct dev_dax *dev_dax, u64 start, u64 size)
 	if (!dxp)
 		return -ENOMEM;
 
+	dxp->iomem_res = __request_region(&iomem_resource, start, size,
+						dev_name(&dev_dax->dev), 0);
+	if (!dxp->iomem_res) {
+		dev_warn(&dev_dax->dev,
+				"growable range %#llx+%#llx could not reserve iomem\n",
+				start, size);
+		kfree(dxp);
+		return -EBUSY;
+	}
+
 	dxp->start = start;
 	dxp->pgmap.nr_range = 1;
 	dxp->pgmap.range = (struct range) {
@@ -953,12 +963,25 @@ static int dev_dax_add_pgmap(struct dev_dax *dev_dax, u64 start, u64 size)
 
 	addr = memremap_pages(&dxp->pgmap, dev_to_node(&dev_dax->dev));
 	if (IS_ERR(addr)) {
+		release_resource(dxp->iomem_res);
+		kfree(dxp->iomem_res);
 		kfree(dxp);
 		return PTR_ERR(addr);
 	}
 
 	list_add_tail(&dxp->node, &dev_dax->pgmaps);
 	return 0;
+}
+
+/* Drop struct page coverage, then the global iomem reservation, then free. */
+static void dev_dax_free_pgmap(struct dev_dax_pgmap *dxp)
+{
+	memunmap_pages(&dxp->pgmap);
+	if (dxp->iomem_res) {
+		release_resource(dxp->iomem_res);
+		kfree(dxp->iomem_res);
+	}
+	kfree(dxp);
 }
 
 /* tear down the pgmap that backs the range starting at @start */
@@ -972,8 +995,7 @@ static void dev_dax_remove_pgmap(struct dev_dax *dev_dax, u64 start)
 		if (dxp->start != start)
 			continue;
 		list_del(&dxp->node);
-		memunmap_pages(&dxp->pgmap);
-		kfree(dxp);
+		dev_dax_free_pgmap(dxp);
 		return;
 	}
 	dev_WARN(&dev_dax->dev, "no per-range pgmap for %#llx\n", start);
@@ -987,15 +1009,15 @@ static void dev_dax_release_pgmap_dxps(void *_dev_dax)
 
 	list_for_each_entry_safe(dxp, tmp, &dev_dax->pgmaps, node) {
 		list_del(&dxp->node);
-		memunmap_pages(&dxp->pgmap);
-		kfree(dxp);
+		dev_dax_free_pgmap(dxp);
 	}
 }
 
 /*
- * Claim each range of a freshly bound growable dev_dax in iomem_resource and
- * install its pgmap. The teardown action is registered first so that it runs
- * last during devm unwinding.
+ * Install a per-range pgmap for each range of a freshly bound growable
+ * dev_dax. Each claims its own iomem_resource span (see dev_dax_add_pgmap),
+ * so probe, online extend/shrink and unbind share one reservation lifecycle.
+ * The teardown action is registered first so it runs last on unwinding.
  */
 int dev_dax_install_pgmaps(struct dev_dax *dev_dax)
 {
