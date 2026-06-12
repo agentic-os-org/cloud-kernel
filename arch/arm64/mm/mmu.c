@@ -29,6 +29,7 @@
 #include <linux/mm_inline.h>
 #include <linux/pagewalk.h>
 #include <linux/stop_machine.h>
+#include <linux/kvm_types.h>
 
 #include <asm/barrier.h>
 #include <asm/cputype.h>
@@ -55,6 +56,7 @@ u64 kimage_voffset __ro_after_init;
 EXPORT_SYMBOL(kimage_voffset);
 
 u32 __boot_cpu_mode[] = { BOOT_CPU_MODE_EL2, BOOT_CPU_MODE_EL1 };
+EXPORT_SYMBOL_FOR_KVM(__boot_cpu_mode);
 
 static bool rodata_is_rw __ro_after_init = true;
 

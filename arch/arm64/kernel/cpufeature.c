@@ -127,6 +127,7 @@ bool arm64_use_ng_mappings __read_mostly = false;
 EXPORT_SYMBOL(arm64_use_ng_mappings);
 
 DEFINE_PER_CPU_READ_MOSTLY(const char *, this_cpu_vector) = vectors;
+EXPORT_SYMBOL_FOR_KVM(this_cpu_vector);
 
 /*
  * Permit PER_LINUX32 and execve() of 32-bit binaries even if not all CPUs
@@ -139,6 +140,7 @@ static bool __read_mostly allow_mismatched_32bit_el0;
  * seen at least one CPU capable of 32-bit EL0.
  */
 DEFINE_STATIC_KEY_FALSE(arm64_mismatched_32bit_el0);
+EXPORT_SYMBOL_FOR_KVM(arm64_mismatched_32bit_el0);
 
 /*
  * Mask of CPUs supporting 32-bit EL0.
@@ -894,6 +896,7 @@ static struct arm64_ftr_reg *get_arm64_ftr_reg_nowarn(u32 sys_id)
 		return ret->reg;
 	return NULL;
 }
+EXPORT_SYMBOL_FOR_KVM(get_arm64_ftr_reg);
 
 /*
  * get_arm64_ftr_reg - Looks up a feature register entry using
@@ -951,6 +954,7 @@ s64 arm64_ftr_safe_value(const struct arm64_ftr_bits *ftrp, s64 new,
 
 	return ret;
 }
+EXPORT_SYMBOL_FOR_KVM(arm64_ftr_safe_value);
 
 static void __init sort_ftr_regs(void)
 {
@@ -3730,7 +3734,9 @@ static void verify_sme_features(void)
 static void verify_hyp_capabilities(void)
 {
 	u64 safe_mmfr1, mmfr0, mmfr1;
+#ifndef CONFIG_KVM_ARM_HOST_VHE_ONLY
 	int parange, ipa_max;
+#endif
 	unsigned int safe_vmid_bits, vmid_bits;
 
 	if (!IS_ENABLED(CONFIG_KVM))
@@ -3748,6 +3754,7 @@ static void verify_hyp_capabilities(void)
 		cpu_die_early();
 	}
 
+#ifndef CONFIG_KVM_ARM_HOST_VHE_ONLY
 	/* Verify IPA range */
 	parange = cpuid_feature_extract_unsigned_field(mmfr0,
 				ID_AA64MMFR0_EL1_PARANGE_SHIFT);
@@ -3756,6 +3763,7 @@ static void verify_hyp_capabilities(void)
 		pr_crit("CPU%d: IPA range mismatch\n", smp_processor_id());
 		cpu_die_early();
 	}
+#endif
 }
 
 static void verify_mpam_capabilities(void)
@@ -4169,6 +4177,7 @@ enum mitigation_state arm64_get_meltdown_state(void)
 
 	return SPECTRE_VULNERABLE;
 }
+EXPORT_SYMBOL_FOR_KVM(arm64_get_meltdown_state);
 
 ssize_t cpu_show_meltdown(struct device *dev, struct device_attribute *attr,
 			  char *buf)

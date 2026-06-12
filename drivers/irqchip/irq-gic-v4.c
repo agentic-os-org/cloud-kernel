@@ -10,6 +10,7 @@
 #include <linux/msi.h>
 #include <linux/pid.h>
 #include <linux/sched.h>
+#include <linux/kvm_types.h>
 
 #include <linux/irqchip/arm-gic-v4.h>
 
@@ -105,6 +106,7 @@ bool gic_cpuif_has_vsgi(void)
 	return false;
 }
 #endif
+EXPORT_SYMBOL_FOR_KVM(gic_cpuif_has_vsgi);
 
 static bool has_v4_1(void)
 {
@@ -198,6 +200,7 @@ err:
 
 	return -ENOMEM;
 }
+EXPORT_SYMBOL_FOR_KVM(its_alloc_vcpu_irqs);
 
 static void its_free_sgi_irqs(struct its_vm *vm)
 {
@@ -225,6 +228,7 @@ void its_free_vcpu_irqs(struct its_vm *vm)
 	irq_domain_remove(vm->domain);
 	irq_domain_free_fwnode(vm->fwnode);
 }
+EXPORT_SYMBOL_FOR_KVM(its_free_vcpu_irqs);
 
 static int its_send_vpe_cmd(struct its_vpe *vpe, struct its_cmd_info *info)
 {
@@ -257,6 +261,7 @@ int its_make_vpe_non_resident(struct its_vpe *vpe, bool db)
 
 	return ret;
 }
+EXPORT_SYMBOL_FOR_KVM(its_make_vpe_non_resident);
 
 int its_make_vpe_resident(struct its_vpe *vpe, bool g0en, bool g1en)
 {
@@ -280,6 +285,7 @@ int its_make_vpe_resident(struct its_vpe *vpe, bool g0en, bool g1en)
 
 	return ret;
 }
+EXPORT_SYMBOL_FOR_KVM(its_make_vpe_resident);
 
 int its_commit_vpe(struct its_vpe *vpe)
 {
@@ -296,6 +302,7 @@ int its_commit_vpe(struct its_vpe *vpe)
 
 	return ret;
 }
+EXPORT_SYMBOL_FOR_KVM(its_commit_vpe);
 
 int its_invall_vpe(struct its_vpe *vpe)
 {
@@ -305,6 +312,7 @@ int its_invall_vpe(struct its_vpe *vpe)
 
 	return its_send_vpe_cmd(vpe, &info);
 }
+EXPORT_SYMBOL_FOR_KVM(its_invall_vpe);
 
 int its_map_vlpi(int irq, struct its_vlpi_map *map)
 {
@@ -328,6 +336,7 @@ int its_map_vlpi(int irq, struct its_vlpi_map *map)
 
 	return ret;
 }
+EXPORT_SYMBOL_FOR_KVM(its_map_vlpi);
 
 int its_get_vlpi(int irq, struct its_vlpi_map *map)
 {
@@ -340,12 +349,14 @@ int its_get_vlpi(int irq, struct its_vlpi_map *map)
 
 	return irq_set_vcpu_affinity(irq, &info);
 }
+EXPORT_SYMBOL_FOR_KVM(its_get_vlpi);
 
 void its_unmap_vlpi(int irq)
 {
 	irq_clear_status_flags(irq, IRQ_DISABLE_UNLAZY);
 	WARN_ON_ONCE(irq_set_vcpu_affinity(irq, NULL));
 }
+EXPORT_SYMBOL_FOR_KVM(its_unmap_vlpi);
 
 int its_prop_update_vlpi(int irq, u8 config, bool inv)
 {
@@ -358,6 +369,7 @@ int its_prop_update_vlpi(int irq, u8 config, bool inv)
 
 	return irq_set_vcpu_affinity(irq, &info);
 }
+EXPORT_SYMBOL_FOR_KVM(its_prop_update_vlpi);
 
 int its_prop_update_vsgi(int irq, u8 priority, bool group)
 {
@@ -371,6 +383,7 @@ int its_prop_update_vsgi(int irq, u8 priority, bool group)
 
 	return irq_set_vcpu_affinity(irq, &info);
 }
+EXPORT_SYMBOL_FOR_KVM(its_prop_update_vsgi);
 
 int its_init_v4(struct irq_domain *domain,
 		const struct irq_domain_ops *vpe_ops,

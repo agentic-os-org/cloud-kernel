@@ -3,6 +3,7 @@
  * Copyright (C) 2020 ARM Ltd.
  */
 #include <linux/linkage.h>
+#include <linux/kvm_types.h>
 
 #include <asm/asm-uaccess.h>
 #include <asm/assembler.h>
@@ -35,6 +36,7 @@ SYM_FUNC_START(mte_clear_page_tags)
 	b.ne	1b
 	ret
 SYM_FUNC_END(mte_clear_page_tags)
+EXPORT_SYMBOL_FOR_KVM(mte_clear_page_tags)
 
 /*
  * Zero the page and tags at the same time
@@ -104,6 +106,7 @@ USER(2f, ldtrb	w4, [x1])
 2:	sub	x0, x1, x3		// update the number of tags set
 	ret
 SYM_FUNC_END(mte_copy_tags_from_user)
+EXPORT_SYMBOL_FOR_KVM(mte_copy_tags_from_user)
 
 /*
  * Get the tags from a kernel address range and write the tag values to the
@@ -130,6 +133,7 @@ USER(2f, sttrb	w4, [x0])
 2:	sub	x0, x0, x3		// update the number of tags copied
 	ret
 SYM_FUNC_END(mte_copy_tags_to_user)
+EXPORT_SYMBOL_FOR_KVM(mte_copy_tags_to_user)
 
 /*
  * Save the tags in a page

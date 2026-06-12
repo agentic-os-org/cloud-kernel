@@ -29,4 +29,9 @@ long long __lshrti3(long long a, int b);
  */
 void __hwasan_tag_mismatch(unsigned long addr, unsigned long access_info);
 
+void icache_inval_pou(unsigned long start, unsigned long end);
+void dcache_clean_inval_poc(unsigned long start, unsigned long end);
+
+extern char vectors[];
+
 #endif /* __ASM_PROTOTYPES_H */

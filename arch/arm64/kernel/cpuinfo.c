@@ -24,6 +24,7 @@
 #include <linux/sched.h>
 #include <linux/smp.h>
 #include <linux/delay.h>
+#include <linux/kvm_types.h>
 
 /*
  * In case the boot CPU is hotpluggable, we record its initial state and
@@ -46,6 +47,7 @@ static inline const char *icache_policy_str(int l1ip)
 }
 
 unsigned long __icache_flags;
+EXPORT_SYMBOL_FOR_KVM(__icache_flags);
 
 static const char *const hwcap_str[] = {
 	[KERNEL_HWCAP_FP]		= "fp",

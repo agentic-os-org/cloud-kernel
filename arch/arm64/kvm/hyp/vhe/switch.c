@@ -29,7 +29,7 @@
 #include <asm/vectors.h>
 
 /* VHE specific context */
-#ifdef MODULE
+#ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
 struct kvm_host_data __percpu *kvm_host_data;
 struct kvm_cpu_context __percpu *kvm_hyp_ctxt;
 #else
