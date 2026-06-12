@@ -11,6 +11,7 @@
 #include <linux/printk.h>
 #include <linux/sizes.h>
 #include <linux/types.h>
+#include <linux/kvm_types.h>
 
 #include <asm/debug-monitors.h>
 #include <asm/errno.h>
@@ -172,6 +173,7 @@ u32 aarch64_insn_decode_register(enum aarch64_insn_register_type type,
 
 	return (insn >> shift) & GENMASK(4, 0);
 }
+EXPORT_SYMBOL_FOR_KVM(aarch64_insn_decode_register);
 
 static u32 aarch64_insn_encode_register(enum aarch64_insn_register_type type,
 					u32 insn,
@@ -927,6 +929,7 @@ u32 aarch64_insn_gen_movewide(enum aarch64_insn_register dst,
 
 	return aarch64_insn_encode_immediate(AARCH64_INSN_IMM_16, insn, imm);
 }
+EXPORT_SYMBOL_FOR_KVM(aarch64_insn_gen_movewide);
 
 u32 aarch64_insn_gen_add_sub_shifted_reg(enum aarch64_insn_register dst,
 					 enum aarch64_insn_register src,

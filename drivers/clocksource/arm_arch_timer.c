@@ -28,6 +28,7 @@
 #include <linux/acpi.h>
 #include <linux/arm-smccc.h>
 #include <linux/ptp_kvm.h>
+#include <linux/kvm_types.h>
 
 #include <asm/arch_timer.h>
 #include <asm/virt.h>
@@ -903,6 +904,7 @@ struct arch_timer_kvm_info *arch_timer_get_kvm_info(void)
 {
 	return &arch_timer_kvm_info;
 }
+EXPORT_SYMBOL_FOR_KVM(arch_timer_get_kvm_info);
 
 static void __init arch_counter_register(void)
 {

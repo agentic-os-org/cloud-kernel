@@ -31,6 +31,7 @@
 #include <linux/stddef.h>
 #include <linux/sysctl.h>
 #include <linux/swab.h>
+#include <linux/kvm_types.h>
 
 #include <asm/esr.h>
 #include <asm/exception.h>
@@ -138,6 +139,7 @@ __ro_after_init struct vl_info vl_info[ARM64_VEC_MAX] = {
 	},
 #endif
 };
+EXPORT_SYMBOL_FOR_KVM(vl_info);
 
 static unsigned int vec_vl_inherit_flag(enum vec_type type)
 {
@@ -1683,6 +1685,7 @@ void fpsimd_bind_state_to_cpu(struct cpu_fp_state *state)
 
 	*last = *state;
 }
+EXPORT_SYMBOL_FOR_KVM(fpsimd_bind_state_to_cpu);
 
 /*
  * Load the userland FPSIMD state of 'current' from memory, but only if the
@@ -1791,6 +1794,7 @@ void fpsimd_save_and_flush_cpu_state(void)
 	fpsimd_flush_cpu_state();
 	local_irq_restore(flags);
 }
+EXPORT_SYMBOL_FOR_KVM(fpsimd_save_and_flush_cpu_state);
 
 #ifdef CONFIG_KERNEL_MODE_NEON
 

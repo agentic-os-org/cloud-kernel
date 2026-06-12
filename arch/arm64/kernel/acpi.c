@@ -28,6 +28,7 @@
 #include <linux/serial_core.h>
 #include <linux/suspend.h>
 #include <linux/pgtable.h>
+#include <linux/kvm_types.h>
 
 #include <acpi/ghes.h>
 #include <acpi/processor.h>
@@ -432,6 +433,7 @@ int apei_claim_sea(struct pt_regs *regs)
 
 	return err;
 }
+EXPORT_SYMBOL_FOR_KVM(apei_claim_sea);
 
 void arch_reserve_mem_area(acpi_physical_address addr, size_t size)
 {

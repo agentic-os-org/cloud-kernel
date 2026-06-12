@@ -24,6 +24,7 @@
 #include <linux/nospec.h>
 #include <linux/prctl.h>
 #include <linux/sched/task_stack.h>
+#include <linux/kvm_types.h>
 
 #include <asm/debug-monitors.h>
 #include <asm/insn.h>
@@ -211,8 +212,10 @@ enum mitigation_state arm64_get_spectre_v2_state(void)
 {
 	return spectre_v2_state;
 }
+EXPORT_SYMBOL_FOR_KVM(arm64_get_spectre_v2_state);
 
 DEFINE_PER_CPU_READ_MOSTLY(struct bp_hardening_data, bp_hardening_data);
+EXPORT_SYMBOL_FOR_KVM(bp_hardening_data);
 
 static void install_bp_hardening_cb(bp_hardening_cb_t fn)
 {
@@ -452,6 +455,7 @@ enum mitigation_state arm64_get_spectre_v4_state(void)
 {
 	return spectre_v4_state;
 }
+EXPORT_SYMBOL_FOR_KVM(arm64_get_spectre_v4_state);
 
 static enum mitigation_state spectre_v4_get_cpu_hw_mitigation_state(void)
 {
@@ -822,6 +826,7 @@ enum mitigation_state arm64_get_spectre_bhb_state(void)
 {
 	return spectre_bhb_state;
 }
+EXPORT_SYMBOL_FOR_KVM(arm64_get_spectre_bhb_state);
 
 enum bhb_mitigation_bits {
 	BHB_LOOP,
@@ -1105,6 +1110,7 @@ void noinstr spectre_bhb_patch_loop_mitigation_enable(struct alt_instr *alt,
 	if (test_bit(BHB_LOOP, &system_bhb_mitigations))
 		*updptr++ = cpu_to_le32(aarch64_insn_gen_nop());
 }
+EXPORT_SYMBOL_FOR_KVM(spectre_bhb_patch_loop_mitigation_enable);
 
 /* Patched to NOP when enabled */
 void noinstr spectre_bhb_patch_fw_mitigation_enabled(struct alt_instr *alt,
@@ -1136,6 +1142,7 @@ void noinstr spectre_bhb_patch_loop_iter(struct alt_instr *alt,
 					 AARCH64_INSN_MOVEWIDE_ZERO);
 	*updptr++ = cpu_to_le32(insn);
 }
+EXPORT_SYMBOL_FOR_KVM(spectre_bhb_patch_loop_iter);
 
 /* Patched to mov WA3 when supported */
 void noinstr spectre_bhb_patch_wa3(struct alt_instr *alt,
@@ -1162,9 +1169,10 @@ void noinstr spectre_bhb_patch_wa3(struct alt_instr *alt,
 
 	*updptr++ = cpu_to_le32(insn);
 }
+EXPORT_SYMBOL_FOR_KVM(spectre_bhb_patch_wa3);
 
 /* Patched to NOP when not supported */
-void __init spectre_bhb_patch_clearbhb(struct alt_instr *alt,
+void spectre_bhb_patch_clearbhb(struct alt_instr *alt,
 				   __le32 *origptr, __le32 *updptr, int nr_inst)
 {
 	BUG_ON(nr_inst != 2);
@@ -1175,6 +1183,7 @@ void __init spectre_bhb_patch_clearbhb(struct alt_instr *alt,
 	*updptr++ = cpu_to_le32(aarch64_insn_gen_nop());
 	*updptr++ = cpu_to_le32(aarch64_insn_gen_nop());
 }
+EXPORT_SYMBOL_FOR_KVM(spectre_bhb_patch_clearbhb);
 
 #ifdef CONFIG_BPF_SYSCALL
 #define EBPF_WARN "Unprivileged eBPF is enabled, data leaks possible via Spectre v2 BHB attacks!\n"
