@@ -50,6 +50,7 @@ struct i3c_hci {
 	unsigned int DAT_entries;
 	unsigned int DAT_entry_size;
 	void *DAT_data;
+	struct i3c_dev_desc **ibi_devs;
 	unsigned int DCT_entries;
 	unsigned int DCT_entry_size;
 	u8 version_major;
@@ -66,8 +67,8 @@ struct i3c_hci {
  * Structure to represent a master initiated transfer.
  * The rnw, data and data_len fields must be initialized before calling any
  * hci->cmd->*() method. The cmd method will initialize cmd_desc[] and
- * possibly modify (clear) the data field. Then xfer->cmd_desc[0] can
- * be augmented with CMD_0_ROC and/or CMD_0_TOC.
+ * possibly modify (clear) the data field. Then xfer->cmd_desc[0] can be
+ * augmented with CMD_0_ROC and/or CMD_0_TOC.
  * The completion field needs to be initialized before queueing with
  * hci->io->queue_xfer(), and requires CMD_0_ROC to be set.
  */
@@ -117,7 +118,7 @@ struct hci_io_ops {
 			   const struct i3c_ibi_setup *req);
 	void (*free_ibi)(struct i3c_hci *hci, struct i3c_dev_desc *dev);
 	void (*recycle_ibi_slot)(struct i3c_hci *hci, struct i3c_dev_desc *dev,
-				struct i3c_ibi_slot *slot);
+				 struct i3c_ibi_slot *slot);
 	int (*init)(struct i3c_hci *hci);
 	void (*cleanup)(struct i3c_hci *hci);
 };
