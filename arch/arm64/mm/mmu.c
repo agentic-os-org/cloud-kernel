@@ -1705,6 +1705,7 @@ static void split_pmd_mapping(pud_t *pudp, unsigned long addr, unsigned long end
 			 * corresponding ptes.
 			 */
 			pte_phys = pgd_pgtable_alloc(PAGE_SHIFT);
+			init_clear_pgtable(__va(pte_phys));
 			split_pmd = pfn_pmd(__phys_to_pfn(pte_phys), orig_prot);
 
 			/*
@@ -1770,6 +1771,7 @@ static void split_pud_mapping(p4d_t *p4dp, unsigned long addr, unsigned long end
 							PUD_TYPE_TABLE);
 
 			pmd_phys = pgd_pgtable_alloc(PMD_SHIFT);
+			init_clear_pgtable(__va(pmd_phys));
 			split_pud = pfn_pud(__phys_to_pfn(pmd_phys), orig_prot);
 
 			/*
