@@ -636,14 +636,18 @@ static int FNAME(fetch)(struct kvm_vcpu *vcpu, gpa_t addr,
 
 			/*
 			 * If the existing shadow page was created for a different
-			 * GFN (e.g. the guest PDE was modified from outside the
-			 * guest), zap it to avoid a use-after-free when the page
-			 * is later freed but rmap entries survive under the wrong
-			 * GFN.
+			 * GFN or role (e.g. the guest PDE was modified from outside
+			 * the guest, or a huge page was split), zap it to avoid a
+			 * use-after-free when the page is later freed but rmap
+			 * entries survive under the wrong GFN.
 			 */
 			existing_sp = to_shadow_page(*it.sptep & PT64_BASE_ADDR_MASK);
 			table_gfn = gw->table_gfn[it.level - 2];
-			if (existing_sp->gfn != table_gfn) {
+			access = gw->pt_access[it.level - 2];
+			if (existing_sp->gfn != table_gfn ||
+			    kvm_mmu_role_mismatch(vcpu, existing_sp,
+						  it.level - 1, false, access,
+						  addr)) {
 				drop_parent_pte(existing_sp, it.sptep);
 				kvm_flush_remote_tlbs_with_address(vcpu->kvm,
 								   parent_sp->gfn,
@@ -699,12 +703,17 @@ static int FNAME(fetch)(struct kvm_vcpu *vcpu, gpa_t addr,
 
 			/*
 			 * If the existing shadow page was created for a different
-			 * GFN (e.g. a large page was split from outside the guest),
-			 * zap it to avoid a use-after-free when the page is later
-			 * freed but rmap entries survive under the wrong GFN.
+			 * GFN or role (e.g. a large page was split from outside the
+			 * guest), zap it to avoid a use-after-free when the page is
+			 * later freed but rmap entries survive under the wrong GFN.
 			 */
 			existing_sp = to_shadow_page(*it.sptep & PT64_BASE_ADDR_MASK);
-			if (existing_sp->gfn != base_gfn) {
+			if (existing_sp->gfn != base_gfn ||
+			    kvm_mmu_role_mismatch(vcpu, existing_sp,
+						  it.level - 1,
+						  true,
+						  direct_access,
+						  addr)) {
 				drop_parent_pte(existing_sp, it.sptep);
 				kvm_flush_remote_tlbs_with_address(vcpu->kvm,
 								   parent_sp->gfn,
