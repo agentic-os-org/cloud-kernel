@@ -1387,7 +1387,7 @@ retry:
 	return true;
 }
 
-static void raid1_write_request(struct mddev *mddev, struct bio *bio,
+static bool raid1_write_request(struct mddev *mddev, struct bio *bio,
 				int max_write_sectors)
 {
 	struct r1conf *conf = mddev->private;
@@ -1398,6 +1398,7 @@ static void raid1_write_request(struct mddev *mddev, struct bio *bio,
 	int first_clone;
 	int max_sectors;
 	bool write_behind = false;
+	sector_t sector = bio->bi_iter.bi_sector;
 
 	if (mddev_is_clustered(mddev) &&
 	     md_cluster_ops->area_resyncing(mddev, WRITE,
@@ -1406,7 +1407,7 @@ static void raid1_write_request(struct mddev *mddev, struct bio *bio,
 		DEFINE_WAIT(w);
 		if (bio->bi_opf & REQ_NOWAIT) {
 			bio_wouldblock_error(bio);
-			return;
+			return false;
 		}
 		for (;;) {
 			prepare_to_wait(&conf->wait_barrier,
@@ -1428,12 +1429,13 @@ static void raid1_write_request(struct mddev *mddev, struct bio *bio,
 	if (!wait_barrier(conf, bio->bi_iter.bi_sector,
 				bio->bi_opf & REQ_NOWAIT)) {
 		bio_wouldblock_error(bio);
-		return;
+		return false;
 	}
 
 	if (!wait_blocked_rdev(mddev, bio)) {
 		bio_wouldblock_error(bio);
-		return;
+		allow_barrier(conf, sector);
+		return false;
 	}
 
 	r1_bio = alloc_r1bio(mddev, bio);
@@ -1597,7 +1599,8 @@ static void raid1_write_request(struct mddev *mddev, struct bio *bio,
 
 	/* In case raid1d snuck in to freeze_array */
 	wake_up_barrier(conf);
-	return;
+	return true;
+
 err_handle:
 	for (k = 0; k < i; k++) {
 		if (r1_bio->bios[k]) {
@@ -1609,6 +1612,7 @@ err_handle:
 	bio->bi_status = errno_to_blk_status(error);
 	set_bit(R1BIO_Uptodate, &r1_bio->state);
 	raid_end_bio_io(r1_bio);
+	return false;
 }
 
 static bool raid1_make_request(struct mddev *mddev, struct bio *bio)
@@ -1634,7 +1638,8 @@ static bool raid1_make_request(struct mddev *mddev, struct bio *bio)
 	else {
 		if (!md_write_start(mddev,bio))
 			return false;
-		raid1_write_request(mddev, bio, sectors);
+		if (!raid1_write_request(mddev, bio, sectors))
+			md_write_end(mddev);
 	}
 	return true;
 }
