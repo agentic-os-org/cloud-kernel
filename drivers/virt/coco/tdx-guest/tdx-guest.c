@@ -136,17 +136,25 @@ static struct tsm_measurements tdx_measurements = {
 	.write = tdx_mr_extend,
 };
 
+static int tdx_report_buf_init(void)
+{
+	tdx_report_buf = kzalloc(TDX_REPORT_LEN, GFP_KERNEL);
+	if (!tdx_report_buf)
+		return -ENOMEM;
+
+	return 0;
+}
+
+static void tdx_report_buf_deinit(void)
+{
+	kfree(tdx_report_buf);
+}
+
 static const struct attribute_group *tdx_mr_init(void)
 {
-	const struct attribute_group *g;
 	size_t i;
 	int rc;
 
-	u8 *buf __free(kfree) = kzalloc(TDX_REPORT_LEN, GFP_KERNEL);
-	if (!buf)
-		return ERR_PTR(-ENOMEM);
-
-	tdx_report_buf = buf;
 	rc = tdx_mr_refresh(&tdx_measurements);
 	if (rc)
 		return ERR_PTR(rc);
@@ -156,19 +164,14 @@ static const struct attribute_group *tdx_mr_init(void)
 	 * address is being added here.
 	 */
 	for (i = 0; i < ARRAY_SIZE(tdx_mrs); ++i)
-		*(long *)&tdx_mrs[i].mr_value += (long)buf;
+		*(long *)&tdx_mrs[i].mr_value += (long)tdx_report_buf;
 
-	g = tsm_mr_create_attribute_group(&tdx_measurements);
-	if (!IS_ERR(g))
-		tdx_report_buf = no_free_ptr(buf);
-
-	return g;
+	return tsm_mr_create_attribute_group(&tdx_measurements);
 }
 
 static void tdx_mr_deinit(const struct attribute_group *mr_grp)
 {
 	tsm_mr_free_attribute_group(mr_grp);
-	kfree(tdx_report_buf);
 }
 
 /*
@@ -249,7 +252,7 @@ static long tdx_extend_rtmr(struct tdx_extend_rtmr_req __user *req)
 	}
 
 	/* Extend RTMR registers using "TDG.MR.RTMR.EXTEND" TDCALL */
-	ret = tdx_mcall_extend_rtmr(data, index);
+	ret = tdx_do_extend(index, data);
 out:
 	kfree(data);
 
@@ -396,6 +399,10 @@ static long tdx_guest_ioctl(struct file *file, unsigned int cmd,
 	case TDX_CMD_GET_REPORT0:
 		return tdx_get_report0((struct tdx_report_req __user *)arg);
 	case TDX_CMD_EXTEND_RTMR:
+		if (tsm_api) {
+			pr_err("tsm API is used, ioctl is not allowed\n");
+			return -ENOTTY;
+		}
 		return tdx_extend_rtmr((struct tdx_extend_rtmr_req __user *)arg);
 	case TDX_CMD_GET_QUOTE:
 		if (tsm_api) {
@@ -444,9 +451,17 @@ static int __init tdx_guest_init(void)
 	if (!x86_match_cpu(tdx_guest_ids))
 		return -ENODEV;
 
-	tdx_attr_groups[0] = tdx_mr_init();
-	if (IS_ERR(tdx_attr_groups[0]))
-		return PTR_ERR(tdx_attr_groups[0]);
+	ret = tdx_report_buf_init();
+	if (ret)
+		return ret;
+
+	if (tsm_api) {
+		tdx_attr_groups[0] = tdx_mr_init();
+		if (IS_ERR(tdx_attr_groups[0])) {
+			ret = PTR_ERR(tdx_attr_groups[0]);
+			goto deinit_report_buf;
+		}
+	}
 
 	ret = misc_register(&tdx_misc_dev);
 	if (ret) {
@@ -481,7 +496,10 @@ free_quote:
 free_misc:
 	misc_deregister(&tdx_misc_dev);
 deinit_mr:
-	tdx_mr_deinit(tdx_attr_groups[0]);
+	if (tsm_api)
+		tdx_mr_deinit(tdx_attr_groups[0]);
+deinit_report_buf:
+	tdx_report_buf_deinit();
 
 	return ret;
 }
@@ -495,7 +513,10 @@ static void __exit tdx_guest_exit(void)
 	} else
 		tdx_attest_exit(&tdx_misc_dev);
 	misc_deregister(&tdx_misc_dev);
-	tdx_mr_deinit(tdx_attr_groups[0]);
+	/* Free the MR attribute group only after sysfs has detached it. */
+	if (tsm_api)
+		tdx_mr_deinit(tdx_attr_groups[0]);
+	tdx_report_buf_deinit();
 }
 module_exit(tdx_guest_exit);
 
