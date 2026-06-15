@@ -5041,23 +5041,9 @@ no_journal:
 	ext4_fc_replay_cleanup(sb);
 
 	ext4_ext_init(sb);
-	err = ext4_mb_init(sb);
-	if (err) {
-		ext4_msg(sb, KERN_ERR, "failed to initialize mballoc (%d)",
-			 err);
-		goto failed_mount5;
-	}
-
-	/*
-	 * We can only set up the journal commit callback once
-	 * mballoc is initialized
-	 */
-	if (sbi->s_journal)
-		sbi->s_journal->j_commit_callback =
-			ext4_journal_commit_callback;
 
 	block = ext4_count_free_clusters(sb);
-	ext4_free_blocks_count_set(sbi->s_es, 
+	ext4_free_blocks_count_set(sbi->s_es,
 				   EXT4_C2B(sbi, block));
 	ext4_superblock_csum_set(sb);
 	err = percpu_counter_init(&sbi->s_freeclusters_counter, block,
@@ -5083,8 +5069,23 @@ no_journal:
 
 	if (err) {
 		ext4_msg(sb, KERN_ERR, "insufficient memory");
-		goto failed_mount6;
+		goto failed_mount5;
 	}
+
+	err = ext4_mb_init(sb);
+	if (err) {
+		ext4_msg(sb, KERN_ERR, "failed to initialize mballoc (%d)",
+			 err);
+		goto failed_mount5;
+	}
+
+	/*
+	 * We can only set up the journal commit callback once
+	 * mballoc is initialized
+	 */
+	if (sbi->s_journal)
+		sbi->s_journal->j_commit_callback =
+			ext4_journal_commit_callback;
 
 	if (ext4_has_feature_flex_bg(sb))
 		if (!ext4_fill_flex_info(sb)) {
@@ -5187,13 +5188,13 @@ failed_mount6:
 		kvfree(flex_groups);
 	}
 	rcu_read_unlock();
+failed_mount5:
 	percpu_counter_destroy(&sbi->s_freeclusters_counter);
 	percpu_counter_destroy(&sbi->s_freeinodes_counter);
 	percpu_counter_destroy(&sbi->s_dirs_counter);
 	percpu_counter_destroy(&sbi->s_dirtyclusters_counter);
 	percpu_counter_destroy(&sbi->s_sra_exceeded_retry_limit);
 	percpu_free_rwsem(&sbi->s_writepages_rwsem);
-failed_mount5:
 	ext4_ext_release(sb);
 	ext4_release_system_zone(sb);
 failed_mount4a:
