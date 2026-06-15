@@ -1327,15 +1327,75 @@ struct dentry *ksmbd_vfs_kern_path_create(struct ksmbd_work *work,
 					  unsigned int flags,
 					  struct path *path)
 {
-	char *abs_name;
+	struct ksmbd_share_config *share_conf = work->tcon->share_conf;
+	unsigned int create_flags = LOOKUP_CREATE | LOOKUP_EXCL;
+	struct filename *filename;
+	struct qstr last;
 	struct dentry *dent;
+	int err, type;
 
-	abs_name = convert_to_unix_name(work->tcon->share_conf, name);
-	if (!abs_name)
-		return ERR_PTR(-ENOMEM);
+	/* resolve the name beneath the share root so ".." cannot escape */
+	filename = getname_kernel(name);
+	if (IS_ERR(filename))
+		return ERR_CAST(filename);
 
-	dent = kern_path_create(AT_FDCWD, abs_name, path, flags);
-	kfree(abs_name);
+	err = vfs_path_parent_lookup(filename, flags | LOOKUP_BENEATH,
+				     path, &last, &type,
+				     &share_conf->vfs_path);
+	if (err) {
+		putname(filename);
+		return ERR_PTR(err);
+	}
+
+	if (unlikely(type != LAST_NORM)) {
+		dent = ERR_PTR(-EEXIST);
+		goto out_path_put;
+	}
+
+	err = mnt_want_write(path->mnt);
+	if (err) {
+		dent = ERR_PTR(err);
+		goto out_path_put;
+	}
+
+	/*
+	 * kern_path_create() suppressed 'create' for a trailing '/' unless a
+	 * directory was requested; keep that behaviour for the callers here.
+	 */
+	if (last.name[last.len] && !(flags & LOOKUP_DIRECTORY))
+		create_flags = 0;
+
+	inode_lock_nested(d_inode(path->dentry), I_MUTEX_PARENT);
+	dent = lookup_one_qstr_excl(&last, path->dentry,
+				    (flags & LOOKUP_REVAL) | create_flags);
+	if (IS_ERR(dent))
+		goto out_unlock;
+
+	if (d_is_positive(dent)) {
+		dput(dent);
+		dent = ERR_PTR(-EEXIST);
+		goto out_unlock;
+	}
+
+	/*
+	 * Negative dentry for a name with a trailing '/' means the caller
+	 * asked for a directory that does not exist: -ENOENT, as before.
+	 */
+	if (unlikely(!create_flags)) {
+		dput(dent);
+		dent = ERR_PTR(-ENOENT);
+		goto out_unlock;
+	}
+
+	putname(filename);
+	return dent;
+
+out_unlock:
+	inode_unlock(d_inode(path->dentry));
+	mnt_drop_write(path->mnt);
+out_path_put:
+	path_put(path);
+	putname(filename);
 	return dent;
 }
 
