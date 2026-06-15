@@ -1157,25 +1157,6 @@ static int __csv3_set_guest_private_memory(struct kvm *kvm,
  * This helper function is used when userspace membackend of CSV3 VM is
  * allocated from 1G hugetlb.
  */
-static void csv3_clean_1G_hugetlb_list(struct kvm *kvm)
-{
-	struct kvm_csv_info *csv = &to_kvm_svm_csv(kvm)->csv_info;
-	struct csv3_hugetlb *hugetlb;
-	struct list_head *pos, *q;
-
-	list_for_each_safe(pos, q, &csv->hugetlb_list) {
-		hugetlb = list_entry(pos, struct csv3_hugetlb, list);
-		if (hugetlb) {
-			list_del(&hugetlb->list);
-			kfree(hugetlb);
-		}
-	}
-}
-
-/**
- * This helper function is used when userspace membackend of CSV3 VM is
- * allocated from 1G hugetlb.
- */
 static int csv3_setup_1G_hugetlb_list(struct kvm *kvm,
 				      unsigned long size,
 				      nodemask_t *nodemask)
@@ -1215,10 +1196,10 @@ retry:
 
 		/* The userspace membackend must be 1G hugetlb. */
 		if (compound_order(compound_head(page)) != (PUD_SHIFT - PAGE_SHIFT)) {
+			kfree(hugetlb);
 			put_page(page);
-			goto retry;
+			goto err;
 		}
-		put_page(page);
 		hugetlb->page = page;
 		list_add_tail(&hugetlb->list, &csv->hugetlb_list);
 	}
@@ -1226,7 +1207,7 @@ retry:
 	return 0;
 
 err:
-	csv3_clean_1G_hugetlb_list(kvm);
+	csv3_free_1G_hugetlb_pages(kvm);
 
 	return -ENOMEM;
 }
@@ -3089,9 +3070,7 @@ static void csv_vm_destroy(struct kvm *kvm)
 		csv3_free_smr_list(kvm);
 
 	/* Free hugetlb if CSV3 private memory is allocated from 1G hugetlb */
-	if (csv->inuse_ext & KVM_CAP_HYGON_COCO_EXT_CSV3_NPT_EX)
-		csv3_clean_1G_hugetlb_list(kvm);
-	else if (source == USE_HUGETLB)
+	if (source == USE_HUGETLB)
 		csv3_free_1G_hugetlb_pages(kvm);
 
 #ifdef CONFIG_SYSFS
@@ -3105,12 +3084,24 @@ static int csv_handle_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa,
 {
 	gfn_t gfn = gpa_to_gfn(gpa);
 	struct kvm_memory_slot *slot = gfn_to_memslot(vcpu->kvm, gfn);
+	struct kvm_csv_info *csv = &to_kvm_svm_csv(vcpu->kvm)->csv_info;
 	int ret;
+
+	/* Retry PF if the GPA hit a memslot that is being deleted or moved. */
+	if (slot && (slot->flags & KVM_MEMSLOT_INVALID))
+		return 1;
 
 	if (kvm_is_visible_memslot(slot))
 		ret = csv3_page_fault(vcpu, slot, gfn, error_code);
-	else
+	else {
+		if ((csv->inuse_ext & KVM_CAP_HYGON_COCO_EXT_CSV3_NPT_EX) &&
+		    ((csv->tom != 0 && gpa < csv->tom) ||
+		     (csv->tom2 != 0 && (4ull << 30) <= gpa && gpa < csv->tom2))) {
+			/* Retry PF from guest */
+			return 1;
+		}
 		ret = csv3_mmio_page_fault(vcpu, gpa, error_code);
+	}
 
 	return ret;
 }
