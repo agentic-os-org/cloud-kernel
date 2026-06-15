@@ -392,20 +392,24 @@ static bool iommufd_liveupdate_can_finish(struct liveupdate_file_op_args *args)
 	struct iommufd_ctx *ictx;
 	unsigned long index;
 	unsigned int i;
+	bool ret = false;
 
 	if (args->retrieve_status <= 0 || !args->file) {
 		pr_warn("%s: fd not reclaimed\n", __func__);
-		return false;
+		return ret;
 	}
 
 	ictx = iommufd_ctx_from_file(args->file);
+	if (IS_ERR(ictx))
+		return ret;
+
 	iommufd_ser = ictx->ser;
 
 	for (i = 0; i < iommufd_ser->nr_hwpts; i++) {
 		hwpt_ser = &iommufd_ser->hwpt_array[i];
 
 		if (!hwpt_ser->reclaimed)
-			return false;
+			goto false_put;
 	}
 
 	xa_lock(&ictx->objects);
@@ -419,12 +423,15 @@ static bool iommufd_liveupdate_can_finish(struct liveupdate_file_op_args *args)
 
 		if (!hwpt->common.domain || iommu_domain_has_attachments(hwpt->common.domain)) {
 			xa_unlock(&ictx->objects);
-			return false;
+			goto false_put;
 		}
 	}
 	xa_unlock(&ictx->objects);
 
-	return true;
+	ret = true;
+false_put:
+	iommufd_ctx_put(ictx);
+	return ret;
 }
 
 static void iommufd_liveupdate_finish(struct liveupdate_file_op_args *args)
@@ -433,6 +440,9 @@ static void iommufd_liveupdate_finish(struct liveupdate_file_op_args *args)
 	struct iommufd_ctx *ictx;
 
 	ictx = iommufd_ctx_from_file(args->file);
+	if (WARN_ON(IS_ERR(ictx)))
+		return;
+
 	iommufd_ser = ictx->ser;
 	ictx->ser = NULL;
 	folio_put(virt_to_folio(iommufd_ser));
