@@ -152,6 +152,9 @@ static int vfio_pci_liveupdate_preserve(struct liveupdate_file_op_args *args)
 	struct vfio_pci_core_device *vdev;
 	struct pci_dev *pdev;
 	int ret;
+#ifdef CONFIG_IOMMU_LIVEUPDATE
+	u64 token, preserved_state;
+#endif
 
 	vdev = container_of(device, struct vfio_pci_core_device, vdev);
 	pdev = vdev->pdev;
@@ -160,8 +163,6 @@ static int vfio_pci_liveupdate_preserve(struct liveupdate_file_op_args *args)
 	/* If iommufd is attached, preserve the underlying domain */
 	mutex_lock(&device->dev_set->lock);
 	if (device->iommufd_attached) {
-		u64 token, preserved_state;
-
 		ret = iommufd_device_preserve(args->session,
 					      device->iommufd_device,
 					      &token, &preserved_state);
@@ -186,6 +187,9 @@ static int vfio_pci_liveupdate_preserve(struct liveupdate_file_op_args *args)
 	ser->bdf = pci_dev_id(pdev);
 	ser->domain = pci_domain_nr(pdev->bus);
 	ser->reset_works = vdev->reset_works;
+#ifdef CONFIG_IOMMU_LIVEUPDATE
+	ser->iommufd_ser.token = token;
+#endif
 
 	args->serialized_data = virt_to_phys(ser);
 	return 0;
@@ -284,6 +288,9 @@ static int vfio_pci_liveupdate_retrieve(struct liveupdate_file_op_args *args)
 
 	vdev = container_of(device, struct vfio_pci_core_device, vdev);
 	vdev->liveupdate_incoming_state = ser;
+#ifdef CONFIG_IOMMU_LIVEUPDATE
+	device->preserved_iommufd_token = ser->iommufd_ser.token;
+#endif
 
 	args->file = file;
 out:

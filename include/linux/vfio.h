@@ -70,6 +70,9 @@ struct vfio_device {
 	u8 iommufd_attached:1;
 #endif
 	u8 cdev_opened:1;
+#ifdef CONFIG_IOMMU_LIVEUPDATE
+	u32 preserved_iommufd_token;
+#endif
 };
 
 struct vfio_device *vfio_device_from_file(struct file *file);

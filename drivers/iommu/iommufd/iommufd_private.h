@@ -21,6 +21,9 @@ struct iommu_option;
 struct iommufd_device;
 struct dma_buf_attachment;
 struct dma_buf_phys_vec;
+struct iommufd_ser;
+
+extern const struct file_operations iommufd_fops;
 
 struct iommufd_sw_msi_map {
 	struct list_head sw_msi_item;
@@ -62,6 +65,10 @@ struct iommufd_ctx {
 	/* Compatibility with VFIO no iommu */
 	u8 no_iommu_mode;
 	struct iommufd_ioas *vfio_ioas;
+
+#ifdef CONFIG_LIVEUPDATE
+	struct iommufd_ser *ser;
+#endif
 };
 
 /* Entry for iommufd_ctx::mt_mmap */
@@ -384,6 +391,7 @@ struct iommufd_hwpt_paging {
 	bool nest_parent : 1;
 #ifdef CONFIG_IOMMU_LIVEUPDATE
 	bool liveupdate_preserved : 1;
+	bool liveupdate_restored  : 1;
 	u64 liveupdate_token;
 #endif
 	/* Head at iommufd_ioas::hwpt_list */
@@ -446,6 +454,10 @@ iommufd_get_hwpt_nested(struct iommufd_ucmd *ucmd, u32 id)
 int iommufd_hwpt_set_dirty_tracking(struct iommufd_ucmd *ucmd);
 int iommufd_hwpt_get_dirty_bitmap(struct iommufd_ucmd *ucmd);
 
+struct iommufd_hwpt_paging *
+_iommufd_hwpt_paging_alloc(struct iommufd_ctx *ictx);
+void iommufd_hwpt_init_from_domain(struct iommufd_hw_pagetable *hwpt,
+				   struct iommu_domain *domain);
 struct iommufd_hwpt_paging *
 iommufd_hwpt_paging_alloc(struct iommufd_ctx *ictx, struct iommufd_ioas *ioas,
 			  struct iommufd_device *idev, ioasid_t pasid,
@@ -727,6 +739,7 @@ int iommufd_liveupdate_register(void);
 void iommufd_liveupdate_unregister(void);
 
 int iommufd_hwpt_liveupdate_mark_preserve(struct iommufd_ucmd *ucmd);
+int iommufd_hwpt_liveupdate_restore(struct iommufd_ucmd *ucmd);
 
 static inline bool iopt_liveupdate_immutable(const struct io_pagetable *iopt)
 {
@@ -743,6 +756,11 @@ static inline void iommufd_liveupdate_unregister(void)
 }
 
 static inline int iommufd_hwpt_liveupdate_mark_preserve(struct iommufd_ucmd *ucmd)
+{
+	return -ENOTTY;
+}
+
+static inline int iommufd_hwpt_liveupdate_restore(struct iommufd_ucmd *ucmd)
 {
 	return -ENOTTY;
 }

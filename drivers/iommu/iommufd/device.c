@@ -205,6 +205,7 @@ void iommufd_device_destroy(struct iommufd_object *obj)
  * @ictx: iommufd file descriptor
  * @dev: Pointer to a physical device struct
  * @id: Output ID number to return to userspace for this device
+ * @restore_token: Preserved state token if restoring.
  *
  * A successful bind establishes an ownership over the device and returns
  * struct iommufd_device pointer, otherwise returns error pointer.
@@ -217,7 +218,8 @@ void iommufd_device_destroy(struct iommufd_object *obj)
  * The caller must undo this with iommufd_device_unbind()
  */
 struct iommufd_device *iommufd_device_bind(struct iommufd_ctx *ictx,
-					   struct device *dev, u32 *id)
+					   struct device *dev, u32 *id,
+					   u32 restore_token)
 {
 	struct iommufd_device *idev;
 	struct iommufd_group *igroup;
@@ -254,7 +256,7 @@ struct iommufd_device *iommufd_device_bind(struct iommufd_ctx *ictx,
 			"Use the \"allow_unsafe_interrupts\" module parameter to override\n");
 	}
 
-	rc = iommu_device_claim_dma_owner(dev, ictx);
+	rc = iommu_device_claim_dma_owner(dev, ictx, restore_token);
 	if (rc)
 		goto out_group_put;
 
@@ -419,6 +421,7 @@ iommufd_device_attach_reserved_iova(struct iommufd_device *idev,
 
 	lockdep_assert_held(&igroup->lock);
 
+	/* unreachable if !hwpt_paging->ioas */
 	rc = iopt_table_enforce_dev_resv_regions(&hwpt_paging->ioas->iopt,
 						 idev->dev,
 						 &igroup->sw_msi_start);
@@ -595,7 +598,7 @@ int iommufd_hw_pagetable_attach(struct iommufd_hw_pagetable *hwpt,
 				struct iommufd_device *idev, ioasid_t pasid)
 {
 	struct iommufd_hwpt_paging *hwpt_paging = find_hwpt_paging(hwpt);
-	bool attach_resv = hwpt_paging && pasid == IOMMU_NO_PASID;
+	bool attach_resv = hwpt_paging && pasid == IOMMU_NO_PASID && hwpt_paging->ioas;
 	struct iommufd_group *igroup = idev->igroup;
 	struct iommufd_hw_pagetable *old_hwpt;
 	struct iommufd_attach *attach;
@@ -703,7 +706,7 @@ iommufd_hw_pagetable_detach(struct iommufd_device *idev, ioasid_t pasid)
 		xa_erase(&igroup->pasid_attach, pasid);
 		kfree(attach);
 	}
-	if (hwpt_paging && pasid == IOMMU_NO_PASID)
+	if (hwpt_paging && pasid == IOMMU_NO_PASID && hwpt_paging->ioas)
 		iopt_remove_reserved_iova(&hwpt_paging->ioas->iopt, idev->dev);
 	mutex_unlock(&igroup->lock);
 
@@ -745,6 +748,9 @@ iommufd_group_remove_reserved_iova(struct iommufd_group *igroup,
 
 	lockdep_assert_held(&igroup->lock);
 
+	if (!hwpt_paging->ioas)
+		return;
+
 	attach = xa_load(&igroup->pasid_attach, IOMMU_NO_PASID);
 	xa_for_each(&attach->device_array, index, cur)
 		iopt_remove_reserved_iova(&hwpt_paging->ioas->iopt, cur->dev);
@@ -762,6 +768,7 @@ iommufd_group_do_replace_reserved_iova(struct iommufd_group *igroup,
 
 	lockdep_assert_held(&igroup->lock);
 
+	/* unreachable if !hwpt_paging->ioas */
 	attach = xa_load(&igroup->pasid_attach, IOMMU_NO_PASID);
 	old_hwpt_paging = find_hwpt_paging(attach->hwpt);
 	if (!old_hwpt_paging || hwpt_paging->ioas != old_hwpt_paging->ioas) {
@@ -788,7 +795,7 @@ iommufd_device_do_replace(struct iommufd_device *idev, ioasid_t pasid,
 			  struct iommufd_hw_pagetable *hwpt)
 {
 	struct iommufd_hwpt_paging *hwpt_paging = find_hwpt_paging(hwpt);
-	bool attach_resv = hwpt_paging && pasid == IOMMU_NO_PASID;
+	bool attach_resv = hwpt_paging && pasid == IOMMU_NO_PASID && hwpt_paging->ioas;
 	struct iommufd_hwpt_paging *old_hwpt_paging;
 	struct iommufd_group *igroup = idev->igroup;
 	struct iommufd_hw_pagetable *old_hwpt;

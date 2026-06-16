@@ -182,6 +182,12 @@ static void check_open_vfio_device_fails(void)
 
 static void after_kexec(int luo_fd, int state_session_fd)
 {
+	struct iommu_hwpt_liveupdate_restore restore = {
+		.size = sizeof(restore),
+		.hwpt_token = 0x12345678, //see lib/vfio_pci_liveupdate.c
+		.hwpt_alloc_flags = 0,
+	};
+
 	struct vfio_pci_device *device;
 	struct iommu *iommu;
 	int session_fd;
@@ -191,11 +197,6 @@ static void after_kexec(int luo_fd, int state_session_fd)
 	int dev_id;
 	int stage;
 	int ret;
-
-	struct vfio_device_bind_iommufd bind = {
-		.argsz = sizeof(bind),
-		.flags = 0,
-	};
 
 	check_open_vfio_device_fails();
 
@@ -218,35 +219,41 @@ static void after_kexec(int luo_fd, int state_session_fd)
 
 	printf("Retrieving the iommufd FD from LUO\n");
 	iommufd = luo_session_retrieve_fd(session_fd, IOMMUFD_TOKEN);
-
-	/* Should fail now, not supported yet */
-	VFIO_ASSERT_LE(iommufd, 0);
+	VFIO_ASSERT_GE(iommufd, 0);
 
 	printf("Binding the device to an iommufd and setting it up\n");
-	iommu = iommu_init("iommufd");
+	/* Bind to retrieved iommufd. */
+	dev_id = vfio_device_bind_iommufd(device_fd, iommufd);
+
+	/* Need to alloc new ioas_id and hwpt_id for the iommufd */
+	iommu = iommufd_iommu_init(iommufd, dev_id);
 	/*
 	 * This will invoke various ioctls on device_fd such as
 	 * VFIO_DEVICE_GET_INFO. So this is a decent sanity test
 	 * that LUO actually handed us back a valid VFIO device
 	 * file and not something else.
-	 * NOTE: iommufd is preserved, bind any other default iommu
-	 * domain could lead failure. Test VFIO_DEVICE_BIND_IOMMUFD
-	 * separately later, though it also returns failure as well.
+	 * NOTE: not accuratly: not "no_bind" but "no_attach", as
+	 * device has been bound to retrieved iommufd, but not attached
+	 * a new hwpt - the hwpt has to be restored as well.
 	 */
 	device = __vfio_pci_device_no_bind_init(device_bdf, iommu, device_fd);
 
-	bind.iommufd = iommu->iommufd;
-
-	/* Owner should be transferred, not supported yet, so should fail */
-	if (ioctl(device_fd, VFIO_DEVICE_BIND_IOMMUFD, &bind) == 0 ||
-	    errno != EPERM)
-		fail_exit("Binding cdev to new iommufd should fail with EPERM");
-
 	dma_memfd_map(device, memfd);
 
-	/* Should not be finished due to iommufd finish is not implemented yet */
+	if (device->driver.ops) {
+		vfio_pci_driver_init(device);
+		dma_memcpy_one(device);
+	}
+
+	/* Restore hwpt for the iommufd */
+	ret = ioctl(iommufd, IOMMU_HWPT_LIVEUPDATE_RESTORE, &restore);
+	VFIO_ASSERT_TRUE(!ret);
+
+	/* Replace the preserved HWPT with the new HWPT. */
+	vfio_pci_device_attach_iommu(device, iommu);
+
 	printf("Finishing the session\n");
-	VFIO_ASSERT_NE(luo_session_finish(session_fd), 0);
+	VFIO_ASSERT_EQ(luo_session_finish(session_fd), 0);
 
 	/*
 	 * Once iommufd preservation is supported and the device is kept fully
@@ -256,7 +263,6 @@ static void after_kexec(int luo_fd, int state_session_fd)
 	 * trigger a single memcpy to make sure it's still functional.
 	 */
 	if (device->driver.ops) {
-		vfio_pci_driver_init(device);
 		dma_memcpy_one(device);
 	}
 

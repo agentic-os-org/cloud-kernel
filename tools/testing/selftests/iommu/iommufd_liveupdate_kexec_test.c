@@ -149,6 +149,61 @@ static void setup_iommufd(int iommufd, int memfd, int cdev_fd)
 	test_ioctl(iommufd, IOMMU_HWPT_LIVEUPDATE_MARK_PRESERVE, &mark_preserve);
 }
 
+int restore_iommufd(int session, int iommufd, int cdev_fd, int hwpt_token)
+{
+	int ret;
+
+	struct vfio_device_bind_iommufd bind = {
+		.argsz = sizeof(bind),
+		.flags = 0,
+	};
+	struct iommu_ioas_alloc alloc_data  = {
+		.size = sizeof(alloc_data),
+		.flags = 0,
+	};
+	struct iommu_hwpt_alloc hwpt_alloc = {
+		.size = sizeof(hwpt_alloc),
+		.flags = 0,
+	};
+	struct iommu_hwpt_liveupdate_restore restore = {
+		.size = sizeof(restore),
+		.hwpt_token = hwpt_token,
+		.hwpt_alloc_flags = 0,
+	};
+	struct vfio_device_attach_iommufd_pt attach_data = {
+		.argsz = sizeof(attach_data),
+		.flags = 0,
+	};
+
+	bind.iommufd = iommufd;
+	ret = ioctl(cdev_fd, VFIO_DEVICE_BIND_IOMMUFD, &bind);
+	ksft_assert(!ret);
+
+	ret = ioctl(iommufd, IOMMU_IOAS_ALLOC, &alloc_data);
+	ksft_assert(!ret);
+
+	ret = ioctl(iommufd, IOMMU_HWPT_LIVEUPDATE_RESTORE, &restore);
+	ksft_assert(!ret);
+
+	/* Should fail */
+	ret = luo_session_finish(session);
+	ksft_assert(ret);
+
+	hwpt_alloc.pt_id = bind.out_devid;
+	hwpt_alloc.pt_id = alloc_data.out_ioas_id;
+	ret = ioctl(iommufd, IOMMU_HWPT_ALLOC, &hwpt_alloc);
+	ksft_assert(ret);
+
+	attach_data.pt_id = hwpt_alloc.pt_id;
+	ret = ioctl(cdev_fd, VFIO_DEVICE_ATTACH_IOMMUFD_PT, &attach_data);
+	ksft_assert(!ret);
+	attach_data.pt_id = alloc_data.out_ioas_id;
+	ret = ioctl(cdev_fd, VFIO_DEVICE_ATTACH_IOMMUFD_PT, &attach_data);
+	ksft_assert(!ret);
+
+	return ret;
+}
+
 static void before_kexec(int luo_fd)
 {
 	int iommufd, cdev_fd, memfd, session;
@@ -177,15 +232,6 @@ static void before_kexec(int luo_fd)
 	test_luo_session_preserve_fd(session, iommufd, IOMMUFD_TOKEN);
 	test_luo_session_preserve_fd(session, cdev_fd, CDEV_TOKEN);
 
-	close(session);
-	session = luo_create_session(luo_fd, iommufd_session);
-	if (session < 0)
-		fail_exit("luo_create_session failed");
-
-	test_luo_session_preserve_fd(session, memfd, MEMFD_TOKEN);
-	test_luo_session_preserve_fd(session, iommufd, IOMMUFD_TOKEN);
-	test_luo_session_preserve_fd(session, cdev_fd, CDEV_TOKEN);
-
 	close(luo_fd);
 	daemonize_and_wait();
 }
@@ -196,6 +242,11 @@ static void after_kexec(int luo_fd, int state_session_fd)
 	struct vfio_device_bind_iommufd bind = {
 		.argsz = sizeof(bind),
 		.flags = 0,
+	};
+	struct iommu_hwpt_liveupdate_restore restore = {
+		.size = sizeof(restore),
+		.hwpt_token = HWPT_TOKEN,
+		.hwpt_alloc_flags = 0,
 	};
 
 	restore_and_read_stage(state_session_fd, STATE_TOKEN, &stage);
@@ -208,18 +259,13 @@ static void after_kexec(int luo_fd, int state_session_fd)
 	cdev_fd = test_luo_session_retrieve_fd(session, CDEV_TOKEN);
 
 	iommufd = luo_session_retrieve_fd(session, IOMMUFD_TOKEN);
-	if (iommufd >= 0)
-		fail_exit("iommufd should not be retrievable yet");
+	if (iommufd < 0)
+		fail_exit("iommufd retrieve failed");
 
-	iommufd = open_iommufd();
+	ksft_assert(restore_iommufd(session, iommufd, cdev_fd, HWPT_TOKEN) == 0);
 
-	bind.iommufd = iommufd;
-	if (ioctl(cdev_fd, VFIO_DEVICE_BIND_IOMMUFD, &bind) == 0 || errno != EPERM)
-		fail_exit("Binding cdev to new iommufd should fail with EPERM");
-
-	/* Should fail */
-	if (luo_session_finish(session) == 0)
-		fail_exit("luo_session_finish should fail if iommufd is not restored");
+	if (luo_session_finish(session) < 0)
+		fail_exit("luo_session_finish failed");
 
 	close(iommufd);
 	close(cdev_fd);

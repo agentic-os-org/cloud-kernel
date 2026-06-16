@@ -2131,6 +2131,7 @@ static void iommu_domain_init(struct iommu_domain *domain, unsigned int type,
 {
 	domain->type = type;
 	domain->owner = ops;
+	atomic_set(&domain->attach_count, 0);
 	if (!domain->ops)
 		domain->ops = ops->default_domain_ops;
 
@@ -2190,8 +2191,20 @@ struct iommu_domain *iommu_paging_domain_alloc_flags(struct device *dev,
 }
 EXPORT_SYMBOL_GPL(iommu_paging_domain_alloc_flags);
 
+bool iommu_domain_has_attachments(struct iommu_domain *domain)
+{
+	return atomic_read(&domain->attach_count) != 0;
+}
+EXPORT_SYMBOL_GPL(iommu_domain_has_attachments);
+
 void iommu_domain_free(struct iommu_domain *domain)
 {
+	if (WARN_ON_ONCE(iommu_domain_has_attachments(domain))) {
+		pr_err("Attempt to free an iommu_domain that has attachments: %d\n",
+		       atomic_read(&domain->attach_count));
+		return;
+	}
+
 	switch (domain->cookie_type) {
 	case IOMMU_COOKIE_DMA_IOVA:
 		iommu_put_dma_cookie(domain);
@@ -2237,6 +2250,10 @@ static int __iommu_attach_device(struct iommu_domain *domain,
 	ret = domain->ops->attach_dev(domain, dev, old);
 	if (ret)
 		return ret;
+
+	atomic_inc(&domain->attach_count);
+	if (old)
+		atomic_dec(&old->attach_count);
 
 #ifdef CONFIG_IOMMU_LIVEUPDATE
 	/* The associated state can be unset once restored. */
@@ -2428,9 +2445,12 @@ static bool domain_iommu_ops_compatible(const struct iommu_ops *ops,
 static int __iommu_attach_group(struct iommu_domain *domain,
 				struct iommu_group *group)
 {
+	bool allow_replace = false;
 	struct device *dev;
 
-	if (group->domain && group->domain != group->default_domain &&
+	allow_replace = group->domain && iommu_domain_restored_state(group->domain);
+	if (!allow_replace && group->domain &&
+	    group->domain != group->default_domain &&
 	    group->domain != group->blocking_domain)
 		return -EBUSY;
 
@@ -3476,20 +3496,24 @@ static int __iommu_group_alloc_blocking_domain(struct iommu_group *group)
 	return 0;
 }
 
-static int __iommu_take_dma_ownership(struct iommu_group *group, void *owner)
+static int __iommu_take_dma_ownership(struct iommu_group *group, void *owner, bool transfer)
 {
 	int ret;
 
-	if ((group->domain && group->domain != group->default_domain) ||
+	if ((!transfer &&
+	    (group->domain && (group->domain != group->default_domain))) ||
 	    !xa_empty(&group->pasid_array))
 		return -EBUSY;
 
 	ret = __iommu_group_alloc_blocking_domain(group);
 	if (ret)
 		return ret;
-	ret = __iommu_group_set_domain(group, group->blocking_domain);
-	if (ret)
-		return ret;
+
+	if (!transfer) {
+		ret = __iommu_group_set_domain(group, group->blocking_domain);
+		if (ret)
+			return ret;
+	}
 
 	group->owner = owner;
 	group->owner_cnt++;
@@ -3518,7 +3542,7 @@ int iommu_group_claim_dma_owner(struct iommu_group *group, void *owner)
 		goto unlock_out;
 	}
 
-	ret = __iommu_take_dma_ownership(group, owner);
+	ret = __iommu_take_dma_ownership(group, owner, false);
 unlock_out:
 	mutex_unlock(&group->mutex);
 
@@ -3530,12 +3554,13 @@ EXPORT_SYMBOL_GPL(iommu_group_claim_dma_owner);
  * iommu_device_claim_dma_owner() - Set DMA ownership of a device
  * @dev: The device.
  * @owner: Caller specified pointer. Used for exclusive ownership.
+ * @transfer: Transfer ownership even if domain attached.
  *
  * Claim the DMA ownership of a device. Multiple devices in the same group may
  * concurrently claim ownership if they present the same owner value. Returns 0
  * on success and error code on failure
  */
-int iommu_device_claim_dma_owner(struct device *dev, void *owner)
+int iommu_device_claim_dma_owner(struct device *dev, void *owner, bool transfer)
 {
 	/* Caller must be a probed driver on dev */
 	struct iommu_group *group = dev->iommu_group;
@@ -3548,7 +3573,7 @@ int iommu_device_claim_dma_owner(struct device *dev, void *owner)
 		return -ENODEV;
 
 	mutex_lock(&group->mutex);
-	if (group->owner_cnt) {
+	if (!transfer && group->owner_cnt) {
 		if (group->owner != owner) {
 			ret = -EPERM;
 			goto unlock_out;
@@ -3557,7 +3582,7 @@ int iommu_device_claim_dma_owner(struct device *dev, void *owner)
 		goto unlock_out;
 	}
 
-	ret = __iommu_take_dma_ownership(group, owner);
+	ret = __iommu_take_dma_ownership(group, owner, transfer);
 unlock_out:
 	mutex_unlock(&group->mutex);
 	return ret;
