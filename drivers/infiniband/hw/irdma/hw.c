@@ -273,7 +273,7 @@ static void irdma_process_aeq(struct irdma_pci_f *rf)
 		}
 
 		switch (info->ae_id) {
-			struct irdma_cm_node *cm_node;
+		struct irdma_cm_node *cm_node;
 		case IRDMA_AE_LLP_CONNECTION_ESTABLISHED:
 			cm_node = iwqp->cm_node;
 			if (cm_node->accept_pend) {
@@ -764,6 +764,7 @@ static void irdma_destroy_ccq(struct irdma_pci_f *rf)
 		status = irdma_sc_ccq_destroy(dev->ccq, 0, true);
 	if (status)
 		ibdev_dbg(to_ibdev(dev), "ERR: CCQ destroy failed %d\n", status);
+
 	dma_free_coherent(dev->hw->device, ccq->mem_cq.size, ccq->mem_cq.va,
 			  ccq->mem_cq.pa);
 	ccq->mem_cq.va = NULL;
@@ -1001,9 +1002,9 @@ static int irdma_create_cqp(struct irdma_pci_f *rf)
 	INIT_LIST_HEAD(&cqp->cqp_avail_reqs);
 	INIT_LIST_HEAD(&cqp->cqp_pending_reqs);
 
-	/* init the waitqueue of the cqp_requests and add them to the list */
+	/* init the completion of the cqp_requests and add them to the list */
 	for (i = 0; i < sqsize; i++) {
-		init_waitqueue_head(&cqp->cqp_requests[i].waitq);
+		init_completion(&cqp->cqp_requests[i].comp);
 		list_add_tail(&cqp->cqp_requests[i].list, &cqp->cqp_avail_reqs);
 	}
 	init_waitqueue_head(&cqp->remove_wq);
@@ -1090,7 +1091,7 @@ static int irdma_alloc_set_mac(struct irdma_device *iwdev)
 	int status;
 
 	status = irdma_alloc_local_mac_entry(iwdev->rf,
-					     &iwdev->mac_ip_table_idx);
+					    &iwdev->mac_ip_table_idx);
 	if (!status) {
 		status = irdma_add_local_mac_entry(iwdev->rf,
 						   (const u8 *)iwdev->netdev->dev_addr,
@@ -1201,7 +1202,7 @@ static int irdma_create_ceq(struct irdma_pci_f *rf, struct irdma_ceq *iwceq,
 	iwceq->mem.size = ALIGN(sizeof(struct irdma_ceqe) * ceq_size,
 				IRDMA_CEQ_ALIGNMENT);
 	iwceq->mem.va = dma_alloc_coherent(dev->hw->device, iwceq->mem.size,
-					   &iwceq->mem.pa, GFP_KERNEL);
+					  &iwceq->mem.pa, GFP_KERNEL);
 	if (!iwceq->mem.va)
 		return -ENOMEM;
 
@@ -1872,7 +1873,7 @@ int irdma_rt_init_hw(struct irdma_device *iwdev,
 		 * free cq bufs
 		 */
 		iwdev->cleanup_wq = alloc_workqueue("irdma-cleanup-wq",
-					WQ_UNBOUND, WQ_UNBOUND_MAX_ACTIVE);
+						WQ_UNBOUND, WQ_UNBOUND_MAX_ACTIVE);
 		if (!iwdev->cleanup_wq)
 			return -ENOMEM;
 		irdma_get_used_rsrc(iwdev);
@@ -2103,8 +2104,7 @@ void irdma_cqp_ce_handler(struct irdma_pci_f *rf, struct irdma_sc_cq *cq)
 			cqp_request->compl_info.error = info.error;
 
 			if (cqp_request->waiting) {
-				WRITE_ONCE(cqp_request->request_done, true);
-				wake_up(&cqp_request->waitq);
+				complete_all(&cqp_request->comp);
 				irdma_put_cqp_request(&rf->cqp, cqp_request);
 			} else {
 				if (cqp_request->callback_fcn)
@@ -2674,7 +2674,7 @@ int irdma_hw_flush_wqes(struct irdma_pci_f *rf, struct irdma_sc_qp *qp,
 
 	ibdev_dbg(&rf->iwdev->ibdev,
 		  "VERBS: qp_id=%d qp_type=%d qpstate=%d ibqpstate=%d last_aeq=%d hw_iw_state=%d maj_err_code=%d min_err_code=%d\n",
-		  iwqp->ibqp.qp_num, rf->protocol_used, iwqp->iwarp_state,
+		  iwqp->ibqp.qp_num, rf->protocol_used, iwqp->warp_state,
 		  iwqp->ibqp_state, iwqp->last_aeq, iwqp->hw_iwarp_state,
 		  cqp_request->compl_info.maj_err_code,
 		  cqp_request->compl_info.min_err_code);
