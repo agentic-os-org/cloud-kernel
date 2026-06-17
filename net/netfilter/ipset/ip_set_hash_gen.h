@@ -23,6 +23,14 @@
 	rcu_dereference_bh_check(p, 	\
 		lockdep_nfnl_is_held(NFNL_SUBSYS_IPSET))
 
+/* test_bit_acquire() is not available on older kernels; emulate it with
+ * an acquire load of the word containing the bit.
+ */
+#ifndef test_bit_acquire
+#define test_bit_acquire(nr, addr)	\
+	(!!(smp_load_acquire(&(addr)[BIT_WORD(nr)]) & BIT_MASK(nr)))
+#endif
+
 /* Hashing which uses arrays to resolve clashing. The hash table is resized
  * (doubled) when searching becomes too long.
  * Internally jhash is used with the assumption that the size of the
@@ -692,7 +700,7 @@ retry:
 			if (!n)
 				continue;
 			for (j = 0; j < n->pos; j++) {
-				if (!test_bit(j, n->used))
+				if (!test_bit_acquire(j, n->used))
 					continue;
 				data = ahash_data(n, j, dsize);
 				if (SET_ELEM_EXPIRED(set, data))
@@ -827,7 +835,7 @@ mtype_ext_size(struct ip_set *set, u32 *elements, size_t *ext_size)
 			if (!n)
 				continue;
 			for (j = 0; j < n->pos; j++) {
-				if (!test_bit(j, n->used))
+				if (!test_bit_acquire(j, n->used))
 					continue;
 				data = ahash_data(n, j, set->dsize);
 				if (!SET_ELEM_EXPIRED(set, data))
@@ -1190,7 +1198,7 @@ mtype_test_cidrs(struct ip_set *set, struct mtype_elem *d,
 		if (!n)
 			continue;
 		for (i = 0; i < n->pos; i++) {
-			if (!test_bit(i, n->used))
+			if (!test_bit_acquire(i, n->used))
 				continue;
 			data = ahash_data(n, i, set->dsize);
 			if (!mtype_data_equal(data, d, &multi))
@@ -1246,7 +1254,7 @@ mtype_test(struct ip_set *set, void *value, const struct ip_set_ext *ext,
 		goto out;
 	}
 	for (i = 0; i < n->pos; i++) {
-		if (!test_bit(i, n->used))
+		if (!test_bit_acquire(i, n->used))
 			continue;
 		data = ahash_data(n, i, set->dsize);
 		if (!mtype_data_equal(data, d, &multi))
@@ -1364,7 +1372,7 @@ mtype_list(const struct ip_set *set,
 		if (!n)
 			continue;
 		for (i = 0; i < n->pos; i++) {
-			if (!test_bit(i, n->used))
+			if (!test_bit_acquire(i, n->used))
 				continue;
 			e = ahash_data(n, i, set->dsize);
 			if (SET_ELEM_EXPIRED(set, e))
