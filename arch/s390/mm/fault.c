@@ -592,6 +592,7 @@ void do_secure_storage_access(struct pt_regs *regs)
 	struct mm_struct *mm;
 	struct page *page;
 	struct gmap *gmap;
+	enum fault_type type;
 	int rc;
 
 	/*
@@ -620,7 +621,12 @@ void do_secure_storage_access(struct pt_regs *regs)
 		panic("Unexpected PGM 0x3d with TEID bit 61=0");
 	}
 
-	switch (get_fault_type(regs)) {
+	type = get_fault_type(regs);
+	if (type != KERNEL_FAULT && faulthandler_disabled()) {
+		do_fault_error(regs, VM_FAULT_BADMAP);
+		return;
+	}
+	switch (type) {
 	case GMAP_FAULT:
 		mm = current->mm;
 		gmap = (struct gmap *)S390_lowcore.gmap;
