@@ -260,11 +260,17 @@ union kvm_mmu_notifier_arg {
 	unsigned long attributes;
 };
 
+enum kvm_gfn_range_filter {
+	KVM_FILTER_SHARED		= BIT(0),
+	KVM_FILTER_PRIVATE		= BIT(1),
+};
+
 struct kvm_gfn_range {
 	struct kvm_memory_slot *slot;
 	gfn_t start;
 	gfn_t end;
 	union kvm_mmu_notifier_arg arg;
+	enum kvm_gfn_range_filter attr_filter;
 	bool may_block;
 };
 bool kvm_unmap_gfn_range(struct kvm *kvm, struct kvm_gfn_range *range);
@@ -729,6 +735,13 @@ static inline int kvm_arch_vcpu_memslots_id(struct kvm_vcpu *vcpu)
 static inline bool kvm_arch_has_private_mem(struct kvm *kvm)
 {
 	return false;
+}
+#endif
+
+#ifndef kvm_arch_has_readonly_mem
+static inline bool kvm_arch_has_readonly_mem(struct kvm *kvm)
+{
+	return IS_ENABLED(CONFIG_HAVE_KVM_READONLY_MEM);
 }
 #endif
 
@@ -1438,7 +1451,16 @@ bool kvm_vcpu_block(struct kvm_vcpu *vcpu);
 void kvm_arch_vcpu_blocking(struct kvm_vcpu *vcpu);
 void kvm_arch_vcpu_unblocking(struct kvm_vcpu *vcpu);
 bool kvm_vcpu_wake_up(struct kvm_vcpu *vcpu);
-void kvm_vcpu_kick(struct kvm_vcpu *vcpu);
+
+#ifndef CONFIG_S390
+void __kvm_vcpu_kick(struct kvm_vcpu *vcpu, bool wait);
+
+static inline void kvm_vcpu_kick(struct kvm_vcpu *vcpu)
+{
+	__kvm_vcpu_kick(vcpu, false);
+}
+#endif
+
 int kvm_vcpu_yield_to(struct kvm_vcpu *target);
 void kvm_vcpu_on_spin(struct kvm_vcpu *vcpu, bool yield_to_kernel_mode);
 
@@ -2201,6 +2223,14 @@ static __always_inline void kvm_make_request(int req, struct kvm_vcpu *vcpu)
 	__kvm_make_request(req, vcpu);
 }
 
+#ifndef CONFIG_S390
+static inline void kvm_make_request_and_kick(int req, struct kvm_vcpu *vcpu)
+{
+	kvm_make_request(req, vcpu);
+	__kvm_vcpu_kick(vcpu, req & KVM_REQUEST_WAIT);
+}
+#endif
+
 static inline bool kvm_request_pending(struct kvm_vcpu *vcpu)
 {
 	return READ_ONCE(vcpu->requests);
@@ -2451,7 +2481,7 @@ static inline unsigned long kvm_get_memory_attributes(struct kvm *kvm, gfn_t gfn
 }
 
 bool kvm_range_has_memory_attributes(struct kvm *kvm, gfn_t start, gfn_t end,
-				     unsigned long attrs);
+				     unsigned long mask, unsigned long attrs);
 bool kvm_arch_pre_set_memory_attributes(struct kvm *kvm,
 					struct kvm_gfn_range *range);
 bool kvm_arch_post_set_memory_attributes(struct kvm *kvm,
@@ -2484,9 +2514,9 @@ static inline int kvm_gmem_get_pfn(struct kvm *kvm,
 
 #ifdef CONFIG_HAVE_KVM_ARCH_GMEM_PREPARE
 int kvm_arch_gmem_prepare(struct kvm *kvm, gfn_t gfn, kvm_pfn_t pfn, int max_order);
-bool kvm_arch_gmem_prepare_needed(struct kvm *kvm);
 #endif
 
+#ifdef CONFIG_KVM_GENERIC_PRIVATE_MEM
 /**
  * kvm_gmem_populate() - Populate/prepare a GPA range with guest data
  *
@@ -2513,6 +2543,7 @@ typedef int (*kvm_gmem_populate_cb)(struct kvm *kvm, gfn_t gfn, kvm_pfn_t pfn,
 
 long kvm_gmem_populate(struct kvm *kvm, gfn_t gfn, void __user *src, long npages,
 		       kvm_gmem_populate_cb post_populate, void *opaque);
+#endif
 
 #ifdef CONFIG_HAVE_KVM_ARCH_GMEM_INVALIDATE
 void kvm_arch_gmem_invalidate(kvm_pfn_t start, kvm_pfn_t end);

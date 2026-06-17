@@ -25,38 +25,26 @@ static inline kvm_pfn_t folio_file_pfn(struct folio *folio, pgoff_t index)
 	return folio_pfn(folio) + (index & (folio_nr_pages(folio) - 1));
 }
 
-static int __kvm_gmem_prepare_folio(struct inode *inode, pgoff_t index, struct folio *folio)
+static int __kvm_gmem_prepare_folio(struct kvm *kvm, struct kvm_memory_slot *slot,
+				    pgoff_t index, struct folio *folio)
 {
 #ifdef CONFIG_HAVE_KVM_ARCH_GMEM_PREPARE
-	struct list_head *gmem_list = &inode->i_mapping->i_private_list;
-	struct kvm_gmem *gmem;
-
-	list_for_each_entry(gmem, gmem_list, entry) {
-		struct kvm_memory_slot *slot;
-		struct kvm *kvm = gmem->kvm;
-		kvm_pfn_t pfn;
-		gfn_t gfn;
-		int rc;
-
-		if (!kvm_arch_gmem_prepare_needed(kvm))
-			continue;
-
-		slot = xa_load(&gmem->bindings, index);
-		if (!slot)
-			continue;
-
-		pfn = folio_file_pfn(folio, index);
-		gfn = slot->base_gfn + index - slot->gmem.pgoff;
-		rc = kvm_arch_gmem_prepare(kvm, gfn, pfn, folio_order(folio));
-		if (rc) {
-			pr_warn_ratelimited("gmem: Failed to prepare folio for GFN %llx PFN %llx error %d.\n",
-					    gfn, pfn, rc);
-			return rc;
-		}
+	kvm_pfn_t pfn = folio_file_pfn(folio, index);
+	gfn_t gfn = slot->base_gfn + index - slot->gmem.pgoff;
+	int rc = kvm_arch_gmem_prepare(kvm, gfn, pfn, folio_order(folio));
+	if (rc) {
+		pr_warn_ratelimited("gmem: Failed to prepare folio for index %lx GFN %llx PFN %llx error %d.\n",
+				    index, gfn, pfn, rc);
+		return rc;
 	}
-
 #endif
+
 	return 0;
+}
+
+static inline void kvm_gmem_mark_prepared(struct folio *folio)
+{
+	folio_mark_uptodate(folio);
 }
 
 /*
@@ -65,15 +53,12 @@ static int __kvm_gmem_prepare_folio(struct inode *inode, pgoff_t index, struct f
  * On successful return the guest sees a zero page so as to avoid
  * leaking host data and the up-to-date flag is set.
  */
-static int kvm_gmem_prepare_folio(struct file *file, struct kvm_memory_slot *slot,
+static int kvm_gmem_prepare_folio(struct kvm *kvm, struct kvm_memory_slot *slot,
 				  gfn_t gfn, struct folio *folio)
 {
 	unsigned long nr_pages, i;
 	pgoff_t index;
 	int r;
-
-	if (folio_test_uptodate(folio))
-		return 0;
 
 	nr_pages = folio_nr_pages(folio);
 	for (i = 0; i < nr_pages; i++)
@@ -95,10 +80,9 @@ static int kvm_gmem_prepare_folio(struct file *file, struct kvm_memory_slot *slo
 	WARN_ON(!IS_ALIGNED(slot->gmem.pgoff, 1 << folio_order(folio)));
 	index = gfn - slot->base_gfn + slot->gmem.pgoff;
 	index = ALIGN_DOWN(index, 1 << folio_order(folio));
-
-	r = __kvm_gmem_prepare_folio(file_inode(file), index, folio);
+	r = __kvm_gmem_prepare_folio(kvm, slot, index, folio);
 	if (!r)
-		folio_mark_uptodate(folio);
+		kvm_gmem_mark_prepared(folio);
 
 	return r;
 }
@@ -134,6 +118,8 @@ static void kvm_gmem_invalidate_begin(struct kvm_gmem *gmem, pgoff_t start,
 			.end = slot->base_gfn + min(pgoff + slot->npages, end) - pgoff,
 			.slot = slot,
 			.may_block = true,
+			/* guest memfd is relevant to only private mappings. */
+			.attr_filter = KVM_FILTER_PRIVATE,
 		};
 
 		if (!found_memslot) {
@@ -573,7 +559,8 @@ void kvm_gmem_unbind(struct kvm_memory_slot *slot)
 /* Returns a locked folio on success.  */
 static struct folio *
 __kvm_gmem_get_pfn(struct file *file, struct kvm_memory_slot *slot,
-		   gfn_t gfn, kvm_pfn_t *pfn, int *max_order)
+		   gfn_t gfn, kvm_pfn_t *pfn, bool *is_prepared,
+		   int *max_order)
 {
 	pgoff_t index = gfn - slot->base_gfn + slot->gmem.pgoff;
 	struct kvm_gmem *gmem = file->private_data;
@@ -604,6 +591,7 @@ __kvm_gmem_get_pfn(struct file *file, struct kvm_memory_slot *slot,
 	if (max_order)
 		*max_order = 0;
 
+	*is_prepared = folio_test_uptodate(folio);
 	return folio;
 }
 
@@ -612,18 +600,21 @@ int kvm_gmem_get_pfn(struct kvm *kvm, struct kvm_memory_slot *slot,
 {
 	struct file *file = kvm_gmem_get_file(slot);
 	struct folio *folio;
+	bool is_prepared = false;
 	int r = 0;
 
 	if (!file)
 		return -EFAULT;
 
-	folio = __kvm_gmem_get_pfn(file, slot, gfn, pfn, max_order);
+	folio = __kvm_gmem_get_pfn(file, slot, gfn, pfn, &is_prepared, max_order);
 	if (IS_ERR(folio)) {
 		r = PTR_ERR(folio);
 		goto out;
 	}
 
-	r = kvm_gmem_prepare_folio(file, slot, gfn, folio);
+	if (!is_prepared)
+		r = kvm_gmem_prepare_folio(kvm, slot, gfn, folio);
+
 	folio_unlock(folio);
 	if (r < 0)
 		folio_put(folio);
@@ -634,6 +625,7 @@ out:
 }
 EXPORT_SYMBOL_GPL(kvm_gmem_get_pfn);
 
+#ifdef CONFIG_KVM_GENERIC_PRIVATE_MEM
 long kvm_gmem_populate(struct kvm *kvm, gfn_t start_gfn, void __user *src, long npages,
 		       kvm_gmem_populate_cb post_populate, void *opaque)
 {
@@ -662,6 +654,7 @@ long kvm_gmem_populate(struct kvm *kvm, gfn_t start_gfn, void __user *src, long 
 	for (i = 0; i < npages; i += (1 << max_order)) {
 		struct folio *folio;
 		gfn_t gfn = start_gfn + i;
+		bool is_prepared = false;
 		kvm_pfn_t pfn;
 
 		if (signal_pending(current)) {
@@ -669,22 +662,38 @@ long kvm_gmem_populate(struct kvm *kvm, gfn_t start_gfn, void __user *src, long 
 			break;
 		}
 
-		folio = __kvm_gmem_get_pfn(file, slot, gfn, &pfn, &max_order);
+		folio = __kvm_gmem_get_pfn(file, slot, gfn, &pfn, &is_prepared, &max_order);
 		if (IS_ERR(folio)) {
 			ret = PTR_ERR(folio);
 			break;
 		}
 
+		if (is_prepared) {
+			folio_unlock(folio);
+			folio_put(folio);
+			ret = -EEXIST;
+			break;
+		}
+
 		folio_unlock(folio);
-		if (!IS_ALIGNED(gfn, (1 << max_order)) ||
-		    (npages - i) < (1 << max_order))
-			max_order = 0;
+		WARN_ON(!IS_ALIGNED(gfn, 1 << max_order) ||
+			(npages - i) < (1 << max_order));
+
+		ret = -EINVAL;
+		while (!kvm_range_has_memory_attributes(kvm, gfn, gfn + (1 << max_order),
+							KVM_MEMORY_ATTRIBUTE_PRIVATE,
+							KVM_MEMORY_ATTRIBUTE_PRIVATE)) {
+			if (!max_order)
+				goto put_folio_and_exit;
+			max_order--;
+		}
 
 		p = src ? src + i * PAGE_SIZE : NULL;
 		ret = post_populate(kvm, gfn, pfn, p, max_order, opaque);
 		if (!ret)
-			folio_mark_uptodate(folio);
+			kvm_gmem_mark_prepared(folio);
 
+put_folio_and_exit:
 		folio_put(folio);
 		if (ret)
 			break;
@@ -696,3 +705,4 @@ long kvm_gmem_populate(struct kvm *kvm, gfn_t start_gfn, void __user *src, long 
 	return ret && !i ? ret : i;
 }
 EXPORT_SYMBOL_GPL(kvm_gmem_populate);
+#endif

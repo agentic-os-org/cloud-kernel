@@ -641,6 +641,11 @@ static __always_inline kvm_mn_ret_t __kvm_handle_hva_range(struct kvm *kvm,
 			 */
 			gfn_range.arg = range->arg;
 			gfn_range.may_block = range->may_block;
+			/*
+			 * HVA-based notifications aren't relevant to private
+			 * mappings as they don't have a userspace mapping.
+			 */
+			gfn_range.attr_filter = KVM_FILTER_SHARED;
 
 			/*
 			 * {gfn(page) | page intersects with [hva_start, hva_end)} =
@@ -1626,9 +1631,14 @@ static int check_memory_region_flags(struct kvm *kvm,
 	if (mem->flags & KVM_MEM_GUEST_MEMFD)
 		valid_flags &= ~KVM_MEM_LOG_DIRTY_PAGES;
 
-#ifdef __KVM_HAVE_READONLY_MEM
-	valid_flags |= KVM_MEM_READONLY;
-#endif
+	/*
+	 * GUEST_MEMFD is incompatible with read-only memslots, as writes to
+	 * read-only memslots have emulated MMIO, not page fault, semantics,
+	 * and KVM doesn't allow emulated MMIO for private memory.
+	 */
+	if (kvm_arch_has_readonly_mem(kvm) &&
+	    !(mem->flags & KVM_MEM_GUEST_MEMFD))
+		valid_flags |= KVM_MEM_READONLY;
 
 	if (mem->flags & ~valid_flags)
 		return -EINVAL;
@@ -2440,48 +2450,47 @@ static int kvm_vm_ioctl_clear_dirty_log(struct kvm *kvm,
 #endif /* CONFIG_KVM_GENERIC_DIRTYLOG_READ_PROTECT */
 
 #ifdef CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES
-/*
- * Returns true if _all_ gfns in the range [@start, @end) have attributes
- * matching @attrs.
- */
-bool kvm_range_has_memory_attributes(struct kvm *kvm, gfn_t start, gfn_t end,
-				     unsigned long attrs)
-{
-	XA_STATE(xas, &kvm->mem_attr_array, start);
-	unsigned long index;
-	bool has_attrs;
-	void *entry;
-
-	rcu_read_lock();
-
-	if (!attrs) {
-		has_attrs = !xas_find(&xas, end - 1);
-		goto out;
-	}
-
-	has_attrs = true;
-	for (index = start; index < end; index++) {
-		do {
-			entry = xas_next(&xas);
-		} while (xas_retry(&xas, entry));
-
-		if (xas.xa_index != index || xa_to_value(entry) != attrs) {
-			has_attrs = false;
-			break;
-		}
-	}
-
-out:
-	rcu_read_unlock();
-	return has_attrs;
-}
-
 static u64 kvm_supported_mem_attributes(struct kvm *kvm)
 {
 	if (!kvm || kvm_arch_has_private_mem(kvm))
 		return KVM_MEMORY_ATTRIBUTE_PRIVATE;
 
 	return 0;
+}
+
+/*
+ * Returns true if _all_ gfns in the range [@start, @end) have attributes
+ * such that the bits in @mask match @attrs.
+ */
+bool kvm_range_has_memory_attributes(struct kvm *kvm, gfn_t start, gfn_t end,
+				     unsigned long mask, unsigned long attrs)
+{
+	XA_STATE(xas, &kvm->mem_attr_array, start);
+	unsigned long index;
+	void *entry;
+
+	mask &= kvm_supported_mem_attributes(kvm);
+	if (attrs & ~mask)
+		return false;
+
+	if (end == start + 1)
+		return (kvm_get_memory_attributes(kvm, start) & mask) == attrs;
+
+	guard(rcu)();
+	if (!attrs)
+		return !xas_find(&xas, end - 1);
+
+	for (index = start; index < end; index++) {
+		do {
+			entry = xas_next(&xas);
+		} while (xas_retry(&xas, entry));
+
+		if (xas.xa_index != index ||
+		    (xa_to_value(entry) & mask) != attrs)
+			return false;
+	}
+
+	return true;
 }
 
 static __always_inline void kvm_handle_gfn_range(struct kvm *kvm,
@@ -2497,6 +2506,14 @@ static __always_inline void kvm_handle_gfn_range(struct kvm *kvm,
 
 	gfn_range.arg = range->arg;
 	gfn_range.may_block = range->may_block;
+
+	/*
+	 * If/when KVM supports more attributes beyond private .vs shared, this
+	 * _could_ set KVM_FILTER_{SHARED,PRIVATE} appropriately if the entire target
+	 * range already has the desired private vs. shared state (it's unclear
+	 * if that is a net win).  For now, KVM reaches this point if and only
+	 * if the private flag is being toggled, i.e. all mappings are in play.
+	 */
 
 	for (i = 0; i < kvm_arch_nr_memslot_as_ids(kvm); i++) {
 		slots = __kvm_memslots(kvm, i);
@@ -2554,6 +2571,7 @@ static int kvm_vm_set_mem_attributes(struct kvm *kvm, gfn_t start, gfn_t end,
 	struct kvm_mmu_notifier_range pre_set_range = {
 		.start = start,
 		.end = end,
+		.arg.attributes = attributes,
 		.handler = kvm_pre_set_memory_attributes,
 		.on_lock = kvm_mmu_invalidate_begin,
 		.flush_on_ret = true,
@@ -2576,7 +2594,7 @@ static int kvm_vm_set_mem_attributes(struct kvm *kvm, gfn_t start, gfn_t end,
 	mutex_lock(&kvm->slots_lock);
 
 	/* Nothing to do if the entire range as the desired attributes. */
-	if (kvm_range_has_memory_attributes(kvm, start, end, attributes))
+	if (kvm_range_has_memory_attributes(kvm, start, end, ~0, attributes))
 		goto out_unlock;
 
 	/*
@@ -2587,6 +2605,8 @@ static int kvm_vm_set_mem_attributes(struct kvm *kvm, gfn_t start, gfn_t end,
 		r = xa_reserve(&kvm->mem_attr_array, i, GFP_KERNEL_ACCOUNT);
 		if (r)
 			goto out_unlock;
+
+		cond_resched();
 	}
 
 	kvm_handle_gfn_range(kvm, &pre_set_range);
@@ -2595,6 +2615,7 @@ static int kvm_vm_set_mem_attributes(struct kvm *kvm, gfn_t start, gfn_t end,
 		r = xa_err(xa_store(&kvm->mem_attr_array, i, entry,
 				    GFP_KERNEL_ACCOUNT));
 		KVM_BUG_ON(r, kvm);
+		cond_resched();
 	}
 
 	kvm_handle_gfn_range(kvm, &post_set_range);
@@ -3937,7 +3958,7 @@ EXPORT_SYMBOL_GPL(kvm_vcpu_wake_up);
 /*
  * Kick a sleeping VCPU, or a guest VCPU in guest mode, into host kernel mode.
  */
-void kvm_vcpu_kick(struct kvm_vcpu *vcpu)
+void __kvm_vcpu_kick(struct kvm_vcpu *vcpu, bool wait)
 {
 	int me, cpu;
 
@@ -3966,13 +3987,24 @@ void kvm_vcpu_kick(struct kvm_vcpu *vcpu)
 	 */
 	if (kvm_arch_vcpu_should_kick(vcpu)) {
 		cpu = READ_ONCE(vcpu->cpu);
-		if (cpu != me && (unsigned)cpu < nr_cpu_ids && cpu_online(cpu))
-			smp_send_reschedule(cpu);
+		if (cpu != me && (unsigned int)cpu < nr_cpu_ids && cpu_online(cpu)) {
+			/*
+			 * Use a reschedule IPI to kick the vCPU if the caller
+			 * doesn't need to wait for a response, as KVM allows
+			 * kicking vCPUs while IRQs are disabled, but using the
+			 * SMP function call framework with IRQs disabled can
+			 * deadlock due to taking cross-CPU locks.
+			 */
+			if (wait)
+				smp_call_function_single(cpu, ack_kick, NULL, wait);
+			else
+				smp_send_reschedule(cpu);
+		}
 	}
 out:
 	put_cpu();
 }
-EXPORT_SYMBOL_GPL(kvm_vcpu_kick);
+EXPORT_SYMBOL_GPL(__kvm_vcpu_kick);
 #endif /* !CONFIG_S390 */
 
 int kvm_vcpu_yield_to(struct kvm_vcpu *target)

@@ -2198,31 +2198,34 @@ fastpath_t handle_fastpath_set_msr_irqoff(struct kvm_vcpu *vcpu)
 {
 	u32 msr = kvm_rcx_read(vcpu);
 	u64 data;
-	fastpath_t ret = EXIT_FASTPATH_NONE;
+	fastpath_t ret;
+	bool handled;
 
 	kvm_vcpu_srcu_read_lock(vcpu);
 
 	switch (msr) {
 	case APIC_BASE_MSR + (APIC_ICR >> 4):
 		data = kvm_read_edx_eax(vcpu);
-		if (!handle_fastpath_set_x2apic_icr_irqoff(vcpu, data)) {
-			kvm_skip_emulated_instruction(vcpu);
-			ret = EXIT_FASTPATH_EXIT_HANDLED;
-		}
+		handled = !handle_fastpath_set_x2apic_icr_irqoff(vcpu, data);
 		break;
 	case MSR_IA32_TSC_DEADLINE:
 		data = kvm_read_edx_eax(vcpu);
-		if (!handle_fastpath_set_tscdeadline(vcpu, data)) {
-			kvm_skip_emulated_instruction(vcpu);
-			ret = EXIT_FASTPATH_REENTER_GUEST;
-		}
+		handled = !handle_fastpath_set_tscdeadline(vcpu, data);
 		break;
 	default:
+		handled = false;
 		break;
 	}
 
-	if (ret != EXIT_FASTPATH_NONE)
+	if (handled) {
+		if (!kvm_skip_emulated_instruction(vcpu))
+			ret = EXIT_FASTPATH_EXIT_USERSPACE;
+		else
+			ret = EXIT_FASTPATH_REENTER_GUEST;
 		trace_kvm_msr_write(msr, data);
+	} else {
+		ret = EXIT_FASTPATH_NONE;
+	}
 
 	kvm_vcpu_srcu_read_unlock(vcpu);
 
@@ -4483,6 +4486,11 @@ static bool kvm_is_vm_type_supported(unsigned long type)
 	return type < 32 && (kvm_caps.supported_vm_types & BIT(type));
 }
 
+static inline u64 kvm_sync_valid_fields(struct kvm *kvm)
+{
+	return kvm && kvm->arch.has_protected_state ? 0 : KVM_SYNC_X86_VALID_FIELDS;
+}
+
 int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 {
 	int r = 0;
@@ -4531,7 +4539,6 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 	case KVM_CAP_ASYNC_PF_INT:
 	case KVM_CAP_GET_TSC_KHZ:
 	case KVM_CAP_KVMCLOCK_CTRL:
-	case KVM_CAP_READONLY_MEM:
 	case KVM_CAP_IOAPIC_POLARITY_IGNORED:
 	case KVM_CAP_TSC_DEADLINE_TIMER:
 	case KVM_CAP_DISABLE_QUIRKS:
@@ -4587,7 +4594,7 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 		break;
 #endif
 	case KVM_CAP_SYNC_REGS:
-		r = KVM_SYNC_X86_VALID_FIELDS;
+		r = kvm_sync_valid_fields(kvm);
 		break;
 	case KVM_CAP_ADJUST_CLOCK:
 		r = KVM_CLOCK_VALID_FLAGS;
@@ -4707,6 +4714,9 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 		break;
 	case KVM_CAP_VM_TYPES:
 		r = kvm_caps.supported_vm_types;
+		break;
+	case KVM_CAP_READONLY_MEM:
+		r = kvm ? kvm_arch_has_readonly_mem(kvm) : 1;
 		break;
 	default:
 		break;
@@ -11152,6 +11162,9 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	if (vcpu->arch.apic_attention)
 		kvm_lapic_sync_from_vapic(vcpu);
 
+	if (unlikely(exit_fastpath == EXIT_FASTPATH_EXIT_USERSPACE))
+		return 0;
+
 	r = static_call(kvm_x86_handle_exit)(vcpu, exit_fastpath);
 	return r;
 
@@ -11391,6 +11404,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 {
 	struct kvm_queued_exception *ex = &vcpu->arch.exception;
 	struct kvm_run *kvm_run = vcpu->run;
+	u64 sync_valid_fields;
 	int r;
 
 	vcpu_load(vcpu);
@@ -11432,8 +11446,9 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		goto out;
 	}
 
-	if ((kvm_run->kvm_valid_regs & ~KVM_SYNC_X86_VALID_FIELDS) ||
-	    (kvm_run->kvm_dirty_regs & ~KVM_SYNC_X86_VALID_FIELDS)) {
+	sync_valid_fields = kvm_sync_valid_fields(vcpu->kvm);
+	if ((kvm_run->kvm_valid_regs & ~sync_valid_fields) ||
+	    (kvm_run->kvm_dirty_regs & ~sync_valid_fields)) {
 		r = -EINVAL;
 		goto out;
 	}
@@ -11491,7 +11506,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 out:
 	kvm_put_guest_fpu(vcpu);
-	if (kvm_run->kvm_valid_regs)
+	if (kvm_run->kvm_valid_regs && likely(!vcpu->arch.guest_state_protected))
 		store_regs(vcpu);
 	post_kvm_run_save(vcpu);
 	kvm_vcpu_srcu_read_unlock(vcpu);
@@ -13630,11 +13645,6 @@ bool kvm_arch_no_poll(struct kvm_vcpu *vcpu)
 EXPORT_SYMBOL_GPL(kvm_arch_no_poll);
 
 #ifdef CONFIG_HAVE_KVM_ARCH_GMEM_PREPARE
-bool kvm_arch_gmem_prepare_needed(struct kvm *kvm)
-{
-	return kvm->arch.vm_type == KVM_X86_SNP_VM;
-}
-
 int kvm_arch_gmem_prepare(struct kvm *kvm, gfn_t gfn, kvm_pfn_t pfn, int max_order)
 {
 	return static_call(kvm_x86_gmem_prepare)(kvm, pfn, gfn, max_order);

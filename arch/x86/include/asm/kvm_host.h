@@ -113,7 +113,8 @@
 	KVM_ARCH_REQ_FLAGS(31, KVM_REQUEST_WAIT | KVM_REQUEST_NO_WAKEUP)
 #define KVM_REQ_HV_TLB_FLUSH \
 	KVM_ARCH_REQ_FLAGS(32, KVM_REQUEST_WAIT | KVM_REQUEST_NO_WAKEUP)
-#define KVM_REQ_UPDATE_PROTECTED_GUEST_STATE	KVM_ARCH_REQ(34)
+#define KVM_REQ_UPDATE_PROTECTED_GUEST_STATE \
+	KVM_ARCH_REQ_FLAGS(34, KVM_REQUEST_WAIT)
 
 #define CR0_RESERVED_BITS                                               \
 	(~(unsigned long)(X86_CR0_PE | X86_CR0_MP | X86_CR0_EM | X86_CR0_TS \
@@ -204,6 +205,7 @@ enum exit_fastpath_completion {
 	EXIT_FASTPATH_NONE,
 	EXIT_FASTPATH_REENTER_GUEST,
 	EXIT_FASTPATH_EXIT_HANDLED,
+	EXIT_FASTPATH_EXIT_USERSPACE,
 };
 typedef enum exit_fastpath_completion fastpath_t;
 
@@ -2176,6 +2178,8 @@ void kvm_configure_mmu(bool enable_tdp, int tdp_forced_root_level,
 #else
 #define kvm_arch_has_private_mem(kvm) false
 #endif
+
+#define kvm_arch_has_readonly_mem(kvm) (!(kvm)->arch.has_protected_state)
 
 static inline u16 kvm_read_ldt(void)
 {
