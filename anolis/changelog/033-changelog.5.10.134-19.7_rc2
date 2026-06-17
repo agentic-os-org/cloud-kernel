@@ -1,0 +1,7 @@
+* Wed Jun 17 2026 Tianchen Ding <dtcccc@linux.alibaba.com> [5.10.134-19.7_rc2%%DIST%%]
+- anolis: ublk: remove segment count limit (Joseph Qi)
+- anolis: PCI: Check rom header and data structure addr before accessing (Guixin Liu)
+- anolis: PCI: Introduce named defines for pci rom (Guixin Liu)
+- mm: Fix copy_from_user_nofault(). (Alexei Starovoitov)
+- x86: mm: remove architecture-specific 'access_ok()' define (Linus Torvalds)
+
