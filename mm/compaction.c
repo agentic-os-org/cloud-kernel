@@ -2299,6 +2299,9 @@ static enum compact_result __compact_finished(struct compact_control *cc)
 	const int migratetype = cc->migratetype;
 	int ret;
 
+	if (cc->target_migrated && cc->target_migrated <= cc->nr_migrated)
+		return COMPACT_COMPLETE;
+
 	/* Compaction run completes if the migrate and free scanner meet */
 	if (compact_scanners_met(cc)) {
 		/* Let the next compaction start anew. */
@@ -2713,7 +2716,7 @@ rescan:
 				MR_COMPACTION, &nr_succeeded);
 
 		trace_mm_compaction_migratepages(nr_migratepages, nr_succeeded);
-
+		cc->nr_migrated += nr_succeeded;
 		/* All pages were either migrated or will be released */
 		cc->nr_migratepages = 0;
 		if (err) {
@@ -2977,6 +2980,35 @@ static void proactive_compact_node(pg_data_t *pgdat)
 }
 
 /* Compact all zones within a node */
+static void light_compact_node(int nid, unsigned int nr_pages)
+{
+	pg_data_t *pgdat = NODE_DATA(nid);
+	int zoneid;
+	struct zone *zone;
+	struct compact_control cc = {
+		.order = -1,
+		.mode = MIGRATE_SYNC_LIGHT,
+		.ignore_skip_hint = true,
+		.whole_zone = false,
+		.target_migrated = nr_pages,
+		.nr_migrated = 0,
+		.gfp_mask = GFP_KERNEL,
+	};
+
+
+	for (zoneid = MAX_NR_ZONES - 1; zoneid >= 0; zoneid--) {
+
+		zone = &pgdat->node_zones[zoneid];
+		if (!populated_zone(zone))
+			continue;
+
+		cc.zone = zone;
+
+		compact_zone(&cc, NULL);
+	}
+}
+
+/* Compact all zones within a node */
 static void compact_node(int nid)
 {
 	pg_data_t *pgdat = NODE_DATA(nid);
@@ -3068,9 +3100,29 @@ static ssize_t compact_store(struct device *dev,
 			     struct device_attribute *attr,
 			     const char *buf, size_t count)
 {
+	unsigned long bytes;
+	unsigned int nr_pages;
 	int nid = dev->id;
+	char *p, *s, *orig, *compact_size, *compact;
 
 	if (nid >= 0 && nid < nr_node_ids && node_online(nid)) {
+		orig = kstrdup(buf, GFP_KERNEL);
+		if (orig == NULL)
+			return -ENOMEM;
+
+		s = strstrip(orig);
+		compact = strsep(&s, ",");
+		compact_size = strsep(&s, ",");
+		if (compact_size != NULL) {
+			bytes = memparse(compact_size, &p);
+			nr_pages = bytes / PAGE_SIZE;
+			if (nr_pages)
+				light_compact_node(nid, nr_pages);
+
+			kfree(orig);
+			return count;
+		}
+		kfree(orig);
 		/* Flush pending updates to the LRU lists */
 		lru_add_drain_all();
 

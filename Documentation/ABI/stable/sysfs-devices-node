@@ -81,9 +81,12 @@ What:		/sys/devices/system/node/nodeX/compact
 Date:		February 2010
 Contact:	Mel Gorman <mel@csn.ul.ie>
 Description:
-		When this file is written to, all memory within that node
-		will be compacted. When it completes, memory will be freed
-		into blocks which have as many contiguous pages as possible
+		When this file is written with the format "x", all memory
+		within that node will be compacted. When it completes,
+		memory will be freed into blocks which have as many contiguous
+		pages as possible.  When written with the format “x,xxxK/M/G”,
+		the node will perform compaction in fixed quantities of the
+		specified size.
 
 What:		/sys/devices/system/node/nodeX/hugepages/hugepages-<size>/
 Date:		December 2009
