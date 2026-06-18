@@ -1,1 +1,1 @@
-# CONFIG_MEMCG_V1 is not set
+CONFIG_MEMCG_V1=y
