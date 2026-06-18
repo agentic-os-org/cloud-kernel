@@ -160,6 +160,20 @@ static inline bool vma_can_userfault(struct vm_area_struct *vma,
 				     unsigned long vm_flags,
 				     bool wp_async)
 {
+	/*
+	 * Registering a shadow stack VMA would let userspace discard a page and
+	 * then inject arbitrary return addresses with UFFDIO_COPY.
+	 */
+	if (vma->vm_flags & VM_SHADOW_STACK)
+		return false;
+
+	/*
+	 * VM_SPECIAL includes VM_DONTEXPAND, which hugetlb VMAs also set, so
+	 * hugetlb has to be excluded from the VM_SPECIAL rejection.
+	 */
+	if (!is_vm_hugetlb_page(vma) && (vma->vm_flags & VM_SPECIAL))
+		return false;
+
 	vm_flags &= __VM_UFFD_FLAGS;
 
 	if ((vm_flags & VM_UFFD_MINOR) &&
