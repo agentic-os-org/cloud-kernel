@@ -138,6 +138,7 @@ struct erofs_sb_info {
 	u32 xattr_blkaddr;
 	u32 xattr_prefix_start;
 	u8 xattr_prefix_count;
+	u8 ishare_xattr_prefix_id;
 	struct erofs_xattr_prefix_item *xattr_prefixes;
 #endif
 	u16 device_id_mask;	/* valid bits of device id to be used */
@@ -180,6 +181,7 @@ struct erofs_sb_info {
 #define EROFS_MOUNT_DAX_ALWAYS		0x00000040
 #define EROFS_MOUNT_DAX_NEVER		0x00000080
 #define EROFS_MOUNT_DIRECT_IO		0x00000100
+#define EROFS_MOUNT_INODE_SHARE		0x00000200
 
 #define EROFS_MOUNT_BLOB_MMAP_PIN	0x80000000
 
@@ -200,6 +202,8 @@ static inline bool erofs_is_fileio_mode(struct erofs_sb_info *sbi)
 {
 	return IS_ENABLED(CONFIG_EROFS_FS_BACKED_BY_FILE) && sbi->fdev;
 }
+
+extern struct file_system_type erofs_anon_fs_type;
 
 static inline bool erofs_is_fscache_mode(struct super_block *sb)
 {
@@ -261,6 +265,7 @@ EROFS_FEATURE_FUNCS(dedupe, incompat, INCOMPAT_DEDUPE)
 EROFS_FEATURE_FUNCS(xattr_prefixes, incompat, INCOMPAT_XATTR_PREFIXES)
 EROFS_FEATURE_FUNCS(48bit, incompat, INCOMPAT_48BIT)
 EROFS_FEATURE_FUNCS(sb_chksum, compat, COMPAT_SB_CHKSUM)
+EROFS_FEATURE_FUNCS(ishare_xattrs, compat, COMPAT_ISHARE_XATTRS)
 
 /* atomic flag definitions */
 #define EROFS_I_EA_INITED_BIT	0
@@ -272,6 +277,11 @@ EROFS_FEATURE_FUNCS(sb_chksum, compat, COMPAT_SB_CHKSUM)
 
 /* default readahead size of directories */
 #define EROFS_DIR_RA_BYTES	16384
+
+struct erofs_inode_fingerprint {
+	u8 *opaque;
+	int size;
+};
 
 struct erofs_inode {
 	erofs_nid_t nid;
@@ -308,6 +318,18 @@ struct erofs_inode {
 		};
 #endif	/* CONFIG_EROFS_FS_ZIP */
 	};
+#ifdef CONFIG_EROFS_FS_PAGE_CACHE_SHARE
+	struct list_head ishare_list;
+	union {
+		/* for each anon shared inode */
+		struct {
+			struct erofs_inode_fingerprint fingerprint;
+			spinlock_t ishare_lock;
+		};
+		/* for each real inode */
+		struct inode *sharedinode;
+	};
+#endif
 	/* the corresponding vfs inode */
 	struct inode vfs_inode;
 };
@@ -464,6 +486,7 @@ int erofs_namei(struct inode *dir, const struct qstr *name,
 
 /* dir.c */
 extern const struct file_operations erofs_dir_fops;
+extern const struct file_operations erofs_ishare_fops;
 
 static inline void *erofs_vm_map_ram(struct page **pages, unsigned int count)
 {
@@ -480,7 +503,39 @@ static inline void *erofs_vm_map_ram(struct page **pages, unsigned int count)
 	return NULL;
 }
 
-/* sysfs.c */
+extern const struct address_space_operations erofs_fscache_access_aops;
+
+#ifdef CONFIG_EROFS_FS_RAFS_V6
+void erofs_rafsv6_set_fops(struct inode *inode);
+const struct address_space_operations *erofs_rafsv6_get_aops(struct inode *inode);
+#else
+static inline void erofs_rafsv6_set_fops(struct inode *inode) {}
+static inline const struct address_space_operations *erofs_rafsv6_get_aops(struct inode *inode) { return &erofs_aops; }
+#endif
+
+static inline const struct address_space_operations *
+erofs_get_aops(struct inode *realinode, bool no_fscache)
+{
+	if (erofs_inode_is_data_compressed(EROFS_I(realinode)->datalayout)) {
+		if (!IS_ENABLED(CONFIG_EROFS_FS_ZIP))
+			return ERR_PTR(-EOPNOTSUPP);
+		if (erofs_is_fscache_mode(realinode->i_sb) ||
+		    erofs_is_fileio_mode(EROFS_SB(realinode->i_sb)))
+			return ERR_PTR(-EOPNOTSUPP);
+		return &z_erofs_aops;
+	} else if (erofs_is_rafsv6_mode(realinode->i_sb)) {
+		return erofs_rafsv6_get_aops(realinode);
+	} else {
+		if (IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && !no_fscache &&
+		    erofs_is_fscache_mode(realinode->i_sb))
+			return &erofs_fscache_access_aops;
+		if (IS_ENABLED(CONFIG_EROFS_FS_BACKED_BY_FILE) &&
+		    erofs_is_fileio_mode(EROFS_SB(realinode->i_sb)))
+			return &erofs_fileio_aops;
+	}
+	return &erofs_aops;
+}
+
 int erofs_register_sysfs(struct super_block *sb);
 void erofs_unregister_sysfs(struct super_block *sb);
 int __init erofs_init_sysfs(void);
@@ -555,7 +610,6 @@ void erofs_fscache_unregister_fs(struct super_block *sb);
 struct erofs_fscache *erofs_fscache_register_cookie(struct super_block *sb,
 						     char *name, bool need_inode);
 void erofs_fscache_unregister_cookie(struct erofs_fscache *fscache);
-extern const struct address_space_operations erofs_fscache_access_aops;
 #else
 static inline int erofs_fscache_register(void)
 {
@@ -580,12 +634,22 @@ static inline void erofs_fscache_unregister_cookie(struct erofs_fscache *fscache
 }
 #endif
 
-#ifdef CONFIG_EROFS_FS_RAFS_V6
-void erofs_rafsv6_set_fops(struct inode *inode);
-void erofs_rafsv6_set_aops(struct inode *inode);
+#ifdef CONFIG_EROFS_FS_PAGE_CACHE_SHARE
+int __init erofs_init_ishare(void);
+void erofs_exit_ishare(void);
+bool erofs_ishare_fill_inode(struct inode *inode);
+void erofs_ishare_free_inode(struct inode *inode);
+struct inode *erofs_real_inode(struct inode *inode, bool *need_iput);
 #else
-static inline void erofs_rafsv6_set_fops(struct inode *inode) {}
-static inline void erofs_rafsv6_set_aops(struct inode *inode) {}
+static inline int erofs_init_ishare(void) { return 0; }
+static inline void erofs_exit_ishare(void) {}
+static inline bool erofs_ishare_fill_inode(struct inode *inode) { return false; }
+static inline void erofs_ishare_free_inode(struct inode *inode) {}
+static inline struct inode *erofs_real_inode(struct inode *inode, bool *need_iput)
+{
+	*need_iput = false;
+	return inode;
+}
 #endif
 
 #define EFSCORRUPTED    EUCLEAN         /* Filesystem is corrupted */
