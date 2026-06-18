@@ -2237,6 +2237,9 @@ static enum compact_result __compact_finished(struct compact_control *cc)
 	const int migratetype = cc->migratetype;
 	int ret;
 
+	if (cc->target_migrated && cc->nr_migrated >= cc->target_migrated)
+		return COMPACT_COMPLETE;
+
 	/* Compaction run completes if the migrate and free scanner meet */
 	if (compact_scanners_met(cc)) {
 		/* Let the next compaction start anew. */
@@ -2649,6 +2652,8 @@ rescan:
 				MR_COMPACTION, &nr_succeeded);
 
 		trace_mm_compaction_migratepages(nr_migratepages, nr_succeeded);
+		if (cc->target_migrated)
+			cc->nr_migrated += nr_succeeded;
 
 		/* All pages were either migrated or will be released */
 		cc->nr_migratepages = 0;
@@ -2992,6 +2997,34 @@ static int sysctl_compaction_handler(const struct ctl_table *table, int write,
 }
 
 #if defined(CONFIG_SYSFS) && defined(CONFIG_NUMA)
+/* Best-effort compaction with a node-wide migration target. */
+static void light_compact_node(int nid, unsigned long nr_pages)
+{
+	pg_data_t *pgdat = NODE_DATA(nid);
+	struct compact_control cc = {
+		.order = -1,
+		.mode = MIGRATE_ASYNC,
+		.ignore_skip_hint = true,
+		.whole_zone = false,
+		.target_migrated = nr_pages,
+		.gfp_mask = GFP_KERNEL,
+	};
+	int zoneid;
+
+	for (zoneid = MAX_NR_ZONES - 1; zoneid >= 0; zoneid--) {
+		struct zone *zone = &pgdat->node_zones[zoneid];
+
+		if (!populated_zone(zone))
+			continue;
+		if (fatal_signal_pending(current) ||
+		    cc.nr_migrated >= cc.target_migrated)
+			break;
+
+		cc.zone = zone;
+		compact_zone(&cc, NULL);
+	}
+}
+
 static ssize_t compact_store(struct device *dev,
 			     struct device_attribute *attr,
 			     const char *buf, size_t count)
@@ -2999,6 +3032,27 @@ static ssize_t compact_store(struct device *dev,
 	int nid = dev->id;
 
 	if (nid >= 0 && nid < nr_node_ids && node_online(nid)) {
+		char *orig, *s, *compact_size, *p;
+		unsigned long bytes, nr_pages;
+
+		orig = kstrdup(buf, GFP_KERNEL);
+		if (!orig)
+			return -ENOMEM;
+
+		s = strstrip(orig);
+		/* The first field is ignored, as in the original interface. */
+		strsep(&s, ",");
+		compact_size = strsep(&s, ",");
+		if (compact_size) {
+			bytes = memparse(compact_size, &p);
+			nr_pages = bytes / PAGE_SIZE;
+			if (nr_pages)
+				light_compact_node(nid, nr_pages);
+			kfree(orig);
+			return count;
+		}
+		kfree(orig);
+
 		/* Flush pending updates to the LRU lists */
 		lru_add_drain_all();
 
