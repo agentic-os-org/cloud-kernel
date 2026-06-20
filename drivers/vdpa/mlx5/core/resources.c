@@ -2,7 +2,13 @@
 /* Copyright (c) 2020 Mellanox Technologies Ltd. */
 
 #include <linux/mlx5/driver.h>
+#include <linux/moduleparam.h>
 #include "mlx5_vdpa.h"
+
+int mlx5_vdpa_max_iotlb_entries = 2048;
+module_param_named(max_iotlb_entries, mlx5_vdpa_max_iotlb_entries, int, 0444);
+MODULE_PARM_DESC(max_iotlb_entries,
+		 "Maximum number of iotlb entries. (default: 2048)");
 
 static int alloc_pd(struct mlx5_vdpa_dev *dev, u32 *pdn, u16 uid)
 {
