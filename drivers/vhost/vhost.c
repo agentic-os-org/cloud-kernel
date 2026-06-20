@@ -293,7 +293,7 @@ static void __vhost_worker_flush(struct vhost_worker *worker)
 
 	vhost_worker_queue(worker, &flush.work);
 	/*
-	 * Drop mutex in case our worker is killed and it needs to take the
+	 * Drop mutex in case our worker is killed and cleanup needs to take the
 	 * mutex to force cleanup.
 	 */
 	mutex_unlock(&worker->mutex);
@@ -977,6 +977,9 @@ EXPORT_SYMBOL_GPL(vhost_dev_set_owner);
 
 static struct vhost_iotlb *iotlb_alloc(void)
 {
+	if (max_iotlb_entries <= 0)
+		return NULL;
+
 	return vhost_iotlb_alloc(max_iotlb_entries,
 				 VHOST_IOTLB_FLAG_RETIRE);
 }
@@ -995,6 +998,7 @@ void vhost_dev_reset_owner(struct vhost_dev *dev, struct vhost_iotlb *umem)
 	vhost_dev_cleanup(dev);
 
 	dev->umem = umem;
+
 	/* We don't need VQ locks below since vhost_dev_cleanup makes sure
 	 * VQs aren't running.
 	 */
@@ -1268,7 +1272,7 @@ static inline void __user *__vhost_get_user(struct vhost_virtqueue *vq,
 					    int type)
 {
 	void __user *uaddr = vhost_vq_meta_fetch(vq,
-			     (u64)(uintptr_t)addr, size, type);
+				     (u64)(uintptr_t)addr, size, type);
 	if (uaddr)
 		return uaddr;
 
@@ -1283,7 +1287,7 @@ static inline void __user *__vhost_get_user(struct vhost_virtqueue *vq,
 	} else { \
 		__typeof__(ptr) to = \
 			(__typeof__(ptr)) __vhost_get_user(vq, ptr,	\
-					  sizeof(*ptr), VHOST_ADDR_USED); \
+							  sizeof(*ptr), VHOST_ADDR_USED); \
 		if (to != NULL) \
 			ret = __put_user(x, to); \
 		else \
@@ -1548,7 +1552,7 @@ done:
 EXPORT_SYMBOL(vhost_chr_write_iter);
 
 __poll_t vhost_chr_poll(struct file *file, struct vhost_dev *dev,
-			    poll_table *wait)
+		    poll_table *wait)
 {
 	__poll_t mask = 0;
 
@@ -1791,6 +1795,8 @@ static long vhost_set_memory(struct vhost_dev *d, struct vhost_memory __user *m)
 		return -EOPNOTSUPP;
 	if (mem.nregions > max_mem_regions)
 		return -E2BIG;
+	if (max_iotlb_entries <= 0)
+		return -EINVAL;
 	newmem = kvzalloc(struct_size(newmem, regions, mem.nregions),
 			GFP_KERNEL);
 	if (!newmem)
@@ -2085,7 +2091,11 @@ int vhost_init_device_iotlb(struct vhost_dev *d)
 	struct vhost_iotlb *niotlb, *oiotlb;
 	int i;
 
+	if (max_iotlb_entries <= 0)
+		return -EINVAL;
+
 	niotlb = iotlb_alloc();
+
 	if (!niotlb)
 		return -ENOMEM;
 
@@ -2180,7 +2190,7 @@ done:
 EXPORT_SYMBOL_GPL(vhost_dev_ioctl);
 
 /* TODO: This is really inefficient.  We need something like get_user()
- * (instruction directly accesses the data, with an exception table entry
+ * (instruction directly accessing the data, with an exception table entry
  * returning -EFAULT). See Documentation/arch/x86/exception-tables.rst.
  */
 static int set_bit_to_user(int nr, void __user *addr)
