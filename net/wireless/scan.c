@@ -3317,7 +3317,8 @@ int cfg80211_wext_siwscan(struct net_device *dev,
 				err = -EINVAL;
 				goto out;
 			}
-			memcpy(creq->ssids[0].ssid, wreq->essid, wreq->essid_len);
+			memcpy(creq->ssids[0].ssid, wreq->essid,
+			       wreq->essid_len);
 			creq->ssids[0].ssid_len = wreq->essid_len;
 		}
 		if (wreq->scan_type == IW_SCAN_TYPE_PASSIVE) {
