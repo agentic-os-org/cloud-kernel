@@ -4250,6 +4250,7 @@ static void hwsim_virtio_rx_work(struct work_struct *work)
 	spin_unlock_irqrestore(&hwsim_virtio_lock, flags);
 
 	skb->data = skb->head;
+	len = min(len, skb_end_offset(skb));
 	skb_set_tail_pointer(skb, len);
 	hwsim_virtio_handle_cmd(skb);
 
