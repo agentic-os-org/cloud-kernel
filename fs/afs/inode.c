@@ -789,6 +789,8 @@ void afs_evict_inode(struct inode *inode)
 
 	ASSERTCMP(inode->i_ino, ==, vnode->fid.vnode);
 
+	/* Make sure the lock work isn't still running. */
+	flush_delayed_work(&vnode->lock_work);
 	truncate_inode_pages_final(&inode->i_data);
 	clear_inode(inode);
 
