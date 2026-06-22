@@ -23,7 +23,7 @@
 /*
  * Handle invalidation of an mmap'd file.  We invalidate all the PTEs referring
  * to the pages in this file's pagecache, forcing the kernel to go through
- * ->fault() or ->page_mkwrite() - at which point we can handle invalidation
+ * ->fault() or ->mkwrite - at which point we can handle invalidation
  * more fully.
  */
 void afs_invalidate_mmap_work(struct work_struct *work)
@@ -189,6 +189,11 @@ static void afs_break_some_callbacks(struct afs_server *server,
 	size_t i;
 
 	volume = afs_lookup_volume_rcu(server->cell, vid);
+	if (!volume) {
+		/* Ignore breaks on unknown volumes. */
+		*_count = 0;
+		return;
+	}
 
 	/* TODO: Find all matching volumes if we couldn't match the server and
 	 * break them anyway.
