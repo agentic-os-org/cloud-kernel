@@ -363,7 +363,6 @@ static int recv_pkt(struct sk_buff *skb, struct net_device *dev,
 	}
 
 	return NET_RX_SUCCESS;
-
 drop:
 	dev->stats.rx_dropped++;
 	return NET_RX_DROP;
@@ -1009,14 +1008,21 @@ static int get_l2cap_conn(char *buf, bdaddr_t *addr, u8 *addr_type,
 
 	hci_dev_lock(hdev);
 	hcon = hci_conn_hash_lookup_le(hdev, addr, *addr_type);
-	hci_dev_unlock(hdev);
-
-	if (!hcon)
+	if (!hcon) {
+		hci_dev_unlock(hdev);
+		hci_dev_put(hdev);
 		return -ENOENT;
+	}
 
-	*conn = (struct l2cap_conn *)hcon->l2cap_data;
+	if (hcon->l2cap_data)
+		*conn = l2cap_conn_get(hcon->l2cap_data);
+	else
+		*conn = NULL;
 
 	BT_DBG("conn %p dst %pMR type %d", *conn, &hcon->dst, hcon->dst_type);
+
+	hci_dev_unlock(hdev);
+	hci_dev_put(hdev);
 
 	return 0;
 }
@@ -1149,18 +1155,22 @@ static ssize_t lowpan_control_write(struct file *fp,
 		if (conn) {
 			struct lowpan_peer *peer;
 
-			if (!is_bt_6lowpan(conn->hcon))
+			if (!is_bt_6lowpan(conn->hcon)) {
+				l2cap_conn_put(conn);
 				return -EINVAL;
+			}
 
 			peer = lookup_peer(conn);
 			if (peer) {
 				BT_DBG("6LoWPAN connection already exists");
+				l2cap_conn_put(conn);
 				return -EALREADY;
 			}
 
 			BT_DBG("conn %p dst %pMR type %d user %d", conn,
 			       &conn->hcon->dst, conn->hcon->dst_type,
 			       addr_type);
+			l2cap_conn_put(conn);
 		}
 
 		ret = bt_6lowpan_connect(&addr, addr_type);
@@ -1176,6 +1186,8 @@ static ssize_t lowpan_control_write(struct file *fp,
 			return ret;
 
 		ret = bt_6lowpan_disconnect(conn, addr_type);
+		if (conn)
+			l2cap_conn_put(conn);
 		if (ret < 0)
 			return ret;
 
@@ -1286,12 +1298,12 @@ static struct notifier_block bt_6lowpan_dev_notifier = {
 static int __init bt_6lowpan_init(void)
 {
 	lowpan_enable_debugfs = debugfs_create_file_unsafe("6lowpan_enable",
-							   0644, bt_debugfs,
-							   NULL,
-							   &lowpan_enable_fops);
+						   0644, bt_debugfs,
+						   NULL,
+						   &lowpan_enable_fops);
 	lowpan_control_debugfs = debugfs_create_file("6lowpan_control", 0644,
-						     bt_debugfs, NULL,
-						     &lowpan_control_fops);
+					     bt_debugfs, NULL,
+					     &lowpan_control_fops);
 
 	return register_netdevice_notifier(&bt_6lowpan_dev_notifier);
 }
