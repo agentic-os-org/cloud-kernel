@@ -1258,7 +1258,7 @@ static int parse_sid(struct smb_sid *psid, char *end_of_acl)
 		/* BB add length check to make sure that we do not have huge
 			num auths and therefore go off the end */
 		cifs_dbg(FYI, "RID 0x%x\n",
-			 le32_to_cpu(psid->sub_auth[psid->num_subauth-1]));
+			le32_to_cpu(psid->sub_auth[psid->num_subauth-1]));
 	}
 #endif
 
@@ -1556,7 +1556,7 @@ static struct smb_ntsd *get_cifs_acl_by_path(struct cifs_sb_info *cifs_sb,
 
 /* Retrieve an ACL from the server */
 struct smb_ntsd *get_cifs_acl(struct cifs_sb_info *cifs_sb,
-				      struct inode *inode, const char *path,
+			      struct inode *inode, const char *path,
 			       u32 *pacllen, u32 info)
 {
 	struct smb_ntsd *pntsd = NULL;
