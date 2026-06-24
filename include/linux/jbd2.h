@@ -1820,7 +1820,7 @@ static inline int jbd2_handle_buffer_credits(handle_t *handle)
 #define EFSBADCRC	EBADMSG		/* Bad CRC detected */
 #define EFSCORRUPTED	EUCLEAN		/* Filesystem is corrupted */
 
-DECLARE_STATIC_KEY_FALSE(__jbd2_proxy_exec_enabled);
+#if IS_ENABLED(CONFIG_JBD2)
 /*
  * When we get lock, we determine whether the proxy exec path should be taken based on
  * the user's configuration.
@@ -1830,7 +1830,7 @@ DECLARE_STATIC_KEY_FALSE(__jbd2_proxy_exec_enabled);
  */
 static inline bool jbd2_proxy_exec_enabled(journal_t *journal, bool lock)
 {
-	if (!static_branch_unlikely(&__jbd2_proxy_exec_enabled))
+	if (sched_simplified_proxy_exec_disabled())
 		return false;
 
 	if (lock)
@@ -1848,6 +1848,17 @@ static inline bool jbd2_proxy_exec_try_get(journal_t *journal)
 {
 	return atomic_inc_not_zero(&journal->proxy_exec_refcount);
 }
+#else
+static inline bool jbd2_proxy_exec_enabled(journal_t *journal, bool lock)
+{
+	return false;
+}
+
+static inline bool jbd2_proxy_exec_try_get(journal_t *journal)
+{
+	return false;
+}
+#endif
 
 extern void jbd2_proxy_exec_put(journal_t *journal);
 #endif	/* _LINUX_JBD2_H */
