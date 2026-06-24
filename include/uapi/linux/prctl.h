@@ -263,4 +263,10 @@ struct prctl_mm_map {
 #define PR_GET_IDENTITY			1000
 #define PR_SET_IDENTITY			1001
 
+/* The following ID values are reserved and MUST NOT be used by applications */
+#define PR_RESERVED0			1100
+#define PR_RESERVED1			1101
+#define PR_RESERVED2			1102
+#define PR_RESERVED3			1103
+
 #endif /* _LINUX_PRCTL_H */
