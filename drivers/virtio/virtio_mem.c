@@ -2275,7 +2275,7 @@ static int virtio_mem_sbm_unplug_any_free_sb_online(struct virtio_mem *vm,
 	struct page *page;
 	int rc, sb_id, contig_sbs = 0;
 
-	for (sb_id = 0; sb_id < vm->sbm.sbs_per_mb && *nb_sb; sb_id++) {
+	for (sb_id = nr_vmemmap_sbs; sb_id < vm->sbm.sbs_per_mb && *nb_sb; sb_id++) {
 		/* Count the maximum contiguous free subblocks starting from the sb_id */
 		while (sb_id + contig_sbs < vm->sbm.sbs_per_mb) {
 			pfn = PFN_DOWN(block_addr + (sb_id + contig_sbs) * vm->sbm.sb_size);
@@ -2298,28 +2298,37 @@ static int virtio_mem_sbm_unplug_any_free_sb_online(struct virtio_mem *vm,
 		}
 
 		if (contig_sbs) {
-			/*
-			 * No need to check if contiguous subblocks are plugged,
-			 * their presence in the Buddy allocator confirms they are.
-			 */
-			rc = virtio_mem_sbm_unplug_sb_online(vm, mb_id, sb_id,
-							     contig_sbs, false);
-			if (!rc) {
-				sb_id += contig_sbs;
-				*nb_sb -= contig_sbs;
-				contig_sbs = 0;
-			} else if (rc == -EBUSY) {
-				/* Fallback to single subblocks. */
-				while (contig_sbs--) {
-					rc = virtio_mem_sbm_unplug_sb_online(
-						vm, mb_id, sb_id++, 1, false);
-					if (!rc)
-						*nb_sb -= 1;
-					else if (rc != -EBUSY)
-						return rc;
+			/* If possible, try to unplug the contig subblocks in one shot. */
+			if (virtio_mem_sbm_test_sb_plugged(vm, mb_id, sb_id,
+							   contig_sbs)) {
+				rc = virtio_mem_sbm_unplug_sb_online(
+					vm, mb_id, sb_id, contig_sbs, false);
+				if (!rc) {
+					sb_id += contig_sbs;
+					*nb_sb -= contig_sbs;
+					contig_sbs = 0;
+					continue;
+				} else if (rc != -EBUSY)
+					return rc;
+			}
+
+			/* Fallback to single subblocks. */
+			for (; contig_sbs > 0 && sb_id < vm->sbm.sbs_per_mb;
+			     contig_sbs--, sb_id++) {
+				/* Find the next candidate subblock */
+				while (!virtio_mem_sbm_test_sb_plugged(
+					vm, mb_id, sb_id, 1)) {
+					sb_id++;
+					contig_sbs--;
 				}
-			} else
-				return rc;
+
+				rc = virtio_mem_sbm_unplug_sb_online(
+					vm, mb_id, sb_id, 1, false);
+				if (!rc)
+					*nb_sb -= 1;
+				else if (rc != -EBUSY)
+					return rc;
+			}
 		}
 	}
 
