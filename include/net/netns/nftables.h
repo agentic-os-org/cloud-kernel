@@ -14,8 +14,7 @@ struct netns_nftables {
 	unsigned int		base_seq;
 	u8			gencursor;
 	u8			validate_state;
-
-	CK_KABI_RESERVE(1)
+	u64			tstamp;
 };
 
 #endif
