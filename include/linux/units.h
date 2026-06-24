@@ -3,6 +3,9 @@
 #define _LINUX_UNITS_H
 
 #include <linux/kernel.h>
+#define HZ_PER_KHZ		1000UL
+#define KHZ_PER_MHZ		1000UL
+#define HZ_PER_MHZ		1000000UL
 
 #define ABSOLUTE_ZERO_MILLICELSIUS -273150
 

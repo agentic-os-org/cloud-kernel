@@ -72,5 +72,6 @@
 #define ARM64_HAS_ECV				64
 #define ARM64_HAS_WFXT				65
 #define ARM64_NCAPS				66
+#define ARM64_WORKAROUND_SPECULATIVE_AT_NVHE	48
 
 #endif /* __ASM_CPUCAPS_H */
