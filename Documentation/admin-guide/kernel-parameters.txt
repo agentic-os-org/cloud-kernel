@@ -4777,6 +4777,9 @@
 	reclaim_pt	[KNL]
 			Enable page table reclaim when calling MADV_DONTNEED.
 
+	refine_time_statistics [X86,PV_OPS]
+			Refined time statistics specifically for secure container usecases.
+
 	refscale.holdoff= [KNL]
 			Set test-start holdoff period.  The purpose of
 			this parameter is to delay the start of the

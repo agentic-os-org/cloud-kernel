@@ -3722,6 +3722,10 @@ extern bool need_ht_stable(void);
 extern void swake_up_all_locked(struct swait_queue_head *q);
 extern void __prepare_to_swait(struct swait_queue_head *q, struct swait_queue *wait);
 
+#ifdef CONFIG_PARAVIRT
+extern bool __read_mostly refine_time_statistics;
+#endif
+
 #ifdef CONFIG_PREEMPT_DYNAMIC
 extern int preempt_dynamic_mode;
 extern int sched_dynamic_mode(const char *str);
