@@ -23,6 +23,7 @@
 #include <linux/spinlock.h>
 #include <linux/string.h>
 
+#define AGGREGATOR_MAX_GPIOS 512
 
 /*
  * GPIO Aggregator sysfs interface
@@ -118,7 +119,7 @@ static int aggr_parse(struct gpio_aggregator *aggr)
 	char *name, *offsets;
 	int error = 0;
 
-	bitmap = bitmap_alloc(ARCH_NR_GPIOS, GFP_KERNEL);
+	bitmap = bitmap_alloc(AGGREGATOR_MAX_GPIOS, GFP_KERNEL);
 	if (!bitmap)
 		return -ENOMEM;
 
@@ -141,13 +142,13 @@ static int aggr_parse(struct gpio_aggregator *aggr)
 		}
 
 		/* GPIO chip + offset(s) */
-		error = bitmap_parselist(offsets, bitmap, ARCH_NR_GPIOS);
+		error = bitmap_parselist(offsets, bitmap, AGGREGATOR_MAX_GPIOS);
 		if (error) {
 			pr_err("Cannot parse %s: %d\n", offsets, error);
 			goto free_bitmap;
 		}
 
-		for_each_set_bit(i, bitmap, ARCH_NR_GPIOS) {
+		for_each_set_bit(i, bitmap, AGGREGATOR_MAX_GPIOS) {
 			error = aggr_add_gpio(aggr, name, i, &n);
 			if (error)
 				goto free_bitmap;
