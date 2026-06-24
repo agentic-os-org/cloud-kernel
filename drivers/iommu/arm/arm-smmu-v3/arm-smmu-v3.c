@@ -1420,7 +1420,19 @@ static void arm_smmu_evtq_read_events(struct arm_smmu_device *smmu)
 	do {
 		while (!queue_remove_raw(q, evt)) {
 			u8 id = FIELD_GET(EVTQ_0_ID, evt[0]);
+#ifdef CONFIG_ARCH_PHYTIUM
+			if (read_cpuid_id() == MIDR_PHYTIUM_FTC862 &&
+			    read_sysreg_s(SYS_AIDR_EL1) == PHYTIUM_CPU_SOCID_PS24080) {
+				u8 type = FIELD_GET(EVTQ_0_ID, evt[0]);
+				u64 addr = FIELD_GET(EVTQ_2_ADDR, evt[2]);
 
+				if (type == EVT_ID_TRANSLATION_FAULT &&
+					addr == TRANSLATE_INVALID_ADDR)
+					dev_dbg_ratelimited(smmu->dev,
+						"Spurious fault at iova=0, skipped\n");
+					continue;
+			}
+#endif
 			dev_info(smmu->dev, "event 0x%02x received:\n", id);
 			for (i = 0; i < ARRAY_SIZE(evt); ++i)
 				dev_info(smmu->dev, "\t0x%016llx\n",
