@@ -35,7 +35,7 @@ static int __init rich_container_enable(char *str)
 {
 	sysctl_rich_container_enable = 1;
 
-#ifndef CONFIG_SCHEDSTATS_HOST
+#if defined(CONFIG_SCHEDSTATS) && !defined(CONFIG_SCHEDSTATS_HOST)
 	/* If enable the rich container, the schedstats should be enabled.
 	 * We can't change the static branch directly of sched_schedstats
 	 * because the jump label have been not set up. So we change the
