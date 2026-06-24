@@ -6156,7 +6156,7 @@ static void fr_apply_vma(struct vm_area_struct *vma)
 	unsigned long next;
 	spinlock_t *pml;
 	pmd_t *pmdp = NULL;
-	pmd_t pmd;
+	pmd_t __maybe_unused pmd;
 	bool applied = false;
 
 	do {
