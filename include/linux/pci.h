@@ -466,7 +466,6 @@ struct pci_dev {
 	unsigned int	no_vf_scan:1;		/* Don't scan for VFs after IOV enablement */
 	unsigned int	no_command_memory:1;	/* No PCI_COMMAND_MEMORY */
 	unsigned int	broken_bus_reset:1;	/* Abnormal bus reset */
-	unsigned int	enable_vpp:1;		/* Change the sequence of operation lights */
 	pci_dev_flags_t dev_flags;
 	atomic_t	enable_cnt;	/* pci_enable_device has been called */
 
@@ -525,7 +524,7 @@ struct pci_dev {
 
 	unsigned long	priv_flags;	/* Private flags for the PCI driver */
 
-	CK_KABI_RESERVE(1)
+	CK_KABI_USE(1, unsigned int enable_vpp:1) /* Change the sequence of operation lights */
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
