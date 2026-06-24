@@ -501,6 +501,37 @@ static phys_addr_t pgd_pgtable_alloc(int shift)
 	return pa;
 }
 
+static phys_addr_t __split_pgtable_alloc(int shift)
+{
+	void *ptr = (void *)__get_free_page(GFP_ATOMIC | __GFP_ZERO | __GFP_NOKFENCE);
+
+	BUG_ON(!ptr);
+
+	/* Ensure the zeroed page is visible to the page table walker */
+	dsb(ishst);
+	return __pa(ptr);
+}
+
+static phys_addr_t split_pgtable_alloc(int shift)
+{
+	phys_addr_t pa = __split_pgtable_alloc(shift);
+
+	/*
+	 * Call proper page table ctor in case later we need to
+	 * call core mm functions like apply_to_page_range() on
+	 * this pre-allocated page table.
+	 *
+	 * We don't select ARCH_ENABLE_SPLIT_PMD_PTLOCK if pmd is
+	 * folded, and if so pagetable_pte_ctor() becomes nop.
+	 */
+	if (shift == PAGE_SHIFT)
+		BUG_ON(!pgtable_pte_page_ctor_atomic(phys_to_page(pa)));
+	else if (shift == PMD_SHIFT)
+		BUG_ON(!pgtable_pmd_page_ctor_atomic(phys_to_page(pa)));
+
+	return pa;
+}
+
 /*
  * This function can only be used to modify existing table entries,
  * without allocating new levels of table. Note that this permits the
@@ -1091,7 +1122,7 @@ static void split_pmd_mapping(pud_t *pudp, unsigned long addr, unsigned long end
 			 * Allocate a new pmd page to re-initialize
 			 * corresponding ptes.
 			 */
-			pte_phys = pgd_pgtable_alloc(PAGE_SHIFT);
+			pte_phys = split_pgtable_alloc(PAGE_SHIFT);
 			split_pmd = pfn_pmd(__phys_to_pfn(pte_phys), orig_prot);
 
 			/*
@@ -1101,15 +1132,15 @@ static void split_pmd_mapping(pud_t *pudp, unsigned long addr, unsigned long end
 			if (addr & ~PMD_MASK)
 				alloc_init_cont_pte(&split_pmd, addr & PMD_MASK, addr,
 						    phys & PMD_MASK, prot,
-						    pgd_pgtable_alloc, new_flags);
+						    split_pgtable_alloc, new_flags);
 			if (next & ~PMD_MASK)
 				alloc_init_cont_pte(&split_pmd, next,
 						    (next + PMD_SIZE) & PMD_MASK,
 						    phys + next - addr, prot,
-						    pgd_pgtable_alloc, new_flags);
+						    split_pgtable_alloc, new_flags);
 
 			alloc_init_cont_pte(&split_pmd, addr, next, phys, prot,
-					    pgd_pgtable_alloc, flags);
+					    split_pgtable_alloc, flags);
 
 			/*
 			 * Obey the break-before-make rule to split the page
@@ -1153,7 +1184,7 @@ static void split_pud_mapping(p4d_t *p4dp, unsigned long addr, unsigned long end
 			orig_prot = __pgprot(pgprot_val(pte_pgprot(pud_pte(pud))) |
 							PUD_TYPE_TABLE);
 
-			pmd_phys = pgd_pgtable_alloc(PMD_SHIFT);
+			pmd_phys = split_pgtable_alloc(PMD_SHIFT);
 			split_pud = pfn_pud(__phys_to_pfn(pmd_phys), orig_prot);
 
 			/*
@@ -1163,15 +1194,15 @@ static void split_pud_mapping(p4d_t *p4dp, unsigned long addr, unsigned long end
 			if (addr & ~PUD_MASK)
 				alloc_init_cont_pmd(&split_pud, addr & PUD_MASK,
 						    addr, phys & PUD_MASK,
-						    prot, pgd_pgtable_alloc, new_flags);
+						    prot, split_pgtable_alloc, new_flags);
 			if (next & ~PUD_MASK)
 				alloc_init_cont_pmd(&split_pud, next,
 						    (next + PUD_SIZE) & PUD_MASK,
 						    phys + next - addr,
-						    prot, pgd_pgtable_alloc, new_flags);
+						    prot, split_pgtable_alloc, new_flags);
 
 			alloc_init_cont_pmd(&split_pud, addr, next, phys, prot,
-					    pgd_pgtable_alloc, flags);
+					    split_pgtable_alloc, flags);
 
 			/*
 			 * Obey the break-before-make rule to split the page
