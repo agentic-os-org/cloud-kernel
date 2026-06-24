@@ -2800,12 +2800,23 @@ static int validate_and_copy_set_tun(const struct nlattr *attr,
 static bool validate_nsh(const struct nlattr *attr, bool is_mask,
 			 bool is_push_nsh, bool log)
 {
+	struct nlattr *nsh_key = attr;
 	struct sw_flow_match match;
 	struct sw_flow_key key;
 	int ret = 0;
 
+	if (is_push_nsh) {
+		/* There must be one and only one NSH header. */
+		if (!nla_ok(nsh_key, nla_len(attr)) ||
+		    nla_total_size(nla_len(nsh_key)) != nla_len(attr) ||
+		    nla_type(nsh_key) != OVS_KEY_ATTR_NSH)
+			return false;
+
+		nsh_key = nla_data(attr);
+	}
+
 	ovs_match_init(&match, &key, true, NULL);
-	ret = nsh_key_put_from_nlattr(attr, &match, is_mask,
+	ret = nsh_key_put_from_nlattr(nsh_key, &match, is_mask,
 				      is_push_nsh, log);
 	return !ret;
 }
@@ -3367,7 +3378,7 @@ static int __ovs_nla_copy_actions(struct net *net, const struct nlattr *attr,
 					return -EINVAL;
 			}
 			mac_proto = MAC_PROTO_NONE;
-			if (!validate_nsh(nla_data(a), false, true, true))
+			if (!validate_nsh(a, false, true, true))
 				return -EINVAL;
 			break;
 
