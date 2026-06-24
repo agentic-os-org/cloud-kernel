@@ -289,6 +289,7 @@ int vfio_pci_core_match(struct vfio_device *core_vdev, char *buf);
 int vfio_pci_core_enable(struct vfio_pci_core_device *vdev);
 void vfio_pci_core_disable(struct vfio_pci_core_device *vdev);
 void vfio_pci_core_finish_enable(struct vfio_pci_core_device *vdev);
+int vfio_pci_core_setup_barmap(struct vfio_pci_core_device *vdev, int bar);
 pci_ers_result_t vfio_pci_core_aer_err_detected(struct pci_dev *pdev,
 						pci_channel_state_t state);
 
@@ -296,4 +297,33 @@ static inline bool vfio_pci_is_vga(struct pci_dev *pdev)
 {
 	return (pdev->class >> 8) == PCI_CLASS_DISPLAY_VGA;
 }
+
+#define VFIO_IOWRITE_DECLARATION(size) \
+int vfio_pci_core_iowrite##size(struct vfio_pci_core_device *vdev,	\
+			bool test_mem, u##size val, void __iomem *io);
+
+VFIO_IOWRITE_DECLARATION(8)
+VFIO_IOWRITE_DECLARATION(16)
+VFIO_IOWRITE_DECLARATION(32)
+#ifdef iowrite64
+VFIO_IOWRITE_DECLARATION(64)
+#endif
+
+bool vfio_pci_core_range_intersect_range(loff_t buf_start, size_t buf_cnt,
+					 loff_t reg_start, size_t reg_cnt,
+					 loff_t *buf_offset,
+					 size_t *intersect_count,
+					 size_t *register_offset);
+
+#define VFIO_IOREAD_DECLARATION(size) \
+int vfio_pci_core_ioread##size(struct vfio_pci_core_device *vdev,	\
+			bool test_mem, u##size *val, void __iomem *io);
+
+VFIO_IOREAD_DECLARATION(8)
+VFIO_IOREAD_DECLARATION(16)
+VFIO_IOREAD_DECLARATION(32)
+#ifdef ioread64
+VFIO_IOREAD_DECLARATION(64)
+#endif
+
 #endif /* VFIO_PCI_CORE_H  */

@@ -78,22 +78,22 @@ int main(void)
 
 	for (i = 0, test = tests; test->expected_segments; test++, i++) {
 		struct page *pages[MAX_PAGES];
-		struct sg_table st;
-		struct scatterlist *sg;
+		struct sg_append_table append = {};
+		int ret;
 
 		set_pages(pages, test->pfn, test->num_pages);
 
-		sg = __sg_alloc_table_from_pages(&st, pages, test->num_pages, 0,
-				test->size, test->max_seg, NULL, 0, GFP_KERNEL);
-		assert(PTR_ERR_OR_ZERO(sg) == test->alloc_ret);
+		ret = sg_alloc_table_from_pages_segment(&append.sgt, pages, test->num_pages, 0,
+				test->size, test->max_seg, GFP_KERNEL);
+		assert(ret == test->alloc_ret);
 
 		if (test->alloc_ret)
 			continue;
 
-		VALIDATE(st.nents == test->expected_segments, &st, test);
-		VALIDATE(st.orig_nents == test->expected_segments, &st, test);
+		VALIDATE(append.sgt.nents == test->expected_segments, &append.sgt, test);
+		VALIDATE(append.sgt.orig_nents == test->expected_segments, &append.sgt, test);
 
-		sg_free_table(&st);
+		sg_free_table(&append.sgt);
 	}
 
 	assert(i == (sizeof(tests) / sizeof(tests[0])) - 1);

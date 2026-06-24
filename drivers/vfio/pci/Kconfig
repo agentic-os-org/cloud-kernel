@@ -61,5 +61,7 @@ config VFIO_PCI_ZDEV
 
 	  Say Y here.
 
+source "drivers/vfio/pci/virtio/Kconfig"
+
 endif
 endif
