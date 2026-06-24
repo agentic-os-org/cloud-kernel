@@ -140,6 +140,8 @@
 #include <net/tcp.h>
 #include <net/busy_poll.h>
 
+#include <net/bonding.h>
+
 static DEFINE_MUTEX(proto_list_mutex);
 static LIST_HEAD(proto_list);
 
@@ -2030,6 +2032,22 @@ void sk_free_unlock_clone(struct sock *sk)
 }
 EXPORT_SYMBOL_GPL(sk_free_unlock_clone);
 
+static inline struct net_device *netdev_first_slave_rcu(struct net_device *master)
+{
+	struct bonding *bond;
+	struct slave *first_slave;
+
+	if (netif_is_bond_master(master)) {
+		bond = netdev_priv(master);
+		first_slave = bond_first_slave_rcu(bond);
+
+		if (likely(first_slave))
+			return first_slave->dev;
+	}
+
+	return NULL;
+}
+
 void sk_setup_caps(struct sock *sk, struct dst_entry *dst)
 {
 	u32 max_segs = 1;
@@ -2476,6 +2494,50 @@ static void sk_leave_memory_pressure(struct sock *sk)
 
 DEFINE_STATIC_KEY_FALSE(net_high_order_alloc_disable_key);
 
+static inline struct page *alloc_frag_pages(int numa_node, gfp_t gfp,
+					    unsigned int order)
+{
+	struct page *page = NULL;
+
+	if (numa_node != NUMA_NO_NODE)
+		page = alloc_pages_node(numa_node, gfp, order);
+
+	if (!page)
+		page = alloc_pages(gfp, order);
+
+	return page;
+}
+
+static int get_numa_node_for_sock(struct sock *sk)
+{
+	struct net_device *slave_netdev;
+	struct net_device *netdev;
+	struct dst_entry *dst;
+	int numa_node = NUMA_NO_NODE;
+
+	dst = sk_dst_get(sk);
+	if (!dst)
+		return NUMA_NO_NODE;
+
+	netdev = READ_ONCE(dst->dev);
+
+	rcu_read_lock();
+	slave_netdev = netdev_first_slave_rcu(netdev);
+	if (slave_netdev)
+		netdev = slave_netdev;
+
+	if (netdev->features & NETIF_F_NOCACHE_COPY) {
+		numa_node = dev_to_node(&netdev->dev);
+		if (unlikely(!(sk->sk_route_caps & NETIF_F_NOCACHE_COPY)))
+			sk->sk_route_caps |= NETIF_F_NOCACHE_COPY;
+	}
+
+	rcu_read_unlock();
+
+	dst_release(dst);
+	return numa_node;
+}
+
 /**
  * skb_page_frag_refill - check that a page_frag contains enough room
  * @sz: minimum size of the fragment we want to get
@@ -2486,7 +2548,8 @@ DEFINE_STATIC_KEY_FALSE(net_high_order_alloc_disable_key);
  * no guarantee that allocations succeed. Therefore, @sz MUST be
  * less or equal than PAGE_SIZE.
  */
-bool skb_page_frag_refill(unsigned int sz, struct page_frag *pfrag, gfp_t gfp)
+static bool skb_page_frag_refill_numa(unsigned int sz, struct page_frag *pfrag,
+				      gfp_t gfp, int numa_node)
 {
 	if (pfrag->page) {
 		if (page_ref_count(pfrag->page) == 1) {
@@ -2502,7 +2565,7 @@ bool skb_page_frag_refill(unsigned int sz, struct page_frag *pfrag, gfp_t gfp)
 	if (SKB_FRAG_PAGE_ORDER &&
 	    !static_branch_unlikely(&net_high_order_alloc_disable_key)) {
 		/* Avoid direct reclaim but allow kswapd to wake */
-		pfrag->page = alloc_pages((gfp & ~__GFP_DIRECT_RECLAIM) |
+		pfrag->page = alloc_frag_pages(numa_node, (gfp & ~__GFP_DIRECT_RECLAIM) |
 					  __GFP_COMP | __GFP_NOWARN |
 					  __GFP_NORETRY,
 					  SKB_FRAG_PAGE_ORDER);
@@ -2511,18 +2574,24 @@ bool skb_page_frag_refill(unsigned int sz, struct page_frag *pfrag, gfp_t gfp)
 			return true;
 		}
 	}
-	pfrag->page = alloc_page(gfp);
+	pfrag->page = alloc_frag_pages(numa_node, gfp, 0);
 	if (likely(pfrag->page)) {
 		pfrag->size = PAGE_SIZE;
 		return true;
 	}
 	return false;
 }
+
+bool skb_page_frag_refill(unsigned int sz, struct page_frag *pfrag, gfp_t gfp)
+{
+	return skb_page_frag_refill_numa(sz, pfrag, gfp, NUMA_NO_NODE);
+}
 EXPORT_SYMBOL(skb_page_frag_refill);
 
 bool sk_page_frag_refill(struct sock *sk, struct page_frag *pfrag)
 {
-	if (likely(skb_page_frag_refill(32U, pfrag, sk->sk_allocation)))
+	if (likely(skb_page_frag_refill_numa(32U, pfrag, sk->sk_allocation,
+					     get_numa_node_for_sock(sk))))
 		return true;
 
 	sk_enter_memory_pressure(sk);
