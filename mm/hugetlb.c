@@ -5840,7 +5840,18 @@ int huge_pmd_unshare(struct mm_struct *mm, struct vm_area_struct *vma,
 		return 0;
 
 	pud_clear(pud);
+<<<<<<< HEAD
 	put_page(virt_to_page(ptep));
+=======
+	/*
+	 * Once our caller drops the rmap lock, some other process might be
+	 * using this page table as a normal, non-hugetlb page table.
+	 * Wait for pending gup_fast() in other threads to finish before letting
+	 * that happen.
+	 */
+	tlb_remove_table_sync_one();
+	atomic_dec(&virt_to_page(ptep)->pt_share_count);
+>>>>>>> 952596b08c7 (mm/hugetlb: fix huge_pmd_unshare() vs GUP-fast race)
 	mm_dec_nr_pmds(mm);
 	/*
 	 * This update of passed address optimizes loops sequentially
