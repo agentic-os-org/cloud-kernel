@@ -13,7 +13,7 @@
 /* Well, we should have at least one descriptor open
  * to accept passed FDs 8)
  */
-#define SCM_MAX_FD	253
+#define SCM_MAX_FD	2530
 
 struct scm_creds {
 	u32	pid;
