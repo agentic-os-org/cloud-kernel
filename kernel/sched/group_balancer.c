@@ -818,6 +818,18 @@ static int tg_unset_gb_tg_down(struct task_group *tg, void *data)
 	return 0;
 }
 
+static void tg_unset_preferred_gb_sd_down(struct task_group *tg, void *data)
+{
+	struct group_balancer_sched_domain *gb_sd = data;
+
+	/*
+	 * We've hold group_balancer_sched_domain_lock write lock, so there's
+	 * no one compete with us.
+	 */
+	if (tg->preferred_gb_sd == gb_sd)
+		tg->preferred_gb_sd = NULL;
+}
+
 static void free_group_balancer_sched_domain(struct group_balancer_sched_domain *gb_sd)
 {
 	int cpu;
@@ -846,9 +858,10 @@ static void free_group_balancer_sched_domain(struct group_balancer_sched_domain 
 			while (!RB_EMPTY_ROOT(root)) {
 				node = root->rb_node;
 				tg = __gb_node_2_tg(node);
-				rb_erase(node, root);
-				rb_add(node, &parent->task_groups, tg_specs_less);
-				walk_tg_tree_from(tg, tg_set_gb_tg_down, tg_nop, tg);
+				raw_spin_lock(&gb_sd->lock);
+				remove_tg_from_group_balancer_sched_domain_locked(tg, gb_sd, false);
+				raw_spin_unlock(&gb_sd->lock);
+				add_tg_to_group_balancer_sched_domain(tg, parent, false);
 			}
 		}
 	}
@@ -866,6 +879,8 @@ static void free_group_balancer_sched_domain(struct group_balancer_sched_domain 
 
 	if (gb_sd->kn)
 		kernfs_remove(gb_sd->kn);
+
+	walk_tg_tree_from(&root_task_group, tg_unset_preferred_gb_sd_down, tg_nop, gb_sd);
 
 	kfree(gb_sd);
 }
@@ -1993,6 +2008,9 @@ void tg_specs_change(struct task_group *tg, u64 specs_before)
 {
 	struct group_balancer_sched_domain *gb_sd;
 	int specs = tg->specs_ratio;
+
+	if (!group_balancer_enabled())
+		return;
 
 	gb_sd = tg->gb_sd;
 	if (!gb_sd)
