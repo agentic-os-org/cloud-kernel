@@ -1574,6 +1574,7 @@ bool cpu_has_amu_feat(int cpu)
 {
 	return cpumask_test_cpu(cpu, &amu_cpus);
 }
+EXPORT_SYMBOL(cpu_has_amu_feat);
 
 /* Initialize the use of AMU counters for frequency invariance */
 extern void init_cpu_freq_invariance_counters(void);
