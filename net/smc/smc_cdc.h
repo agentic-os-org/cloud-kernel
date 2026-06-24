@@ -18,6 +18,7 @@
 #include <linux/compiler.h>
 
 #include "smc.h"
+#include "smc_inet.h"
 #include "smc_core.h"
 #include "smc_wr.h"
 
@@ -319,7 +320,8 @@ void smc_cdc_tx_handler_rwwi(struct ib_wc *wc);
 static inline bool smc_has_rcv_shutdown(struct sock *sk)
 {
 	if (smc_sock_is_inet_sock(sk))
-		return smc_cdc_rxed_any_close_or_senddone(&smc_sk(sk)->conn);
+		return (isck_smc_negotiation_get_flags(smc_sk(sk)) & SMC_NEGOTIATION_ABORT_FLAG) ||
+			smc_cdc_rxed_any_close_or_senddone(&smc_sk(sk)->conn);
 	else
 		return sk->sk_shutdown & RCV_SHUTDOWN;
 }

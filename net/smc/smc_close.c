@@ -145,6 +145,8 @@ void smc_close_active_abort(struct smc_sock *smc)
 	struct sock *sk = &smc->sk;
 	bool release_clcsock = false;
 
+	sock_hold(sk);
+
 	if (smc_sk_state(sk) != SMC_INIT) {
 		/* sock locked */
 		if (smc_sock_is_inet_sock(sk)) {
@@ -160,24 +162,23 @@ void smc_close_active_abort(struct smc_sock *smc)
 	case SMC_APPCLOSEWAIT1:
 	case SMC_APPCLOSEWAIT2:
 		smc_sk_set_state(sk, SMC_PEERABORTWAIT);
+		sock_put(sk); /* (postponed) passive closing */
 		smc_close_cancel_work(smc);
 		if (smc_sk_state(sk) != SMC_PEERABORTWAIT)
 			break;
 		smc_sk_set_state(sk, SMC_CLOSED);
-		smc_conn_free(&smc->conn);
-		sock_put(sk); /* (postponed) passive closing */
 		break;
 	case SMC_PEERCLOSEWAIT1:
 	case SMC_PEERCLOSEWAIT2:
 	case SMC_PEERFINCLOSEWAIT:
 		smc_sk_set_state(sk, SMC_PEERABORTWAIT);
+		sock_put(sk); /* passive closing */
 		smc_close_cancel_work(smc);
 		if (smc_sk_state(sk) != SMC_PEERABORTWAIT)
 			break;
 		smc_sk_set_state(sk, SMC_CLOSED);
 		smc_conn_free(&smc->conn);
 		release_clcsock = true;
-		sock_put(sk); /* passive closing */
 		break;
 	case SMC_PROCESSABORT:
 	case SMC_APPFINCLOSEWAIT:
@@ -195,6 +196,7 @@ void smc_close_active_abort(struct smc_sock *smc)
 		break;
 	}
 
+	smc->sk.sk_shutdown |= RCV_SHUTDOWN;
 	smc_sock_set_flag(sk, SOCK_DEAD);
 
 	sk->sk_state_change(sk);
@@ -204,6 +206,8 @@ void smc_close_active_abort(struct smc_sock *smc)
 		smc_clcsock_release(smc);
 		lock_sock(sk);
 	}
+
+	sock_put(sk);	/* sock_hold above */
 }
 
 static inline bool smc_close_sent_any_close(struct smc_connection *conn)
@@ -320,7 +324,6 @@ again:
 		break;
 	case SMC_PEERABORTWAIT:
 		smc_sk_set_state(sk, SMC_CLOSED);
-		sock_put(sk); /* (postponed) passive closing */
 		break;
 	case SMC_CLOSED:
 		/* nothing to do, add tracing in future patch */
@@ -365,7 +368,6 @@ static void smc_close_passive_abort_received(struct smc_sock *smc)
 		break;
 	case SMC_PEERABORTWAIT:
 		smc_sk_set_state(sk, SMC_CLOSED);
-		sock_put(sk); /* passive closing */
 		break;
 	case SMC_PROCESSABORT:
 	/* nothing to do, add tracing in future patch */

@@ -1516,7 +1516,7 @@ static int smc_connect_rdma(struct smc_sock *smc,
 	if (ini->first_contact_local)
 		smc_link_save_peer_info(link, aclc, ini);
 
-	if (smc_rmb_rtoken_handling(&smc->conn, link, aclc)) {
+	if (smc_rmb_rtoken_handling(&smc->conn, link, aclc, ini->first_contact_local)) {
 		reason_code = SMC_CLC_DECL_ERR_RTOK;
 		goto connect_abort;
 	}
@@ -2145,10 +2145,14 @@ struct sock *smc_accept_dequeue(struct sock *parent,
 				continue;
 			}
 			new_sk->sk_prot->unhash(new_sk);
+			lock_sock(new_sk);
+			if (!isk->use_fallback)
+				smc_conn_free(&isk->conn);
 			if (isk->clcsock) {
 				sock_release(isk->clcsock);
 				isk->clcsock = NULL;
 			}
+			release_sock(new_sk);
 			sock_put(new_sk); /* final */
 			continue;
 		}
@@ -2765,7 +2769,7 @@ static int smc_listen_rdma_finish(struct smc_sock *new_smc,
 	if (local_first)
 		smc_link_save_peer_info(link, cclc, ini);
 
-	if (smc_rmb_rtoken_handling(&new_smc->conn, link, cclc))
+	if (smc_rmb_rtoken_handling(&new_smc->conn, link, cclc, local_first))
 		return SMC_CLC_DECL_ERR_RTOK;
 
 	if (local_first) {
@@ -4422,7 +4426,8 @@ int smc_inet_release(struct socket *sock)
 	if (!smc->use_fallback) {
 		/* ret of smc_close_active do not need return to userspace */
 		smc_close_active(smc);
-		do_free = true;
+		if (smc_sk_state(sk) == SMC_CLOSED)
+			do_free = true;
 	} else {
 		if (smc_sk_state(sk) == SMC_ACTIVE)
 			sock_put(sk);	 /* sock put for passive closing */
@@ -4437,8 +4442,7 @@ out:
 
 	if (do_free) {
 		lock_sock(sk);
-		if (smc_sk_state(sk) == SMC_CLOSED)
-			smc_conn_free(&smc->conn);
+		smc_conn_free(&smc->conn);
 		release_sock(sk);
 	}
 	sock_put(sk);	/* sock hold above */

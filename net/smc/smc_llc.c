@@ -1871,7 +1871,7 @@ static void smc_llc_rmt_conf_rkey(struct smc_link_group *lgr)
 	/* first rkey entry is for receiving link */
 	rk_idx = smc_rtoken_add(link,
 				llc->rtoken[0].rmb_vaddr,
-				llc->rtoken[0].rmb_key);
+				llc->rtoken[0].rmb_key, true);
 	if (rk_idx < 0)
 		goto out_err;
 
