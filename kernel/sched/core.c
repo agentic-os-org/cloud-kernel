@@ -10459,6 +10459,12 @@ static ssize_t cpu_max_write(struct kernfs_open_file *of,
 }
 #endif
 
+struct task_group *cgroup_tg(struct cgroup *cgrp)
+{
+	return container_of(global_cgroup_css(cgrp, cpu_cgrp_id),
+				struct task_group, css);
+}
+
 #ifdef CONFIG_SCHED_SLI
 static DEFINE_STATIC_KEY_TRUE(cpu_no_sched_lat);
 static int cpu_sched_lat_enabled_show(struct seq_file *m, void *v)
@@ -10548,12 +10554,6 @@ static inline enum sched_lat_count_t get_sched_lat_count_idx(u64 msecs)
 		return SCHED_LAT_1000_5000 + (msecs / 5000);
 
 	return SCHED_LAT_10000_INF;
-}
-
-struct task_group *cgroup_tg(struct cgroup *cgrp)
-{
-	return container_of(global_cgroup_css(cgrp, cpu_cgrp_id),
-				struct task_group, css);
 }
 
 void task_cpu_update_block(struct task_struct *tsk, u64 runtime)
