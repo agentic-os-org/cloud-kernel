@@ -2722,6 +2722,7 @@ int migrate_misplaced_transhuge_page(struct mm_struct *mm,
 	struct page *new_page = NULL;
 	int page_lru = page_is_file_lru(page);
 	unsigned long start = address & HPAGE_PMD_MASK;
+	bool was_writable;
 
 	new_page = alloc_pages_node(node,
 		(GFP_TRANSHUGE_LIGHT | __GFP_THISNODE),
@@ -2826,7 +2827,10 @@ out_fail:
 	count_vm_events(PGMIGRATE_FAIL, HPAGE_PMD_NR);
 	ptl = pmd_lock(mm, pmd);
 	if (pmd_same(*pmd, entry)) {
+		was_writable = pmd_savedwrite(entry);
 		entry = pmd_modify(entry, vma->vm_page_prot);
+		if (was_writable)
+			entry = pmd_mkwrite(entry);
 		set_pmd_at(mm, start, pmd, entry);
 		update_mmu_cache_pmd(vma, address, &entry);
 	}
