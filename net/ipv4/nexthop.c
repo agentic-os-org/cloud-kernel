@@ -309,7 +309,8 @@ static size_t nh_nlmsg_size_grp(struct nexthop *nh)
 	size_t sz = sizeof(struct nexthop_grp) * nhg->num_nh;
 
 	return nla_total_size(sz) +
-	       nla_total_size(2);  /* NHA_GROUP_TYPE */
+	       nla_total_size(2) +	/* NHA_GROUP_TYPE */
+	       nla_total_size(0);		/* NHA_FDB */
 }
 
 static size_t nh_nlmsg_size_single(struct nexthop *nh)
@@ -1775,15 +1776,15 @@ static int rtm_get_nexthop(struct sk_buff *in_skb, struct nlmsghdr *nlh,
 	if (err)
 		return err;
 
-	err = -ENOBUFS;
-	skb = alloc_skb(NLMSG_GOODSIZE, GFP_KERNEL);
-	if (!skb)
-		goto out;
-
 	err = -ENOENT;
 	nh = nexthop_find_by_id(net, id);
 	if (!nh)
-		goto errout_free;
+		goto out;
+
+	err = -ENOBUFS;
+	skb = nlmsg_new(nh_nlmsg_size(nh), GFP_KERNEL);
+	if (!skb)
+		goto out;
 
 	err = nh_fill_node(skb, nh, RTM_NEWNEXTHOP, NETLINK_CB(in_skb).portid,
 			   nlh->nlmsg_seq, 0);
