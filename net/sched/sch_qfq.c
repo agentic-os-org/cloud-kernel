@@ -64,8 +64,8 @@
 
                    [ MTU_SHIFT ][      FRAC_BITS    ]
                    [ MAX_INDEX    ][ MIN_SLOT_SHIFT ]
-				 ^.__grp->index = 0
-				 *.__grp->slot_shift
+			 ^.__grp->index = 0
+			 *.__grp->slot_shift
 
   where MIN_SLOT_SHIFT is derived by difference from the others.
 
@@ -349,7 +349,7 @@ static void qfq_deactivate_class(struct qfq_sched *q, struct qfq_class *cl)
 	struct qfq_aggregate *agg = cl->agg;
 
 
-	list_del(&cl->alist); /* remove from RR queue of the aggregate */
+	list_del_init(&cl->alist); /* remove from RR queue of the aggregate */
 	if (list_empty(&agg->active)) /* agg is now inactive */
 		qfq_deactivate_agg(q, agg);
 }
@@ -995,8 +995,8 @@ static struct sk_buff *agg_dequeue(struct qfq_aggregate *agg,
 	cl->deficit -= (int) len;
 
 	if (cl->qdisc->q.qlen == 0) /* no more packets, remove from list */
-		list_del(&cl->alist);
-	else if (cl->deficit < qdisc_pkt_len(cl->qdisc->ops->peek(cl->qdisc))) {
+		list_del_init(&cl->alist);
+	else if (cl->deficit < qdisc_peek_len(cl->qdisc)) {
 		cl->deficit += agg->lmax;
 		list_move_tail(&cl->alist, &agg->active);
 	}
@@ -1129,7 +1129,7 @@ static struct sk_buff *qfq_dequeue(struct Qdisc *sch)
 			 * should be however a corner case, and to
 			 * handle it, we would need to maintain an
 			 * extra num_active_aggs field.
-			*/
+			 */
 			qfq_update_agg_ts(q, in_serv_agg, requeue);
 			qfq_schedule_agg(q, in_serv_agg);
 		} else if (sch->q.qlen == 0) { /* no aggregate to serve */
