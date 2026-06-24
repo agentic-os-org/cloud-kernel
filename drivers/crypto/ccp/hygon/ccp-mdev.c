@@ -631,13 +631,6 @@ static int ccp_dev_iommu_attach_device(struct pci_dev *pdev)
 {
 	int ret;
 
-	if (!ccp_mdev_data.domain) {
-		ccp_mdev_data.domain = iommu_paging_domain_alloc(&pdev->dev);
-		if (IS_ERR(ccp_mdev_data.domain))
-			return -ENOMEM;
-		ccp_mdev_data.prot = IOMMU_READ | IOMMU_WRITE;
-	}
-
 	if (device_iommu_capable(&pdev->dev, IOMMU_CAP_CACHE_COHERENCY))
 		ccp_mdev_data.prot |= IOMMU_CACHE;
 
@@ -1822,8 +1815,10 @@ static void ccp_share_exit(void)
 	}
 	mutex_unlock(&ccp_mdev_data.lock);
 
-	if (ccp_mdev_data.domain)
+	if (ccp_mdev_data.domain) {
 		iommu_domain_free(ccp_mdev_data.domain);
+		ccp_mdev_data.domain = NULL;
+	}
 
 	misc_deregister(&ccp_misc);
 	kfree(ccp_share.vaddr);
@@ -1857,6 +1852,16 @@ static int ccp_pci_device_create(struct pci_dev *pdev,
 	int ret = -EINVAL;
 
 	mutex_lock(&ccp_mdev_data.lock);
+	if (!ccp_mdev_data.domain) {
+		ccp_mdev_data.domain = iommu_paging_domain_alloc(&pdev->dev);
+		if (IS_ERR(ccp_mdev_data.domain)) {
+			ccp_mdev_data.domain = NULL;
+			mutex_unlock(&ccp_mdev_data.lock);
+			return -ENOMEM;
+		}
+		ccp_mdev_data.prot = IOMMU_READ | IOMMU_WRITE;
+	}
+
 	i = find_first_zero_bit(&ccp_mdev_data.bitmap, MCCP_DEV_MAX);
 	if (i != MCCP_DEV_MAX)
 		bitmap_set(&ccp_mdev_data.bitmap, i, 1);
