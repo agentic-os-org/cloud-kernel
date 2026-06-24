@@ -381,11 +381,6 @@ struct fpstate {
 	/* @is_guest:		Indicator for guest state (KVM) */
 	unsigned int		is_guest	: 1;
 
-#if defined(CONFIG_X86_HYGON_LMC_SSE2_ON) || \
-	defined(CONFIG_X86_HYGON_LMC_AVX2_ON)
-	/* @kernel_state:		Kernel FPU registers state saving */
-	union fpregs_state		kernel_state;
-#endif
 	/*
 	 * @is_confidential:	Indicator for KVM confidential mode.
 	 *			The FPU registers are restored by the

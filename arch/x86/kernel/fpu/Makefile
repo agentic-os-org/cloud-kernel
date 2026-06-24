@@ -4,3 +4,5 @@
 #
 
 obj-y				+= init.o bugs.o core.o regset.o signal.o xstate.o
+obj-$(CONFIG_X86_HYGON_LMC_SSE2_ON) += hygon_nonatomic.o
+obj-$(CONFIG_X86_HYGON_LMC_AVX2_ON) += hygon_nonatomic.o

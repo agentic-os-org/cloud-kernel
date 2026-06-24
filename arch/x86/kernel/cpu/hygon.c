@@ -21,6 +21,7 @@
 # include <asm/set_memory.h>
 #endif
 #include <asm/resctrl.h>
+#include <asm/fpu/api.h>
 
 #include "cpu.h"
 
@@ -554,7 +555,6 @@ static struct attribute *c86_default_attrs[] = {
 	&nt_cpy_mini_len_attribute.attr,
 	NULL
 };
-
 const struct attribute_group hygon_c86_attr_group = {
 	.attrs = c86_default_attrs,
 	.name = "hygon_c86",
@@ -587,15 +587,6 @@ err_out:
 
 	return -1;
 }
-module_init(kobject_hygon_c86_init);
-
-static void __exit kobject_hygon_c86_exit(void)
-{
-	if (c86_features_kobj) {
-		sysfs_remove_group(c86_features_kobj, &hygon_c86_attr_group);
-		kobject_del(c86_features_kobj);
-	}
-}
-module_exit(kobject_hygon_c86_exit);
+subsys_initcall(kobject_hygon_c86_init);
 
 #endif

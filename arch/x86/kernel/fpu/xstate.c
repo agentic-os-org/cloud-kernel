@@ -711,6 +711,10 @@ static int __init init_xstate_size(void)
 	fpu_user_cfg.default_size =
 		xstate_calculate_size(fpu_user_cfg.default_features, false);
 
+#if defined(CONFIG_X86_HYGON_LMC_SSE2_ON) || \
+	defined(CONFIG_X86_HYGON_LMC_AVX2_ON)
+	fpu_kernel_nonatomic_xstate_size = KERNEL_FPU_NONATOMIC_SIZE;
+#endif
 	return 0;
 }
 
