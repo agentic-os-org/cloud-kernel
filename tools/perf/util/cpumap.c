@@ -194,10 +194,7 @@ int cpu_map__get_die(struct perf_cpu_map *map, int idx, void *data)
 	if (WARN_ONCE(die_id >> 8, "The die id number is too big.\n"))
 		return -1;
 
-	if (WARN_ONCE(s >> 8, "The socket id number is too big.\n"))
-		return -1;
-
-	return (s << 8) | (die_id & 0xff);
+	return (die_id & 0xff);
 }
 
 int cpu_map__get_core_id(int cpu)
