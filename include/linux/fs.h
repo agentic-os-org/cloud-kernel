@@ -475,7 +475,6 @@ struct address_space {
 	atomic_t                nr_duptext;
 #endif
 	struct rb_root_cached	i_mmap;
-	struct rw_semaphore	i_mmap_rwsem;
 	unsigned long		nrpages;
 	unsigned long		nrexceptional;
 	pgoff_t			writeback_index;
@@ -484,6 +483,7 @@ struct address_space {
 	errseq_t		wb_err;
 	spinlock_t		private_lock;
 	struct list_head	private_list;
+	struct rw_semaphore	i_mmap_rwsem;
 	void			*private_data;
 
 	struct fast_reflink_work *fast_reflink_work;
