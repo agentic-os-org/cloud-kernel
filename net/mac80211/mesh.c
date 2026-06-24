@@ -977,15 +977,15 @@ void ieee80211_mbss_info_change_notify(struct ieee80211_sub_if_data *sdata,
 				       u32 changed)
 {
 	struct ieee80211_if_mesh *ifmsh = &sdata->u.mesh;
-	unsigned long bits = changed;
+	unsigned long bits[] = { BITMAP_FROM_U64(changed) };
 	u32 bit;
 
-	if (!bits)
+	if (!changed)
 		return;
 
 	/* if we race with running work, worst case this work becomes a noop */
-	for_each_set_bit(bit, &bits, sizeof(changed) * BITS_PER_BYTE)
-		set_bit(bit, &ifmsh->mbss_changed);
+	for_each_set_bit(bit, bits, sizeof(changed) * BITS_PER_BYTE)
+		set_bit(bit, ifmsh->mbss_changed);
 	set_bit(MESH_WORK_MBSS_CHANGED, &ifmsh->wrkq_flags);
 	ieee80211_queue_work(&sdata->local->hw, &sdata->work);
 }
@@ -1067,7 +1067,7 @@ void ieee80211_stop_mesh(struct ieee80211_sub_if_data *sdata)
 
 	/* clear any mesh work (for next join) we may have accrued */
 	ifmsh->wrkq_flags = 0;
-	ifmsh->mbss_changed = 0;
+	memset(ifmsh->mbss_changed, 0, sizeof(ifmsh->mbss_changed));
 
 	local->fif_other_bss--;
 	atomic_dec(&local->iff_allmultis);
@@ -1522,9 +1522,9 @@ static void mesh_bss_info_changed(struct ieee80211_sub_if_data *sdata)
 	struct ieee80211_if_mesh *ifmsh = &sdata->u.mesh;
 	u32 bit, changed = 0;
 
-	for_each_set_bit(bit, &ifmsh->mbss_changed,
+	for_each_set_bit(bit, ifmsh->mbss_changed,
 			 sizeof(changed) * BITS_PER_BYTE) {
-		clear_bit(bit, &ifmsh->mbss_changed);
+		clear_bit(bit, ifmsh->mbss_changed);
 		changed |= BIT(bit);
 	}
 
