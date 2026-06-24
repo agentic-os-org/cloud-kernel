@@ -684,6 +684,26 @@ void cacheinfo_amd_init_llc_id(struct cpuinfo_x86 *c, int cpu)
 	}
 }
 
+void hygon_init_llc_id_with_num_sharing_cache(struct cpuinfo_x86 *c, int cpu)
+{
+	/*
+	* LLC ID is calculated from the number of threads
+	* sharing the cache.
+	*/
+	u32 eax, ebx, ecx, edx, num_sharing_cache = 0;
+	u32 llc_index = find_num_cache_leaves(c) - 1;
+
+	cpuid_count(0x8000001d, llc_index, &eax, &ebx, &ecx, &edx);
+	if (eax)
+		num_sharing_cache = ((eax >> 14) & 0xfff) + 1;
+
+	if (num_sharing_cache) {
+		int bits = get_count_order(num_sharing_cache);
+
+		per_cpu(cpu_llc_id, cpu) = c->apicid >> bits;
+	}
+}
+
 void cacheinfo_hygon_init_llc_id(struct cpuinfo_x86 *c, int cpu)
 {
 	/*
@@ -693,31 +713,23 @@ void cacheinfo_hygon_init_llc_id(struct cpuinfo_x86 *c, int cpu)
 	if (!cpuid_edx(0x80000006))
 		return;
 
-	if ((c->x86_model < 0x5 ||
-	     (c->x86_model >= 0x10 && c->x86_model <= 0x1f)) &&
-	    !boot_cpu_has(X86_FEATURE_HYPERVISOR)) {
-		/*
-		 * LLC is at the core complex level.
-		 * Core complex ID is ApicId[3] for these processors.
-		 */
-		per_cpu(cpu_llc_id, cpu) = c->apicid >> 3;
-	} else {
-		/*
-		 * LLC ID is calculated from the number of threads
-		 * sharing the cache.
-		 */
-		u32 eax, ebx, ecx, edx, num_sharing_cache = 0;
-		u32 llc_index = find_num_cache_leaves(c) - 1;
-
-		cpuid_count(0x8000001d, llc_index, &eax, &ebx, &ecx, &edx);
-		if (eax)
-			num_sharing_cache = ((eax >> 14) & 0xfff) + 1;
-
-		if (num_sharing_cache) {
-			int bits = get_count_order(num_sharing_cache);
-
-			per_cpu(cpu_llc_id, cpu) = c->apicid >> bits;
+	if (!boot_cpu_has(X86_FEATURE_HYPERVISOR)) {
+		if (c->x86_model < 0x5 ||
+			(c->x86_model >= 0x10 && c->x86_model <= 0x1f)) {
+			/*
+			* LLC is at the core complex level.
+			* Core complex ID is ApicId[3] for these processors.
+			*/
+			per_cpu(cpu_llc_id, cpu) = c->apicid >> 3;
+		} else if (c->x86_model == 0x6) {
+			per_cpu(cpu_llc_id, cpu) = c->apicid >> 4;
+		} else if (c->x86_model == 0x7) {
+			per_cpu(cpu_llc_id, cpu) = c->apicid >> 5;
+		} else {
+			hygon_init_llc_id_with_num_sharing_cache(c, cpu);
 		}
+	} else {
+		hygon_init_llc_id_with_num_sharing_cache(c, cpu);
 	}
 }
 
