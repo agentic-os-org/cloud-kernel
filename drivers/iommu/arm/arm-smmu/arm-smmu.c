@@ -1402,8 +1402,6 @@ static int arm_smmu_quirk_add_device(struct device *dev)
 	    pci_match_id(hw_blacklist_pci_ids, to_pci_dev(dev)))
 		return -ENODEV;
 
-	if (to_pci_dev(dev)->vendor == 0x1b4b)
-		return -ENODEV;
 
 	return 0;
 }
@@ -1464,6 +1462,7 @@ static struct iommu_device *arm_smmu_probe_device(struct device *dev)
 		for (i = 0; i < num; i++) {
 			fwid = FWID_READ(fwspec->ids[i]);
 			iommu_fwspec_add_ids(dev, &fwid, 1);
+			fwspec = dev_iommu_fwspec_get(dev);
 		}
 	}
 
