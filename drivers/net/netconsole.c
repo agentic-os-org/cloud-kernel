@@ -805,7 +805,12 @@ static void send_ext_msg_udp(struct netconsole_target *nt, const char *msg,
 
 		this_chunk = min(body_len - offset,
 				 MAX_PRINT_CHUNK - this_header);
-		if (WARN_ON_ONCE(this_chunk <= 0))
+		if (WARN_ON_ONCE(this_chunk < 0))
+			/* this_chunk could be zero if all the previous
+			 * message used all the buffer. This is not a
+			 * problem, userdata will be sent in the next
+			 * iteration
+			 */
 			return;
 
 		memcpy(buf + this_header, body + offset, this_chunk);
