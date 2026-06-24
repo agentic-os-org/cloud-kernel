@@ -340,6 +340,7 @@ struct hdac_bus {
 	bool align_bdle_4k:1;		/* BDLE align 4K boundary */
 	bool reverse_assign:1;		/* assign devices in reverse order */
 	bool corbrp_self_clear:1;	/* CORBRP clears itself after reset */
+	bool cmd_resend:1;		/* command resend */
 	bool polling_mode:1;
 	bool needs_damn_long_delay:1;
 	bool hygon_dword_access:1;

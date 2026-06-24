@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+title: Phytium HDA Controller Device Tree Bindings
+
+description: |
+  The HDA bus (High Definition Audio sound bus) is a serial link for digital
+  audio data transfer between devices in the system.
+
+maintainers:
+  - Tian Wei <tianwei@phytium.com.cn>
+
+properties:
+  $nodename:
+    pattern: "phytium,hda"
+
+  compatible:
+    oneOf:
+      - const: phytium,hda
+      - items:
+          - enum:
+              - phytium,hda
+          - const: phytium,hda
+
+  reg:
+    minItems: 4
+
+  interrupts:
+    minItems: 3
+
+  clocks:
+    minItems: 1
+
+  clock-names:
+    minItems: 1
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+
+examples:
+  - |
+
+    hda@28206000 {
+	compatible = "phytium,hda";
+	reg = <0 0x28206000 0x0 0x1000>;
+	interrupts = <GIC_SPI 23 IRQ_TYPE_LEVEL_HIGH>;
+	clocks = <&sysclk_48mhz>;
+	clock-names = "phytium_hda_clk";
+    };
