@@ -1529,6 +1529,8 @@ int mem_cgroup_scan_tasks(struct mem_cgroup *memcg,
 	int ret = 0;
 	int i = 0;
 
+	BUG_ON(memcg == root_mem_cgroup);
+
 	for_each_mem_cgroup_tree(iter, memcg) {
 		struct css_task_iter it;
 		struct task_struct *task;
