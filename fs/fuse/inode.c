@@ -320,7 +320,7 @@ void fuse_change_attributes(struct inode *inode, struct fuse_attr *attr,
 
 		if (oldsize != attr->size) {
 			truncate_pagecache(inode, attr->size);
-			if (!fc->explicit_inval_data)
+			if (!fc->explicit_inval_data && !fc->explicit_lazy_inval_data)
 				inval = true;
 		} else if (fc->auto_inval_data) {
 			struct timespec64 new_mtime = {
@@ -342,6 +342,11 @@ void fuse_change_attributes(struct inode *inode, struct fuse_attr *attr,
 				else
 					inval = true;
 			}
+		}
+
+		if (test_and_clear_bit(FUSE_I_DATA_STALE, &fi->state)) {
+			WARN_ON(is_wb);
+			inval = true;
 		}
 
 		if (inval)
@@ -489,6 +494,7 @@ int fuse_reverse_inval_inode(struct fuse_conn *fc, u64 nodeid,
 	struct inode *inode;
 	pgoff_t pg_start;
 	pgoff_t pg_end;
+	bool lazy_inval = false;
 
 	inode = fuse_ilookup(fc, nodeid, NULL);
 	if (!inode)
@@ -499,6 +505,12 @@ int fuse_reverse_inval_inode(struct fuse_conn *fc, u64 nodeid,
 	fi->attr_version = atomic64_inc_return(&fc->attr_version);
 	spin_unlock(&fi->lock);
 
+	if (fc->explicit_lazy_inval_data && !fc->writeback_cache &&
+	    (offset == 0 && len <= 0)) {
+		set_bit(FUSE_I_DATA_STALE, &fi->state);
+		lazy_inval = true;
+	}
+
 	fuse_invalidate_attr(inode);
 	forget_all_cached_acls(inode);
 	fuse_invalidate_inval_version(inode);
@@ -508,8 +520,10 @@ int fuse_reverse_inval_inode(struct fuse_conn *fc, u64 nodeid,
 			pg_end = -1;
 		else
 			pg_end = (offset + len - 1) >> PAGE_SHIFT;
-		invalidate_inode_pages2_range(inode->i_mapping,
-					      pg_start, pg_end);
+
+		if (!lazy_inval)
+			invalidate_inode_pages2_range(inode->i_mapping,
+						      pg_start, pg_end);
 	}
 	iput(inode);
 	return 0;
@@ -1202,6 +1216,8 @@ static void process_init_reply(struct fuse_mount *fm, struct fuse_args *args,
 				fc->auto_inval_data = 1;
 			else if (flags & FUSE_EXPLICIT_INVAL_DATA)
 				fc->explicit_inval_data = 1;
+			else if (flags & FUSE_EXPLICIT_LAZY_INVAL_DATA)
+				fc->explicit_lazy_inval_data = 1;
 			if (flags & FUSE_DO_READDIRPLUS) {
 				fc->do_readdirplus = 1;
 				if (flags & FUSE_READDIRPLUS_AUTO)
@@ -1339,7 +1355,7 @@ static void fuse_prepare_send_init(struct fuse_mount *fm,
 		FUSE_INVALDIR_ALLENTRY | FUSE_DELETE_STALE |
 		FUSE_DIRECT_IO_ALLOW_MMAP | FUSE_NO_EXPORT_SUPPORT |
 		FUSE_HAS_RESEND | FUSE_SEPARATE_BACKGROUND | FUSE_HAS_RECOVERY |
-		FUSE_WRITE_ALIGNMENT;
+		FUSE_WRITE_ALIGNMENT | FUSE_EXPLICIT_LAZY_INVAL_DATA;
 #ifdef CONFIG_FUSE_DAX
 	if (fm->fc->dax)
 		flags |= FUSE_MAP_ALIGNMENT;

@@ -213,6 +213,8 @@ enum {
 	FUSE_I_INIT_RDPLUS,
 	/** An operation changing file size is in progress  */
 	FUSE_I_SIZE_UNSTABLE,
+	/** Hint that page cache may be stale  */
+	FUSE_I_DATA_STALE,
 	/* Bad inode */
 	FUSE_I_BAD,
 };
@@ -851,6 +853,9 @@ struct fuse_conn {
 
 	/** Filesystem is fully responsible for page cache invalidation. */
 	unsigned explicit_inval_data:1;
+
+	/** Like the previous one, but the invalidation will be delayed */
+	unsigned explicit_lazy_inval_data:1;
 
 	/** Does the filesystem support readdirplus? */
 	unsigned do_readdirplus:1;
