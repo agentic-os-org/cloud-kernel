@@ -149,8 +149,19 @@ static void srat_detect_node(struct cpuinfo_x86 *c)
 	unsigned int apicid = c->apicid;
 
 	node = numa_cpu_node(cpu);
-	if (node == NUMA_NO_NODE)
-		node = per_cpu(cpu_llc_id, cpu);
+	if (node == NUMA_NO_NODE) {
+		node = get_llc_id(cpu);
+		/*
+		 * LLC ID may exceed MAX_NUMNODES on certain platforms when
+		 * numa=off or BIOS doesn't report SRAT table. Validate and
+		 * fall back to node 0 to prevent out-of-bounds access.
+		 */
+		if (!numa_valid_node(node)) {
+			pr_warn_once("CPU %d: LLC ID %d exceeds MAX_NUMNODES (%d), falling back to node 0\n",
+				     cpu, node, MAX_NUMNODES);
+			node = 0;
+		}
+	}
 
 	/*
 	 * On multi-fabric platform (e.g. Numascale NumaChip) a
