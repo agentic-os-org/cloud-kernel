@@ -29,7 +29,7 @@ extern struct mutex mpam_list_lock;
 extern u16 mpam_partid_max;
 extern spinlock_t partid_max_lock;
 
-extern int ddr_cpufreq;
+extern int yitian710_ddrc_freq;
 
 #define MPAM_MDEV_NAME "mpam_mdev"
 #define MPAM_MDEV_CLASS_NAME "mpam_mdev"
@@ -710,19 +710,19 @@ vpartid_offset_show(struct device *dev, struct device_attribute *attr,
 static DEVICE_ATTR_RO(vpartid_offset);
 
 static ssize_t
-ddr_cpufreq_show(struct device *dev, struct device_attribute *attr,
+ddrc_freq_show(struct device *dev, struct device_attribute *attr,
 		 char *buf)
 {
-	return sprintf(buf, "%d\n", READ_ONCE(ddr_cpufreq));
+	return sprintf(buf, "%d\n", READ_ONCE(yitian710_ddrc_freq));
 }
-static DEVICE_ATTR_RO(ddr_cpufreq);
+static DEVICE_ATTR_RO(ddrc_freq);
 
 static struct attribute *mpam_mdev_dev_attrs[] = {
 	&dev_attr_partids.attr,
 	&dev_attr_class_type.attr,
 	&dev_attr_domain_id.attr,
 	&dev_attr_vpartid_offset.attr,
-	&dev_attr_ddr_cpufreq.attr,
+	&dev_attr_ddrc_freq.attr,
 	NULL,
 };
 

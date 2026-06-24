@@ -33,8 +33,8 @@
 
 #include "mpam_internal.h"
 
-int ddr_cpufreq;
-EXPORT_SYMBOL_GPL(ddr_cpufreq);
+int yitian710_ddrc_freq;
+EXPORT_SYMBOL_GPL(yitian710_ddrc_freq);
 
 DEFINE_STATIC_KEY_FALSE(mpam_enabled);
 EXPORT_SYMBOL(mpam_enabled);
@@ -952,7 +952,7 @@ static void __ris_impl_msmon_read(void *arg)
 
 	mb_val = MBWU_GET(val);
 
-	mb_val = mb_val * 32 * READ_ONCE(ddr_cpufreq) * 1000000 / cycle; /* B/s */
+	mb_val = mb_val * 32 * READ_ONCE(yitian710_ddrc_freq) * 1000000 / cycle; /* B/s */
 	*(m->val) += mb_val;
 }
 
@@ -1563,10 +1563,13 @@ static int mpam_dt_parse_resource(struct mpam_msc *msc, struct device_node *np,
 				pr_err("Failed to read memory numa node id\n");
 				break;
 			}
-			err = of_property_read_u32(dev_node, "ddr-cpufreq", &ddr_cpufreq);
-			if (err) {
-				pr_err("Failed to read memory ddr cpufreq\n");
-				break;
+			if (mpam_current_machine == MPAM_YITIAN710) {
+				err = of_property_read_u32(dev_node, "ddrc-freq",
+							   &yitian710_ddrc_freq);
+				if (err) {
+					pr_err("Failed to read memory ddrc-freq\n");
+					break;
+				}
 			}
 		} else {
 			pr_err("Not a valid device\n");

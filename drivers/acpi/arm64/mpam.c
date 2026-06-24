@@ -20,8 +20,7 @@
  * the signature of the new MPAM ACPI table is named YMPM.
  */
 #define ACPI_SIG_YMPM "YMPM"
-
-extern int ddr_cpufreq;
+extern int yitian710_ddrc_freq;
 
 /* Use OEM info in MPAM ACPI table to distinguish different machine types */
 struct acpi_mpam_machine_oem_info {
@@ -141,7 +140,12 @@ static int acpi_mpam_parse_resource(struct mpam_msc *msc,
 		return mpam_ris_create(msc, res->ris_index, MPAM_CLASS_CACHE,
 				       level, cache_id);
 	case ACPI_MPAM_LOCATION_TYPE_MEMORY:
-		WRITE_ONCE(ddr_cpufreq, res->locator2);
+		/*
+		 * YMPM ACPI reports the reserved field of memory locator
+		 * descriptor as YITIAN710's DDRC frequency.
+		 */
+		if (mpam_current_machine == MPAM_YITIAN710)
+			WRITE_ONCE(yitian710_ddrc_freq, res->locator2);
 		return mpam_ris_create(msc, res->ris_index, MPAM_CLASS_MEMORY,
 				       255, res->locator1);
 	default:
