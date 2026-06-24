@@ -164,7 +164,7 @@ static int hisi_spi_debugfs_init(struct hisi_spi *hs)
 
 	struct spi_controller *master;
 
-	master = container_of(hs->dev, struct spi_controller, dev);
+	master = hs->dev->driver_data;
 	snprintf(name, 32, "hisi_spi%d", master->bus_num);
 	hs->debugfs = debugfs_create_dir(name, NULL);
 	if (!hs->debugfs)
@@ -481,6 +481,9 @@ static int hisi_spi_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	if (master->max_speed_hz == 0)
+		return dev_err_probe(dev, -EINVAL, "spi-max-frequency can't be 0\n");
+
 	ret = device_property_read_u16(dev, "num-cs",
 					&master->num_chipselect);
 	if (ret)
@@ -495,6 +498,7 @@ static int hisi_spi_probe(struct platform_device *pdev)
 	master->transfer_one = hisi_spi_transfer_one;
 	master->handle_err = hisi_spi_handle_err;
 	master->dev.fwnode = dev->fwnode;
+        master->min_speed_hz = DIV_ROUND_UP(master->max_speed_hz, CLK_DIV_MAX);
 
 	hisi_spi_hw_init(hs);
 
