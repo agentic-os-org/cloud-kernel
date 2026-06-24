@@ -1139,6 +1139,7 @@ config RICH_CONTAINER
 	depends on CGROUP_CPUACCT
 	depends on CFS_BANDWIDTH
 	depends on CPUSETS
+	depends on PID_NS
 	select SCHED_SLI
 	default n
 	help
