@@ -2224,8 +2224,24 @@ static int virtio_mem_sbm_unplug_any_sb_online(struct virtio_mem *vm,
 			return rc;
 	}
 
+	sb_id = vm->sbm.sbs_per_mb - 1;
+
+	/* If memmap_on_memory is on, try to unplug the whole block except vmemmap subblocks. */
+	if (nr_vmemmap_size && *nb_sb >= vm->sbm.sbs_per_mb - nr_vmemmap_sbs &&
+	    virtio_mem_sbm_test_sb_plugged(vm, mb_id, nr_vmemmap_sbs,
+					   vm->sbm.sbs_per_mb -
+						   nr_vmemmap_sbs)) {
+		rc = virtio_mem_sbm_unplug_sb_online(vm, mb_id, nr_vmemmap_sbs,
+				vm->sbm.sbs_per_mb - nr_vmemmap_sbs, map);
+		if (!rc) {
+			*nb_sb -= vm->sbm.sbs_per_mb - nr_vmemmap_sbs;
+			sb_id = nr_vmemmap_sbs - 1;
+		} else if (rc != -EBUSY)
+			return rc;
+	}
+
 	/* Fallback to single subblocks. */
-	for (sb_id = vm->sbm.sbs_per_mb - 1; sb_id >= 0 && *nb_sb; sb_id--) {
+	for (; sb_id >= 0 && *nb_sb; sb_id--) {
 		/* Find the next candidate subblock */
 		while (sb_id >= 0 &&
 		       !virtio_mem_sbm_test_sb_plugged(vm, mb_id, sb_id, 1))
