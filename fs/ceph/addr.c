@@ -736,8 +736,8 @@ static int writepage_nounlock(struct page *page, struct writeback_control *wbc)
 
 	if (IS_ENCRYPTED(inode)) {
 		bounce_page = fscrypt_encrypt_pagecache_blocks(page,
-						    CEPH_FSCRYPT_BLOCK_SIZE, 0,
-						    GFP_NOFS);
+					    CEPH_FSCRYPT_BLOCK_SIZE, 0,
+					    GFP_NOFS);
 		if (IS_ERR(bounce_page)) {
 			redirty_page_for_writepage(wbc, page);
 			end_page_writeback(page);
@@ -1169,6 +1169,9 @@ get_more_pages:
 					/* better not fail on first page! */
 					BUG_ON(locked_pages == 0);
 					pages[locked_pages] = NULL;
+					/* Did we just begin a new contiguous op? Nevermind! */
+					if (len == 0)
+						num_ops--;
 					redirty_page_for_writepage(wbc, page);
 					unlock_page(page);
 					break;
@@ -1371,9 +1374,9 @@ release_folios:
 			index = 0;
 			while ((index <= end) &&
 			       (nr = filemap_get_folios_tag(mapping, &index,
-						(pgoff_t)-1,
-						PAGECACHE_TAG_WRITEBACK,
-						&fbatch))) {
+					(pgoff_t)-1,
+					PAGECACHE_TAG_WRITEBACK,
+					&fbatch))) {
 				for (i = 0; i < nr; i++) {
 					page = &fbatch.folios[i]->page;
 					if (page_snap_context(page) != snapc)
