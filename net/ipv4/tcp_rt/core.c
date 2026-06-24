@@ -225,7 +225,7 @@ static void tcp_rt_sk_release_local(const struct sock *sk, struct tcp_rt *rt,
 				    const struct tcp_sock *tp)
 {
 	switch (rt->stage) {
-	case TCPRT_TYPE_NONE:
+	case TCPRT_STAGE_NONE:
 		break;
 
 	case TCPRT_STAGE_REQUEST:
