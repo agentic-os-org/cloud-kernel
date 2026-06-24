@@ -204,11 +204,15 @@ static int perf_evsel__run_ioctl(struct perf_evsel *evsel,
 				 int ioc,  void *arg,
 				 int cpu)
 {
-	int thread;
+	int thread, err;
 
 	for (thread = 0; thread < xyarray__max_y(evsel->fd); thread++) {
-		int fd = FD(evsel, cpu, thread),
-		    err = ioctl(fd, ioc, arg);
+		int fd = FD(evsel, cpu, thread);
+
+		if (fd < 0)
+			return -1;
+
+		err = ioctl(fd, ioc, arg);
 
 		if (err)
 			return err;

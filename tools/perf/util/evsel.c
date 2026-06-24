@@ -1605,9 +1605,11 @@ static int get_group_fd(struct evsel *evsel, int cpu, int thread)
 
 static void evsel__remove_fd(struct evsel *pos, int nr_cpus, int nr_threads, int thread_idx)
 {
-	for (int cpu = 0; cpu < nr_cpus; cpu++)
+	for (int cpu = 0; cpu < nr_cpus; cpu++) {
 		for (int thread = thread_idx; thread < nr_threads - 1; thread++)
 			FD(pos, cpu, thread) = FD(pos, cpu, thread + 1);
+		FD(pos, cpu, nr_threads - 1) = -1;
+	}
 }
 
 static int update_fds(struct evsel *evsel,
@@ -2820,6 +2822,8 @@ static int store_evsel_ids(struct evsel *evsel, struct evlist *evlist)
 		for (thread = 0; thread < xyarray__max_y(evsel->core.fd);
 		     thread++) {
 			int fd = FD(evsel, cpu, thread);
+			if (fd < 0)
+				continue;
 
 			if (perf_evlist__id_add_fd(&evlist->core, &evsel->core,
 						   cpu, thread, fd) < 0)
