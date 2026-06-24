@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+title: Phytium Analog To Digital Converters Device Tree Bindings
+
+description: |
+  This device is a 10-bit converter for 8 voltage channels.
+  All inputs are single ended.
+
+properties:
+  compatible:
+    items:
+      - description: Should be "phytium,adc"
+
+  reg:
+    items:
+      - description: memory window mapping address and length
+
+  interrupts:
+    items:
+      - description: Interrupt for the ADC control interface.
+
+  clocks:
+    items:
+      - description: Input clock used to derive the sample clock.
+
+  #address-cells:
+    items:
+      - description: Should be <1> (settings for the subnodes).
+
+  #size-cells:
+    items:
+      - description: Should be <0> (settings for the subnodes).
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clock
+  - #address-cells
+  - #size-cells
+
+Required subnodes:
+  - The ADC channels are configured as subnodes of the ADC.
+
+Required channel node properties:
+  - reg: should contain the hardware channel number.
+
+examples:
+  - |
+    adc0: adc@2807b000 {
+        compatible = "phytium,adc";
+        reg = <0x0 0x2807b000 0x0 0x1000>;
+        interrupts = <GIC_SPI 232 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&sysclk_48mhz>;
+
+        #address-cells = <1>;
+        ##size-cells = <0>;
+
+        channel@0 {
+            reg = <0>;
+        };
+        channel@1 {
+            reg = <1>;
+        };
+        channel@2 {
+            reg = <2>;
+        };
+        channel@3 {
+            reg = <3>;
+        };
+        channel@4 {
+            reg = <4>;
+        };
+        channel@5 {
+            reg = <5>;
+        };
+        channel@6 {
+            reg = <6>;
+        };
+        channel@7 {
+            reg = <7>;
+        };
+    };
