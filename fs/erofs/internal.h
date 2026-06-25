@@ -519,8 +519,7 @@ erofs_get_aops(struct inode *realinode, bool no_fscache)
 	if (erofs_inode_is_data_compressed(EROFS_I(realinode)->datalayout)) {
 		if (!IS_ENABLED(CONFIG_EROFS_FS_ZIP))
 			return ERR_PTR(-EOPNOTSUPP);
-		if (erofs_is_fscache_mode(realinode->i_sb) ||
-		    erofs_is_fileio_mode(EROFS_SB(realinode->i_sb)))
+		if (erofs_is_fscache_mode(realinode->i_sb))
 			return ERR_PTR(-EOPNOTSUPP);
 		return &z_erofs_aops;
 	} else if (erofs_is_rafsv6_mode(realinode->i_sb)) {
@@ -599,6 +598,16 @@ void z_erofs_deflate_exit(void);
 static inline int z_erofs_deflate_init(void) { return 0; }
 static inline int z_erofs_deflate_exit(void) { return 0; }
 #endif	/* !CONFIG_EROFS_FS_ZIP_DEFLATE */
+
+#ifdef CONFIG_EROFS_FS_BACKED_BY_FILE
+struct bio *erofs_fileio_bio_alloc(struct super_block *sb,
+				   struct erofs_map_dev *mdev);
+void erofs_fileio_submit_bio(struct bio *bio);
+#else
+static inline struct bio *erofs_fileio_bio_alloc(struct super_block *sb,
+						 struct erofs_map_dev *mdev) { return NULL; }
+static inline void erofs_fileio_submit_bio(struct bio *bio) {}
+#endif
 
 /* fscache.c */
 #ifdef CONFIG_EROFS_FS_ONDEMAND
