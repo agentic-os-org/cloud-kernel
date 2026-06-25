@@ -16,7 +16,6 @@
 #include <linux/vfio_pci_core.h>
 #include <linux/pci.h>
 #include <cxl/cxl.h>
-#include <cxl/pci.h>
 
 #include "../vfio_pci_priv.h"
 #include "vfio_cxl_priv.h"

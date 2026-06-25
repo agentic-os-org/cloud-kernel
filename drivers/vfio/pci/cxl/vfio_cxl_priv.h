@@ -10,7 +10,6 @@
 
 #include <cxl/cxl.h>
 #include <linux/types.h>
-#include <cxl/pci.h>
 
 struct vfio_pci_core_device;
 

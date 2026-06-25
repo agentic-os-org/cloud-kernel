@@ -177,6 +177,16 @@ struct cxl_dpa_partition {
 
 #define CXL_NR_PARTITIONS_MAX 2
 
+/* Register Block Identifier (RBI) */
+enum cxl_regloc_type {
+	CXL_REGLOC_RBI_EMPTY = 0,
+	CXL_REGLOC_RBI_COMPONENT,
+	CXL_REGLOC_RBI_VIRT,
+	CXL_REGLOC_RBI_MEMDEV,
+	CXL_REGLOC_RBI_PMU,
+	CXL_REGLOC_RBI_TYPES
+};
+
 /*
  * cxl_decoder flags that define the type of memory / devices this decoder
  * supports as well as configuration lock status.
@@ -319,7 +329,8 @@ void cxl_probe_component_regs(struct device *dev, void __iomem *base,
 
 int cxl_regblock_get_bar_info(const struct cxl_register_map *map, u8 *bar_index,
 			      resource_size_t *bar_offset);
-
+int cxl_get_hdm_info(struct cxl_dev_state *cxlds, u8 *count,
+		     resource_size_t *offset, resource_size_t *size);
 
 /* f951acc: split from media-ready wait */
 struct cxl_dev_state;
@@ -332,7 +343,6 @@ bool pci_cxl_reset_capable(struct pci_dev *pdev);
 
 /* register map helpers moved from cxlpci.h */
 struct pci_dev;
-enum cxl_regloc_type;
 int cxl_find_regblock(struct pci_dev *pdev, enum cxl_regloc_type type,
 		      struct cxl_register_map *map);
 int cxl_setup_regs(struct cxl_register_map *map);

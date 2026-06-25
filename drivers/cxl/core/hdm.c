@@ -495,6 +495,25 @@ int cxl_dpa_setup(struct cxl_dev_state *cxlds, const struct cxl_dpa_info *info)
 }
 EXPORT_SYMBOL_GPL(cxl_dpa_setup);
 
+int cxl_set_capacity(struct cxl_dev_state *cxlds, u64 capacity)
+{
+	struct cxl_dpa_info info = {
+		.size = capacity,
+	};
+
+	if (capacity) {
+		info.part[0].range = (struct range) {
+			.start = 0,
+			.end = capacity - 1,
+		};
+		info.part[0].mode = CXL_PARTMODE_RAM;
+		info.nr_partitions = 1;
+	}
+
+	return cxl_dpa_setup(cxlds, &info);
+}
+EXPORT_SYMBOL_NS_GPL(cxl_set_capacity, "CXL");
+
 int devm_cxl_dpa_reserve(struct cxl_endpoint_decoder *cxled,
 				resource_size_t base, resource_size_t len,
 				resource_size_t skipped)
