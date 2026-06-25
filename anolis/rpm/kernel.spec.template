@@ -1234,6 +1234,11 @@ BuildKernel %make_target %kernel_image
 %endif
 
 %if %{with_perf}
+%ifarch aarch64
+# Enable CoreSight trace decoding (links libopencsd into perf).
+# opencsd-devel is already required for aarch64 in BuildRequires above.
+%global perf_build_extra_opts CORESIGHT=1
+%endif
 # perf
 # make sure check-headers.sh is executable
 chmod +x tools/perf/check-headers.sh
