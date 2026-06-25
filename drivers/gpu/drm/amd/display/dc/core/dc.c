@@ -931,7 +931,7 @@ static void wait_for_no_pipes_pending(struct dc *dc, struct dc_state *context)
 
 struct dc *dc_create(const struct dc_init_data *init_params)
 {
-	struct dc *dc = kzalloc(sizeof(*dc), GFP_KERNEL);
+	struct dc *dc = kvzalloc(sizeof(*dc), GFP_KERNEL);
 	unsigned int full_pipe_count;
 
 	if (NULL == dc)
@@ -978,7 +978,7 @@ struct dc *dc_create(const struct dc_init_data *init_params)
 	return dc;
 
 construct_fail:
-	kfree(dc);
+	kvfree(dc);
 
 alloc_fail:
 	return NULL;
@@ -1008,7 +1008,7 @@ void dc_deinit_callbacks(struct dc *dc)
 void dc_destroy(struct dc **dc)
 {
 	dc_destruct(*dc);
-	kfree(*dc);
+	kvfree(*dc);
 	*dc = NULL;
 }
 
