@@ -11,6 +11,7 @@ struct erofs_fileio_rq {
 	struct bio bio;
 	struct kiocb iocb;
 	struct super_block *sb;
+	refcount_t ref;
 };
 
 struct erofs_fileio {
@@ -26,29 +27,30 @@ static void erofs_fileio_ki_complete(struct kiocb *iocb, long ret, long res2)
 	struct bio_vec *bvec;
 	struct bvec_iter_all iter_all;
 
-	DBG_BUGON(rq->bio.bi_end_io);
-	if (ret > 0) {
-		if (ret != rq->bio.bi_iter.bi_size) {
-			bio_advance(&rq->bio, ret);
-			zero_fill_bio(&rq->bio);
-		}
-		ret = 0;
-	}
-	bio_for_each_segment_all(bvec, &rq->bio, iter_all) {
-		struct page *page = bvec->bv_page;
+	if (ret >= 0 && ret != rq->bio.bi_iter.bi_size)
+		ret = -EIO;
+	if (!rq->bio.bi_end_io) {
+		bio_for_each_segment_all(bvec, &rq->bio, iter_all) {
+			struct page *page = bvec->bv_page;
 
-		DBG_BUGON(PageUptodate(page));
-		erofs_onlinepage_end(page, ret);
+			DBG_BUGON(PageUptodate(page));
+			erofs_onlinepage_end(page, ret < 0);
+		}
+	} else {
+		if (ret < 0 && !rq->bio.bi_status)
+			rq->bio.bi_status = errno_to_blk_status(ret);
+		rq->bio.bi_end_io(&rq->bio);
 	}
 	bio_uninit(&rq->bio);
-	kfree(rq);
+	if (refcount_dec_and_test(&rq->ref))
+		kfree(rq);
 }
 
 static void erofs_fileio_rq_submit(struct erofs_fileio_rq *rq)
 {
 	const struct cred *old_cred;
 	struct iov_iter iter;
-	int ret;
+	ssize_t ret;
 
 	if (!rq)
 		return;
@@ -65,6 +67,8 @@ static void erofs_fileio_rq_submit(struct erofs_fileio_rq *rq)
 	revert_creds(old_cred);
 	if (ret != -EIOCBQUEUED)
 		erofs_fileio_ki_complete(&rq->iocb, ret, 0);
+	if (refcount_dec_and_test(&rq->ref))
+		kfree(rq);
 }
 
 static struct erofs_fileio_rq *erofs_fileio_rq_alloc(struct super_block *sb,
@@ -77,7 +81,20 @@ static struct erofs_fileio_rq *erofs_fileio_rq_alloc(struct super_block *sb,
 	rq->bio.bi_opf = REQ_OP_READ;
 	rq->iocb.ki_filp = mdev->m_fp;
 	rq->sb = sb;
+	refcount_set(&rq->ref, 2);
 	return rq;
+}
+
+struct bio *erofs_fileio_bio_alloc(struct super_block *sb,
+				   struct erofs_map_dev *mdev)
+{
+	return &erofs_fileio_rq_alloc(sb, mdev)->bio;
+}
+
+void erofs_fileio_submit_bio(struct bio *bio)
+{
+	return erofs_fileio_rq_submit(container_of(bio, struct erofs_fileio_rq,
+						   bio));
 }
 
 static int erofs_fileio_scan_folio(struct erofs_fileio *io,
