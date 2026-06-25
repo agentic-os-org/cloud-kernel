@@ -197,6 +197,7 @@ static void erofs_fileio_readahead(struct readahead_control *rac)
 		if (err && err != -EINTR)
 			erofs_err(realinode->i_sb, "readahead error at page %lu @ nid %llu",
 				  page->index, EROFS_I(realinode)->nid);
+		put_page(page);
 	}
 	erofs_fileio_rq_submit(io.rq);
 	if (need_iput)
