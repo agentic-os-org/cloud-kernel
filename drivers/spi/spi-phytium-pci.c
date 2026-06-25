@@ -23,6 +23,7 @@
 #include "spi-phytium.h"
 
 #define DRIVER_NAME "phytium_spi_pci"
+#define DRIVER_VERSION	"1.0.0"
 
 static int phytium_spi_pci_probe(struct pci_dev *pdev,
 			    const struct pci_device_id *id)
@@ -106,6 +107,7 @@ static const struct pci_device_id phytium_device_pci_tbl[] = {
 	{ PCI_VDEVICE(PHYTIUM, 0xdc2c) },
 	{},
 };
+MODULE_DEVICE_TABLE(pci, phytium_device_pci_tbl);
 
 static struct pci_driver phytium_spi_pci_driver = {
 	.name		= DRIVER_NAME,
@@ -122,3 +124,5 @@ module_pci_driver(phytium_spi_pci_driver);
 MODULE_AUTHOR("Yiqun Zhang <zhangyiqun@phytium.com.cn>");
 MODULE_DESCRIPTION("PCI Driver for Phytium SPI controller core");
 MODULE_LICENSE("GPL v2");
+MODULE_VERSION(DRIVER_VERSION);
+
