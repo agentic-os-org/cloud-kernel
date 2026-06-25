@@ -41,7 +41,7 @@ static const struct smb_sid sid_unix_users = {1, 1, {0, 0, 0, 0, 0, 22},
 
 /* S-1-22-2 Unmapped Unix groups */
 static const struct smb_sid sid_unix_groups = { 1, 1, {0, 0, 0, 0, 0, 22},
-		{cpu_to_le32(2), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0} };
+		{cpu_to_le32(2), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0} };
 
 /*
  * See http://technet.microsoft.com/en-us/library/hh509017(v=ws.10).aspx
@@ -1131,6 +1131,12 @@ int smb_inherit_dacl(struct ksmbd_conn *conn,
 		if (pace_size > aces_size ||
 		    pace_size < offsetof(struct smb_ace, sid) +
 				CIFS_SID_BASE_SIZE)
+			break;
+
+		if (parent_aces->sid.num_subauth > SID_MAX_SUB_AUTHORITIES ||
+		    pace_size < offsetof(struct smb_ace, sid) +
+				CIFS_SID_BASE_SIZE +
+				sizeof(__le32) * parent_aces->sid.num_subauth)
 			break;
 
 		if (parent_aces->sid.num_subauth > SID_MAX_SUB_AUTHORITIES ||
