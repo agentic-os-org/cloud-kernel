@@ -466,7 +466,7 @@ static void __inode_add_lru(struct inode *inode, bool rotate)
 	if (!mapping_shrinkable(&inode->i_data))
 		return;
 
-	if (list_lru_add(&inode->i_sb->s_inode_lru, &inode->i_lru))
+	if (list_lru_add_obj(&inode->i_sb->s_inode_lru, &inode->i_lru))
 		this_cpu_inc(nr_unused);
 	else if (rotate) {
 		/* Keep KIDLED_YOUNG and REFERENCED set synchronously */
@@ -486,7 +486,7 @@ void inode_add_lru(struct inode *inode)
 
 static void inode_lru_list_del(struct inode *inode)
 {
-	if (list_lru_del(&inode->i_sb->s_inode_lru, &inode->i_lru))
+	if (list_lru_del_obj(&inode->i_sb->s_inode_lru, &inode->i_lru))
 		this_cpu_dec(nr_unused);
 }
 
@@ -845,7 +845,7 @@ again:
  * with this flag set because they are the inodes that are out of order.
  */
 static enum lru_status inode_lru_isolate(struct list_head *item,
-		struct list_lru_one *lru, spinlock_t *lru_lock, void *arg)
+		struct list_lru_one *lru, void *arg)
 {
 	struct list_head *freeable = arg;
 	struct inode	*inode = container_of(item, struct inode, i_lru);
@@ -887,7 +887,7 @@ static enum lru_status inode_lru_isolate(struct list_head *item,
 	if (inode_has_buffers(inode) || !mapping_empty(&inode->i_data)) {
 		inode_pin_lru_isolating(inode);
 		spin_unlock(&inode->i_lock);
-		spin_unlock(lru_lock);
+		spin_unlock(&lru->lock);
 		if (remove_inode_buffers(inode)) {
 			unsigned long reap;
 			reap = invalidate_mapping_pages(&inode->i_data, 0, -1);
@@ -898,7 +898,6 @@ static enum lru_status inode_lru_isolate(struct list_head *item,
 			mm_account_reclaimed_pages(reap);
 		}
 		inode_unpin_lru_isolating(inode);
-		spin_lock(lru_lock);
 		return LRU_RETRY;
 	}
 
@@ -935,7 +934,7 @@ long prune_icache_sb(struct super_block *sb, struct shrink_control *sc)
  * we only want to know the real free slab.
  */
 static enum lru_status inode_lru_cold_count(struct list_head *item,
-					    struct list_lru_one *lru, spinlock_t *lock, void *arg)
+					    struct list_lru_one *lru, void *arg)
 {
 	struct inode *inode = container_of(item, struct inode, i_lru);
 	static int inode_size;
@@ -1012,7 +1011,7 @@ static inline bool valid_cold_inode_check(struct inode *inode)
 static __maybe_unused enum lru_status
 cold_inode_lru_isolate_reap(struct list_head *item,
 			    struct list_lru_one *lru,
-			    spinlock_t *lru_lock, void *arg)
+			    void *arg)
 {
 	struct kidled_slab_param *s_param = (struct kidled_slab_param *)arg;
 	unsigned long threshold = s_param->threshold;

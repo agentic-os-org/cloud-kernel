@@ -234,7 +234,7 @@ static int binder_update_page_range(struct binder_alloc *alloc, int allocate,
 		if (page->page_ptr) {
 			trace_binder_alloc_lru_start(alloc, index);
 
-			on_lru = list_lru_del(&binder_alloc_lru, &page->lru);
+			on_lru = list_lru_del_obj(&binder_alloc_lru, &page->lru);
 			WARN_ON(!on_lru);
 
 			trace_binder_alloc_lru_end(alloc, index);
@@ -285,7 +285,7 @@ free_range:
 
 		trace_binder_free_lru_start(alloc, index);
 
-		ret = list_lru_add(&binder_alloc_lru, &page->lru);
+		ret = list_lru_add_obj(&binder_alloc_lru, &page->lru);
 		WARN_ON(!ret);
 
 		trace_binder_free_lru_end(alloc, index);
@@ -846,7 +846,7 @@ void binder_alloc_deferred_release(struct binder_alloc *alloc)
 			if (!alloc->pages[i].page_ptr)
 				continue;
 
-			on_lru = list_lru_del(&binder_alloc_lru,
+			on_lru = list_lru_del_obj(&binder_alloc_lru,
 					      &alloc->pages[i].lru);
 			page_addr = alloc->buffer + i * PAGE_SIZE;
 			binder_alloc_debug(BINDER_DEBUG_BUFFER_ALLOC,
@@ -967,7 +967,7 @@ void binder_alloc_vma_close(struct binder_alloc *alloc)
 /**
  * binder_alloc_free_page() - shrinker callback to free pages
  * @item:   item to free
- * @lock:   lock protecting the item
+ * @lru:    list_lru instance of the item
  * @cb_arg: callback argument
  *
  * Called from list_lru_walk() in binder_shrink_scan() to free
@@ -975,9 +975,8 @@ void binder_alloc_vma_close(struct binder_alloc *alloc)
  */
 enum lru_status binder_alloc_free_page(struct list_head *item,
 				       struct list_lru_one *lru,
-				       spinlock_t *lock,
 				       void *cb_arg)
-	__must_hold(lock)
+	__must_hold(&lru->lock)
 {
 	struct mm_struct *mm = NULL;
 	struct binder_lru_page *page = container_of(item,
@@ -1008,7 +1007,7 @@ enum lru_status binder_alloc_free_page(struct list_head *item,
 		goto err_invalid_vma;
 
 	list_lru_isolate(lru, item);
-	spin_unlock(lock);
+	spin_unlock(&lru->lock);
 
 	if (vma) {
 		trace_binder_unmap_user_start(alloc, index);
@@ -1027,7 +1026,6 @@ enum lru_status binder_alloc_free_page(struct list_head *item,
 
 	trace_binder_unmap_kernel_end(alloc, index);
 
-	spin_lock(lock);
 	mutex_unlock(&alloc->mutex);
 	return LRU_REMOVED_RETRY;
 
@@ -1289,4 +1287,3 @@ int binder_alloc_copy_from_buffer(struct binder_alloc *alloc,
 	return binder_alloc_do_buffer_copy(alloc, false, buffer, buffer_offset,
 					   dest, bytes);
 }
-

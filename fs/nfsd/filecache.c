@@ -323,7 +323,7 @@ nfsd_file_check_writeback(struct nfsd_file *nf)
 static bool nfsd_file_lru_add(struct nfsd_file *nf)
 {
 	set_bit(NFSD_FILE_REFERENCED, &nf->nf_flags);
-	if (list_lru_add(&nfsd_file_lru, &nf->nf_lru)) {
+	if (list_lru_add_obj(&nfsd_file_lru, &nf->nf_lru)) {
 		trace_nfsd_file_lru_add(nf);
 		return true;
 	}
@@ -332,7 +332,7 @@ static bool nfsd_file_lru_add(struct nfsd_file *nf)
 
 static bool nfsd_file_lru_remove(struct nfsd_file *nf)
 {
-	if (list_lru_del(&nfsd_file_lru, &nf->nf_lru)) {
+	if (list_lru_del_obj(&nfsd_file_lru, &nf->nf_lru)) {
 		trace_nfsd_file_lru_del(nf);
 		return true;
 	}
@@ -430,7 +430,6 @@ nfsd_file_dispose_list_delayed(struct list_head *dispose)
  * nfsd_file_lru_cb - Examine an entry on the LRU list
  * @item: LRU entry to examine
  * @lru: controlling LRU
- * @lock: LRU list lock (unused)
  * @arg: dispose list
  *
  * Return values:
@@ -440,9 +439,7 @@ nfsd_file_dispose_list_delayed(struct list_head *dispose)
  */
 static enum lru_status
 nfsd_file_lru_cb(struct list_head *item, struct list_lru_one *lru,
-		 spinlock_t *lock, void *arg)
-	__releases(lock)
-	__acquires(lock)
+		 void *arg)
 {
 	struct list_head *head = arg;
 	struct nfsd_file *nf = list_entry(item, struct nfsd_file, nf_lru);
