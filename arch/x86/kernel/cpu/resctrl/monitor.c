@@ -376,7 +376,12 @@ static const struct x86_cpu_id snc_cpu_ids[] __initconst = {
 
 static __init int snc_get_config(void)
 {
-	int ret = topology_num_nodes_per_package();
+	int ret;
+
+	if (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL)
+		return 1;
+
+	ret = topology_num_nodes_per_package();
 
 	if (ret > 1 && !x86_match_cpu(snc_cpu_ids)) {
 		pr_warn("CoD enabled system? Resctrl not supported\n");
@@ -453,6 +458,7 @@ int __init rdt_get_l3_mon_config(struct rdt_resource *r)
 	    (rdt_cpu_has(X86_FEATURE_CQM_MBM_TOTAL) ||
 	     rdt_cpu_has(X86_FEATURE_CQM_MBM_LOCAL))) {
 		r->mon.mbm_cntr_assignable = true;
+		r->mon.mbm_cntr_configurable = true;
 		cpuid_count(0x80000020, 5, &eax, &ebx, &ecx, &edx);
 		r->mon.num_mbm_cntrs = (ebx & GENMASK(15, 0)) + 1;
 		hw_res->mbm_cntr_assign_enabled = true;

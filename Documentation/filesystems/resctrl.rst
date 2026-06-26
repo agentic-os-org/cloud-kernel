@@ -96,12 +96,19 @@ related to allocation:
 		must be set when writing a mask.
 
 "shareable_bits":
-		Bitmask of shareable resource with other executing
-		entities (e.g. I/O). User can use this when
-		setting up exclusive cache partitions. Note that
-		some platforms support devices that have their
-		own settings for cache use which can over-ride
-		these bits.
+		Bitmask of shareable resource with other executing entities
+		(e.g. I/O). Applies to all instances of this resource. User
+		can use this when setting up exclusive cache partitions.
+		Note that some platforms support devices that have their
+		own settings for cache use which can over-ride these bits.
+
+		When "io_alloc" is enabled, a portion of each cache instance can
+		be configured for shared use between hardware and software.
+		"bit_usage" should be used to see which portions of each cache
+		instance is configured for hardware use via "io_alloc" feature
+		because every cache instance can have its "io_alloc" bitmask
+		configured independently via "io_alloc_cbm".
+
 "bit_usage":
 		Annotated capacity bitmasks showing how all
 		instances of the resource are used. The legend is:
@@ -115,16 +122,16 @@ related to allocation:
 			"H":
 			      Corresponding region is used by hardware only
 			      but available for software use. If a resource
-			      has bits set in "shareable_bits" but not all
-			      of these bits appear in the resource groups'
-			      schematas then the bits appearing in
-			      "shareable_bits" but no resource group will
-			      be marked as "H".
+			      has bits set in "shareable_bits" or "io_alloc_cbm"
+			      but not all of these bits appear in the resource
+			      groups' schemata then the bits appearing in
+			      "shareable_bits" or "io_alloc_cbm" but no
+			      resource group will be marked as "H".
 			"X":
 			      Corresponding region is available for sharing and
-			      used by hardware and software. These are the
-			      bits that appear in "shareable_bits" as
-			      well as a resource group's allocation.
+			      used by hardware and software. These are the bits
+			      that appear in "shareable_bits" or "io_alloc_cbm"
+			      as well as a resource group's allocation.
 			"S":
 			      Corresponding region is used by software
 			      and available for sharing.
@@ -207,6 +214,14 @@ related to allocation:
 			# echo "0=ff;1=f" > /sys/fs/resctrl/info/L3/io_alloc_cbm
 			# cat /sys/fs/resctrl/info/L3/io_alloc_cbm
 			0=00ff;1=000f
+
+		An ID of "*" configures all domains with the provided CBM.
+
+		Example on a system that does not require a minimum number of consecutive bits in the mask::
+
+			# echo "*=0" > /sys/fs/resctrl/info/L3/io_alloc_cbm
+			# cat /sys/fs/resctrl/info/L3/io_alloc_cbm
+			0=0;1=0
 
 		When CDP is enabled "io_alloc_cbm" associated with the CDP_DATA and CDP_CODE
 		resources may reflect the same values. For example, values read from and
@@ -412,9 +427,9 @@ with the following files:
 
 	Two MBM events are supported by default: mbm_local_bytes and mbm_total_bytes.
 	Each MBM event's sub-directory contains a file named "event_filter" that is
-	used to view and modify which memory transactions the MBM event is configured
-	with. The file is accessible only when "mbm_event" counter assignment mode is
-	enabled.
+	used to view and (if writable) modify which memory transactions the MBM event
+	is configured with. The file is accessible only when "mbm_event" counter
+	assignment mode is enabled.
 
 	List of memory transaction types supported:
 
@@ -439,9 +454,8 @@ with the following files:
 	  # cat /sys/fs/resctrl/info/L3_MON/event_configs/mbm_local_bytes/event_filter
 	  local_reads,local_non_temporal_writes,local_reads_slow_memory
 
-	Modify the event configuration by writing to the "event_filter" file within
-	the "event_configs" directory. The read/write "event_filter" file contains the
-	configuration of the event that reflects which memory transactions are counted by it.
+	The memory transactions the MBM event is configured with can be changed
+	if "event_filter" is writable.
 
 	For example::
 

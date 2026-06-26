@@ -1063,15 +1063,17 @@ static int rdt_bit_usage_show(struct kernfs_open_file *of,
 
 	cpus_read_lock();
 	mutex_lock(&rdtgroup_mutex);
-	hw_shareable = r->cache.shareable_bits;
 	list_for_each_entry(dom, &r->ctrl_domains, hdr.list) {
 		if (sep)
 			seq_putc(seq, ';');
+		hw_shareable = r->cache.shareable_bits;
 		sw_shareable = 0;
 		exclusive = 0;
 		seq_printf(seq, "%d=", dom->hdr.id);
 		for (i = 0; i < closids_supported(); i++) {
-			if (!closid_allocated(i))
+			if (!closid_allocated(i) ||
+			    (resctrl_arch_get_io_alloc_enabled(r) &&
+			     i == resctrl_io_alloc_closid(r)))
 				continue;
 			ctrl_val = resctrl_arch_get_config(r, dom, i,
 							   s->conf_type);
@@ -1099,6 +1101,21 @@ static int rdt_bit_usage_show(struct kernfs_open_file *of,
 				break;
 			}
 		}
+
+		/*
+		 * When the "io_alloc" feature is enabled, a portion of the cache
+		 * is configured for shared use between hardware and software.
+		 * Also, when CDP is enabled the CBMs of CDP_CODE and CDP_DATA
+		 * resources are kept in sync. So, the CBMs for "io_alloc" can
+		 * be accessed through either resource.
+		 */
+		if (resctrl_arch_get_io_alloc_enabled(r)) {
+			ctrl_val = resctrl_arch_get_config(r, dom,
+							   resctrl_io_alloc_closid(r),
+							   s->conf_type);
+			hw_shareable |= ctrl_val;
+		}
+
 		for (i = r->cache.cbm_len - 1; i >= 0; i--) {
 			pseudo_locked = dom->plr ? dom->plr->cbm : 0;
 			hwb = test_bit(i, &hw_shareable);
@@ -1502,6 +1519,8 @@ out:
  *
  * @cbm is unsigned long, even if only 32 bits are used to make the
  * bitmap functions work correctly.
+ *
+ * Return: Size (in bytes) of cache portion represented by CBM, 0 on failure.
  */
 unsigned int rdtgroup_cbm_to_size(struct rdt_resource *r,
 				  struct rdt_ctrl_domain *d, unsigned long cbm)
@@ -2003,7 +2022,7 @@ static struct rftype res_common_files[] = {
 	},
 	{
 		.name		= "event_filter",
-		.mode		= 0644,
+		.mode		= 0444,
 		.kf_ops		= &rdtgroup_kf_single_ops,
 		.seq_show	= event_filter_show,
 		.write		= event_filter_write,
@@ -2196,6 +2215,15 @@ void resctrl_file_fflags_init(const char *config, unsigned long fflags)
 		rft->fflags = fflags;
 }
 
+void resctrl_file_mode_init(const char *config, umode_t mode)
+{
+	struct rftype *rft;
+
+	rft = rdtgroup_get_rftype_by_name(config);
+	if (rft)
+		rft->mode = mode;
+}
+
 /**
  * rdtgroup_kn_mode_restrict - Restrict user access to named resctrl file
  * @r: The resource group with which the file is associated.
@@ -2312,22 +2340,19 @@ static int resctrl_mkdir_event_configs(struct rdt_resource *r, struct kernfs_nod
 			continue;
 
 		kn_subdir2 = kernfs_create_dir(kn_subdir, mevt->name, kn_subdir->mode, mevt);
-		if (IS_ERR(kn_subdir2)) {
-			ret = PTR_ERR(kn_subdir2);
-			goto out;
-		}
+		if (IS_ERR(kn_subdir2))
+			return PTR_ERR(kn_subdir2);
 
 		ret = rdtgroup_kn_set_ugid(kn_subdir2);
 		if (ret)
-			goto out;
+			return ret;
 
 		ret = rdtgroup_add_files(kn_subdir2, RFTYPE_ASSIGN_CONFIG);
 		if (ret)
-			break;
+			return ret;
 	}
 
-out:
-	return ret;
+	return 0;
 }
 
 static int rdtgroup_mkdir_info_resdir(void *priv, char *name,
@@ -2491,10 +2516,13 @@ static void mba_sc_domain_destroy(struct rdt_resource *r,
 }
 
 /*
- * MBA software controller is supported only if
- * MBM is supported and MBA is in linear scale,
- * and the MBM monitor scope is the same as MBA
- * control scope.
+ * The MBA software controller is supported only if MBM is supported and MBA is
+ * in linear scale, and the MBM monitor scope is the same as MBA control scope.
+ *
+ * The software controller cannot be supported when the MBM counters are
+ * assignable.  There is no guarantee that MBM counters are assigned to the
+ * event backing the software controller in all monitoring domains of all
+ * monitoring groups.
  */
 static bool supports_mba_mbps(void)
 {
@@ -2503,7 +2531,8 @@ static bool supports_mba_mbps(void)
 
 	return (resctrl_is_mbm_enabled() &&
 		r->alloc_capable && is_mba_linear() &&
-		r->ctrl_scope == rmbm->mon_scope);
+		r->ctrl_scope == rmbm->mon_scope &&
+		!rmbm->mon.mbm_cntr_assignable);
 }
 
 /*
@@ -2981,7 +3010,7 @@ static int rdt_parse_param(struct fs_context *fc, struct fs_parameter *param)
 		ctx->enable_cdpl2 = true;
 		return 0;
 	case Opt_mba_mbps:
-		msg = "mba_MBps requires MBM and linear scale MBA at L3 scope";
+		msg = "mba_MBps requires MBM (mbm_event mode not supported) and linear scale MBA at L3 scope";
 		if (!supports_mba_mbps())
 			return invalfc(fc, msg);
 		ctx->enable_mba_mbps = true;
@@ -3154,6 +3183,8 @@ static void rmdir_all_sub(void)
  * @mevt:   The type of event file being created.
  * @do_sum: Whether SNC summing monitors are being created. Only set
  *	    when @rid == RDT_RESOURCE_L3.
+ *
+ * Return: Pointer to mon_data private data of the event, NULL on failure.
  */
 static struct mon_data *mon_get_kn_priv(enum resctrl_res_level rid, int domid,
 					struct mon_evt *mevt,
@@ -3548,6 +3579,8 @@ out_destroy:
  * resource group is initialized. The user can follow this with a
  * modification to the CBM if the default does not satisfy the
  * requirements.
+ *
+ * Return: A CBM that is valid for resource @r.
  */
 static u32 cbm_ensure_valid(u32 _val, struct rdt_resource *r)
 {

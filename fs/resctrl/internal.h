@@ -409,6 +409,8 @@ void __check_limbo(struct rdt_l3_mon_domain *d, bool force_free);
 
 void resctrl_file_fflags_init(const char *config, unsigned long fflags);
 
+void resctrl_file_mode_init(const char *config, umode_t mode);
+
 void rdt_staged_configs_clear(void);
 
 bool closid_allocated(unsigned int closid);
@@ -465,6 +467,7 @@ int resctrl_io_alloc_cbm_show(struct kernfs_open_file *of, struct seq_file *seq,
 			      void *v);
 ssize_t resctrl_io_alloc_cbm_write(struct kernfs_open_file *of, char *buf,
 				   size_t nbytes, loff_t off);
+u32 resctrl_io_alloc_closid(struct rdt_resource *r);
 
 #ifdef CONFIG_RESCTRL_FS_PSEUDO_LOCK
 int rdtgroup_locksetup_enter(struct rdtgroup *rdtgrp);
