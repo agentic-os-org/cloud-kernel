@@ -13,12 +13,12 @@ DIST_BUILD_MODE ?= devel
 # the package release version.
 # eg: for ANCK 5.10-015.1, the major version is 15, the minor version is 1
 DIST_RELEASE_MAJOR_VERSION = 19
-DIST_RELEASE_MINOR_VERSION = 7
+DIST_RELEASE_MINOR_VERSION = 8
 
 # testing stage.
 # eg: alpha, beta, rc
-DIST_TESTING_STAGE =
-DIST_TESTING_STAGE_MAJOR_VERSION =
+DIST_TESTING_STAGE = rc
+DIST_TESTING_STAGE_MAJOR_VERSION = 1
 DIST_TESTING_STAGE_MINOR_VERSION =
 
 # special versions, eg: the pgo version
