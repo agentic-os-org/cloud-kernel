@@ -27,6 +27,169 @@
 #include <uapi/linux/wait.h>
 #include "pid_sysctl.h"
 
+#ifdef CONFIG_RICH_CONTAINER
+int sysctl_rich_container_enable;
+/* 0 - current; 1 - child_reaper; 2 - current's parent cgroup */
+int sysctl_rich_container_source;
+#endif
+
+#ifdef CONFIG_RICH_CONTAINER
+
+#define RC_FEATURE_CPUINFO_NAME		"cpuinfo"
+#define RC_FEATURE_MEMINFO_NAME		"meminfo"
+#define RC_FEATURE_CPUUSAGE_NAME	"cpuusage"
+#define RC_FEATURE_UPTIME_NAME		"uptime"
+#define RC_FEATURE_LOADAVG_NAME		"loadavg"
+#define RC_FEATURE_DISKQUOTA_NAME	"diskquota"
+
+static const char rc_feature_avail[] =
+				RC_FEATURE_CPUINFO_NAME		" "
+				RC_FEATURE_MEMINFO_NAME		" "
+				RC_FEATURE_CPUUSAGE_NAME	" "
+				RC_FEATURE_UPTIME_NAME		" "
+				RC_FEATURE_LOADAVG_NAME		" "
+				RC_FEATURE_DISKQUOTA_NAME;
+
+struct rich_container_feature rc_features[] = {
+	{
+		.name = RC_FEATURE_CPUINFO_NAME,
+		.id = RC_CPUINFO,
+	},
+	{
+		.name = RC_FEATURE_MEMINFO_NAME,
+		.id = RC_MEMINFO,
+	},
+	{
+		.name = RC_FEATURE_CPUUSAGE_NAME,
+		.id = RC_CPUUSAGE,
+	},
+	{
+		.name = RC_FEATURE_UPTIME_NAME,
+		.id = RC_UPTIME,
+	},
+	{
+		.name = RC_FEATURE_LOADAVG_NAME,
+		.id = RC_LOADAVG,
+	},
+	{
+		.name = RC_FEATURE_DISKQUOTA_NAME,
+		.id = RC_DISKQUOTA,
+	},
+};
+
+u16 rc_feature_disable_mask;
+
+static int write_feature_control(const struct ctl_table *ro_table,
+				 void __user *buffer,
+				 size_t *lenp, loff_t *ppos)
+{
+	char features[sizeof(rc_feature_avail) * 2];
+	struct ctl_table table;
+	char *buf, *tok;
+	u16 enable = 0, disable = 0;
+	int ret;
+
+	memset(features, 0, sizeof(features));
+
+	table = *ro_table;
+	table.data = features;
+	table.maxlen = sizeof(features);
+
+	ret = proc_dostring(&table, 1, buffer, lenp, ppos);
+	if (ret)
+		return ret;
+
+	buf = features;
+
+	/*
+	 * Parse input - space separated list of feature names prefixed
+	 * with either + or -.
+	 */
+	buf = strstrip(buf);
+	while ((tok = strsep(&buf, " "))) {
+		int i;
+
+		if (tok[0] == '\0')
+			continue;
+
+		for (i = 0; i < ARRAY_SIZE(rc_features); i++) {
+			if (strcmp(tok + 1, rc_features[i].name))
+				continue;
+
+			if (*tok == '+') {
+				enable |= 1 << rc_features[i].id;
+				disable &= ~(1 << rc_features[i].id);
+			} else if (*tok == '-') {
+				disable |= 1 << rc_features[i].id;
+				enable &= ~(1 << rc_features[i].id);
+			} else {
+				return -EINVAL;
+			}
+			break;
+		}
+		if (i == RC_FEATURE_COUNT)
+			return -EINVAL;
+	}
+
+	rc_feature_disable_mask |= disable;
+	rc_feature_disable_mask &= ~enable;
+
+	return 0;
+}
+
+static int read_feature_control(const struct ctl_table *ro_table, void __user *buffer,
+				size_t *lenp, loff_t *ppos)
+{
+	char features[sizeof(rc_feature_avail)];
+	struct ctl_table table;
+	size_t size, ret;
+	char *buf;
+	int i;
+
+	memset(features, 0, sizeof(features));
+	buf = features;
+	size = sizeof(features);
+
+	for (i = 0; i < ARRAY_SIZE(rc_features); i++) {
+		if (!(rc_feature_disable_mask & (1 << rc_features[i].id))) {
+			ret = strscpy(buf, rc_features[i].name, size);
+			if (ret < 0)
+				return -EINVAL;
+			buf += ret;
+			size -= ret;
+
+			ret = strscpy(buf, " ", size);
+			if (ret < 0)
+				return -EINVAL;
+			buf += ret;
+			size -= ret;
+		}
+
+	}
+
+	table = *ro_table;
+	table.data = features;
+	table.maxlen = sizeof(features);
+
+	return proc_dostring(&table, 0, buffer, lenp, ppos);
+}
+
+static int rich_container_feature_control_handler(const struct ctl_table *ro_table,
+						  int write, void *buffer,
+						  size_t *lenp, loff_t *ppos)
+{
+	int ret;
+
+	if (write)
+		ret = write_feature_control(ro_table, buffer, lenp, ppos);
+	else
+		ret = read_feature_control(ro_table, buffer, lenp, ppos);
+
+	return ret;
+}
+
+#endif
+
 static DEFINE_MUTEX(pid_caches_mutex);
 static struct kmem_cache *pid_ns_cachep;
 /* Write once array, filled from the beginning. */
@@ -457,12 +620,61 @@ const struct proc_ns_operations pidns_for_children_operations = {
 	.get_parent	= pidns_get_parent,
 };
 
+#ifdef CONFIG_RICH_CONTAINER
+static const struct ctl_table rich_container_ctl_table[] = {
+	{
+		.procname	= "rich_container_enable",
+		.data		= &sysctl_rich_container_enable,
+		.maxlen		= sizeof(int),
+		.mode		= 0600,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
+	{
+		.procname	= "rich_container_source",
+		.data		= &sysctl_rich_container_source,
+		.maxlen		= sizeof(int),
+		.mode		= 0600,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_TWO,
+	},
+	{
+		.procname	= "rich_container_cpuinfo_source",
+		.data		= &sysctl_rich_container_cpuinfo_source,
+		.maxlen		= sizeof(int),
+		.mode		= 0600,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_TWO,
+	},
+	{
+		.procname	= "rich_container_cpuinfo_sharesbase",
+		.data		= &sysctl_rich_container_cpuinfo_sharesbase,
+		.maxlen		= sizeof(int),
+		.mode		= 0600,
+		.proc_handler	= proc_douintvec_minmax,
+		.extra1		= SYSCTL_TWO,
+	},
+	{
+		.procname	= "rich_container_feature_control",
+		.mode		= 0600,
+		.proc_handler	= rich_container_feature_control_handler,
+	},
+};
+#endif
+
 static __init int pid_namespaces_init(void)
 {
 	pid_ns_cachep = KMEM_CACHE(pid_namespace, SLAB_PANIC | SLAB_ACCOUNT);
 
 #ifdef CONFIG_CHECKPOINT_RESTORE
 	register_sysctl_init("kernel", pid_ns_ctl_table);
+#endif
+
+#ifdef CONFIG_RICH_CONTAINER
+	register_sysctl_init("kernel", rich_container_ctl_table);
 #endif
 
 	register_pid_ns_sysctl_table_vm();

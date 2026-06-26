@@ -37,6 +37,7 @@
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 #include <linux/task_work.h>
+#include <linux/pid_namespace.h>
 
 DEFINE_STATIC_KEY_FALSE(cpusets_pre_enable_key);
 DEFINE_STATIC_KEY_FALSE(cpusets_enabled_key);
@@ -2079,6 +2080,8 @@ static void compute_partition_effective_cpumask(struct cpuset *cs,
  *
  * Called with cpuset_mutex held
  */
+static struct cpumask added, deleted, old_cpus;
+
 static void update_cpumasks_hier(struct cpuset *cs, struct tmpmasks *tmp,
 				 bool force)
 {
@@ -2201,6 +2204,11 @@ get_css:
 			new_prs = cp->partition_root_state;
 		}
 
+		if (cpumask_empty(cp->effective_cpus))
+			cpumask_copy(&old_cpus, parent->effective_cpus);
+		else
+			cpumask_copy(&old_cpus, cp->effective_cpus);
+
 		spin_lock_irq(&callback_lock);
 		cpumask_copy(cp->effective_cpus, tmp->new_cpus);
 		cp->partition_root_state = new_prs;
@@ -2219,7 +2227,15 @@ get_css:
 		WARN_ON(!is_in_v2_mode() &&
 			!cpumask_equal(cp->cpus_allowed, cp->effective_cpus));
 
+		/* add = new - old = new & (~old) */
+		cpumask_andnot(&added, tmp->new_cpus, &old_cpus);
+		cpuacct_cpuset_changed(cp->css.cgroup, NULL, &added);
+
 		cpuset_update_tasks_cpumask(cp, tmp->new_cpus);
+
+		/* deleted = old - new = old & (~new) */
+		cpumask_andnot(&deleted, &old_cpus, tmp->new_cpus);
+		cpuacct_cpuset_changed(cp->css.cgroup, &deleted, NULL);
 
 		/*
 		 * On default hierarchy, inherit the CS_SCHED_LOAD_BALANCE
@@ -3486,6 +3502,7 @@ static int cpuset_css_online(struct cgroup_subsys_state *css)
 		cs->effective_mems = parent->effective_mems;
 	}
 	spin_unlock_irq(&callback_lock);
+	cpuacct_cpuset_changed(cs->css.cgroup, NULL, cs->effective_cpus);
 	cpuset1_online_css(css);
 
 	cpuset_full_unlock();
@@ -4062,6 +4079,36 @@ void cpuset_cpus_allowed(struct task_struct *tsk, struct cpumask *pmask)
 	__cpuset_cpus_allowed_locked(tsk, pmask);
 	spin_unlock_irqrestore(&callback_lock, flags);
 }
+
+#ifdef CONFIG_RICH_CONTAINER
+void rich_container_get_cpuset_cpus(struct cpumask *pmask)
+{
+	unsigned long flags;
+	struct task_struct *p;
+	struct cpuset *cs;
+
+	rcu_read_lock();
+	if (sysctl_rich_container_source == 1) {
+		read_lock(&tasklist_lock);
+		p = task_active_pid_ns(current)->child_reaper;
+		read_unlock(&tasklist_lock);
+		cs = task_cs(p);
+
+	} else if (sysctl_rich_container_source == 0) {
+		cs = task_cs(current);
+	} else {
+		cs = task_cs(current);
+		if (parent_cs(cs))
+			cs = parent_cs(cs);
+	}
+
+	spin_lock_irqsave(&callback_lock, flags);
+	cpumask_copy(pmask, cpu_active_mask);
+	cpumask_and(pmask, pmask, cs->effective_cpus);
+	spin_unlock_irqrestore(&callback_lock, flags);
+	rcu_read_unlock();
+}
+#endif
 
 /**
  * cpuset_cpus_allowed_fallback - final fallback before complete catastrophe.

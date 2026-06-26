@@ -140,6 +140,8 @@ void cgroup_file_show(struct cgroup_file *cfile, bool show);
 int cgroupstats_build(struct cgroupstats *stats, struct dentry *dentry);
 int proc_cgroup_show(struct seq_file *m, struct pid_namespace *ns,
 		     struct pid *pid, struct task_struct *tsk);
+extern struct cgroup_subsys_state *global_cgroup_css(struct cgroup *cgrp,
+							int ssid);
 
 void cgroup_fork(struct task_struct *p);
 extern int cgroup_can_fork(struct task_struct *p,
@@ -778,6 +780,11 @@ static inline void cgroup_path_from_kernfs_id(u64 id, char *buf, size_t buflen)
  */
 void css_rstat_updated(struct cgroup_subsys_state *css, int cpu);
 void css_rstat_flush(struct cgroup_subsys_state *css);
+#ifdef CONFIG_SCHED_SLI
+void tg_account_cputime_field(struct task_struct *tsk, int index, u64 val);
+#else
+static inline void tg_account_cputime_field(struct task_struct *tsk, int index, u64 val) {}
+#endif
 
 /*
  * Basic resource stats.
@@ -816,8 +823,10 @@ static inline void cgroup_account_cputime_field(struct task_struct *task,
 	cpuacct_account_field(task, index, delta_exec);
 
 	cgrp = task_dfl_cgroup(task);
-	if (cgroup_parent(cgrp))
+	if (cgroup_parent(cgrp)) {
 		__cgroup_account_cputime_field(cgrp, index, delta_exec);
+		tg_account_cputime_field(task, index, delta_exec);
+	}
 }
 
 #else	/* CONFIG_CGROUPS */
@@ -899,5 +908,17 @@ static inline void cgroup_bpf_put(struct cgroup *cgrp) {}
 struct cgroup *task_get_cgroup1(struct task_struct *tsk, int hierarchy_id);
 
 struct cgroup_of_peak *of_peak(struct kernfs_open_file *of);
+
+#ifdef CONFIG_SCHED_SLI
+void cpuacct_cpuset_changed(struct cgroup *cgrp,
+		struct cpumask *deleted, struct cpumask *added);
+void cgroup_idle_end(struct sched_entity *se);
+void cgroup_idle_start(struct sched_entity *se);
+#else
+static inline void cpuacct_cpuset_changed(struct cgroup *cgrp,
+		struct cpumask *deleted, struct cpumask *added) { }
+static inline void cgroup_idle_end(struct sched_entity *se) { }
+static inline void cgroup_idle_start(struct sched_entity *se) { }
+#endif
 
 #endif /* _LINUX_CGROUP_H */

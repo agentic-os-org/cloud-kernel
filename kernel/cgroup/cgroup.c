@@ -495,6 +495,12 @@ static u32 cgroup_ss_mask(struct cgroup *cgrp)
 	return cgrp->root->subsys_mask;
 }
 
+struct cgroup_subsys_state *global_cgroup_css(struct cgroup *cgrp,
+						int ssid)
+{
+	return cgroup_css(cgrp, cgroup_subsys[(ssid)]);
+}
+
 /**
  * cgroup_e_css_by_mask - obtain a cgroup's effective css for the specified ss
  * @cgrp: the cgroup of interest

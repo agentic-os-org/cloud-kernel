@@ -85,6 +85,7 @@ void __update_stats_enqueue_sleeper(struct rq *rq, struct task_struct *p,
 		__schedstat_add(stats->sum_block_runtime, delta);
 
 		if (p) {
+			task_cpu_update_block(p, delta);
 			if (p->in_iowait) {
 				__schedstat_add(stats->iowait_sum, delta);
 				__schedstat_inc(stats->iowait_count);

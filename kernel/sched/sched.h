@@ -104,9 +104,19 @@ extern __read_mostly int scheduler_running;
 
 extern unsigned long calc_load_update;
 extern atomic_long_t calc_load_tasks;
+extern atomic_long_t calc_load_tasks_r;
 
 extern void calc_global_load_tick(struct rq *this_rq);
 extern long calc_load_fold_active(struct rq *this_rq, long adjust);
+
+#ifdef CONFIG_SCHED_SLI
+extern long calc_load_fold_active_r(struct rq *this_rq, long adjust);
+#else
+static inline long calc_load_fold_active_r(struct rq *this_rq, long adjust)
+{
+	return 0;
+}
+#endif
 
 extern void call_trace_sched_update_nr_running(struct rq *rq, int count);
 
@@ -455,6 +465,57 @@ static inline u64 default_bw_period_us(void)
 }
 #endif /* CONFIG_GROUP_SCHED_BANDWIDTH */
 
+enum sched_lat_stat_item {
+	SCHED_LAT_WAIT,
+	SCHED_LAT_BLOCK,
+	SCHED_LAT_IOBLOCK,
+	SCHED_LAT_CGROUP_WAIT,
+	SCHED_LAT_NR_STAT
+};
+
+/*
+ * [0, 1ms)
+ * [1, 4ms)
+ * [4, 7ms)
+ * [7, 10ms)
+ * [10, 20ms)
+ * [20, 30ms)
+ * [30, 40ms)
+ * [40, 50ms)
+ * [50, 100ms)
+ * [100, 500ms)
+ * [500, 1000ms)
+ * [1000, 5000ms)
+ * [5000, 10000ms)
+ * [10000ms, INF)
+ * total(ms)
+ * nr
+ */
+/* Scheduler latency histogram distribution, in milliseconds */
+enum sched_lat_count_t {
+	SCHED_LAT_0_1,
+	SCHED_LAT_1_4,
+	SCHED_LAT_4_7,
+	SCHED_LAT_7_10,
+	SCHED_LAT_10_20,
+	SCHED_LAT_20_30,
+	SCHED_LAT_30_40,
+	SCHED_LAT_40_50,
+	SCHED_LAT_50_100,
+	SCHED_LAT_100_500,
+	SCHED_LAT_500_1000,
+	SCHED_LAT_1000_5000,
+	SCHED_LAT_5000_10000,
+	SCHED_LAT_10000_INF,
+	SCHED_LAT_TOTAL,
+	SCHED_LAT_NR,
+	SCHED_LAT_NR_COUNT,
+};
+
+struct sched_cgroup_lat_stat_cpu {
+	unsigned long item[SCHED_LAT_NR_STAT][SCHED_LAT_NR_COUNT];
+};
+
 struct cfs_bandwidth {
 #ifdef CONFIG_CFS_BANDWIDTH
 	raw_spinlock_t		lock;
@@ -485,6 +546,14 @@ struct cfs_bandwidth {
 	CK_KABI_RESERVE(3)
 	CK_KABI_RESERVE(4)
 };
+
+#ifdef CONFIG_SCHED_SLI
+/* Maintain various statistics */
+struct cpu_alistats {
+	u64		nr_migrations;
+	u64		steal_high;
+} ____cacheline_aligned;
+#endif
 
 /* Task group related information */
 struct task_group {
@@ -538,6 +607,17 @@ struct task_group {
 	struct uclamp_se	uclamp_req[UCLAMP_CNT];
 	/* Effective clamp values used for a task group */
 	struct uclamp_se	uclamp[UCLAMP_CNT];
+#endif
+
+#ifdef CONFIG_SCHED_SLI
+	struct kernel_cpustat __percpu *cpustat;
+	struct sched_cgroup_lat_stat_cpu __percpu *lat_stat_cpu;
+	struct cpu_alistats __percpu *alistats;
+	struct list_head	sli_list;
+	bool			sli_enabled;
+	u64			load_update_version;
+	unsigned long		avenrun[3];
+	unsigned long		avenrun_r[3];
 #endif
 
 	CK_KABI_RESERVE(1)
@@ -795,6 +875,8 @@ struct cfs_rq {
 # endif /* CONFIG_CFS_BANDWIDTH */
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
+	unsigned long		nr_uninterruptible;
+
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -895,6 +977,8 @@ struct rt_rq {
 #ifdef CONFIG_CGROUP_SCHED
 	struct task_group	*tg; /* this tg has "this" rt_rq on given CPU for runnable entities */
 #endif
+
+	unsigned long		nr_uninterruptible;
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -1259,7 +1343,14 @@ struct rq {
 	struct task_struct	*stop;
 	const struct sched_class *next_class;
 	unsigned long		next_balance;
-	struct mm_struct	*prev_mm;
+
+	/*
+	 * Frequent writing to prev_mm and clock_update_flags on local
+	 * CPU causes cacheline containing idle to be invalidated on
+	 * other CPUs. Put prev_mm and sequential fields on a new
+	 * cacheline to fix it.
+	 */
+	struct mm_struct        *prev_mm ____cacheline_aligned;
 
 	/*
 	 * The following fields of clock data are frequently referenced
@@ -1338,6 +1429,9 @@ struct rq {
 	/* calc_load related fields */
 	unsigned long		calc_load_update;
 	long			calc_load_active;
+#ifdef CONFIG_SCHED_SLI
+	long			calc_load_active_r;
+#endif
 
 #ifdef CONFIG_SCHED_HRTICK
 	call_single_data_t	hrtick_csd;
@@ -1789,6 +1883,11 @@ static inline struct cfs_rq *group_cfs_rq(struct sched_entity *grp)
 
 extern void update_rq_avg_idle(struct rq *rq);
 extern void update_rq_clock(struct rq *rq);
+
+static inline u64 __rq_clock_broken(struct rq *rq)
+{
+	return READ_ONCE(rq->clock);
+}
 
 /*
  * rq::clock_update_flags bits
@@ -2746,6 +2845,9 @@ struct sched_class {
 	int (*task_is_throttled)(struct task_struct *p, int cpu);
 #endif
 
+	void (*update_nr_uninterruptible)(struct task_struct *p, long inc);
+	void (*update_nr_iowait)(struct task_struct *p, long inc);
+
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -2756,6 +2858,12 @@ static inline void put_prev_task(struct rq *rq, struct task_struct *prev)
 {
 	WARN_ON_ONCE(rq->donor != prev);
 	prev->sched_class->put_prev_task(rq, prev, NULL);
+}
+
+static inline void update_nr_iowait(struct task_struct *p, long inc)
+{
+	if (p->sched_class->update_nr_iowait)
+		p->sched_class->update_nr_iowait(p, inc);
 }
 
 static inline void set_next_task(struct rq *rq, struct task_struct *next)
@@ -3048,13 +3156,22 @@ static inline void sub_nr_running(struct rq *rq, unsigned count)
 	sched_update_tick_dependency(rq);
 }
 
+static inline void update_nr_uninterruptible(struct task_struct *tsk, long inc)
+{
+	if (tsk->sched_class->update_nr_uninterruptible)
+		tsk->sched_class->update_nr_uninterruptible(tsk, inc);
+}
+
 static inline void __block_task(struct rq *rq, struct task_struct *p)
 {
-	if (p->sched_contributes_to_load)
+	if (p->sched_contributes_to_load) {
+		update_nr_uninterruptible(p, 1);
 		rq->nr_uninterruptible++;
+	}
 
 	if (p->in_iowait) {
 		atomic_inc(&rq->nr_iowait);
+		update_nr_iowait(p, 1);
 		delayacct_blkio_start();
 	}
 
@@ -4208,5 +4325,48 @@ DEFINE_CLASS(sched_change, struct sched_change_ctx *,
 DEFINE_CLASS_IS_UNCONDITIONAL(sched_change)
 
 #include "ext.h"
+
+#ifdef CONFIG_SCHED_SLI
+extern u64 get_idle_time(struct kernel_cpustat *kcs, int cpu);
+extern u64 get_iowait_time(struct kernel_cpustat *kcs, int cpu);
+extern void task_cpu_increase_nr_migrations(struct task_struct *tsk);
+void cpu_update_latency(struct sched_entity *se, u64 delta);
+void task_cpu_update_block(struct task_struct *tsk, u64 runtime);
+void calc_cgroup_load(void);
+bool async_load_calc_enabled(void);
+struct task_group *cgroup_tg(struct cgroup *cgrp);
+int sched_lat_stat_show(struct seq_file *sf, void *v);
+int sched_lat_stat_write(struct cgroup_subsys_state *css,
+				struct cftype *cft, u64 val);
+void __get_cgroup_avenrun(struct task_group *tg, unsigned long *loads,
+		unsigned long offset, int shift, bool running);
+unsigned long tg_running(struct task_group *tg, int cpu);
+unsigned long tg_uninterruptible(struct task_group *tg, int cpu);
+int enable_sli_write(struct cgroup_subsys_state *css,
+		struct cftype *cft, u64 val);
+u64 enable_sli_read(struct cgroup_subsys_state *css, struct cftype *cft);
+void tg_enable_sli(struct task_group *tg, bool val);
+void __cgroup_get_usage_result(struct cgroup_subsys_state *css, int cpu,
+					struct cpuacct_usage_result *res);
+
+#else
+static inline void task_cpu_increase_nr_migrations(struct task_struct *tsk) { }
+static inline void cpu_update_latency(struct sched_entity *se,
+		u64 delta) { }
+static inline void task_cpu_update_block(struct task_struct *tsk,
+		u64 runtime) { }
+static inline void calc_cgroup_load(void) { }
+static inline bool async_load_calc_enabled(void)
+{
+	return false;
+}
+#endif
+
+u64 tg_get_cfs_quota(struct task_group *tg);
+u64 tg_get_cfs_period(struct task_group *tg);
+
+
+void __cpuacct_get_usage(struct cgroup_subsys_state *css, int cpu,
+				struct cpuacct_usage_result *res);
 
 #endif /* _KERNEL_SCHED_SCHED_H */

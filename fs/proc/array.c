@@ -482,6 +482,7 @@ static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
 	unsigned long flags;
 	int exit_code = task->exit_code;
 	struct signal_struct *sig = task->signal;
+	struct task_struct *init_tsk;
 
 	state = *get_task_state(task);
 	vsize = eip = esp = 0;
@@ -579,6 +580,18 @@ static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
 	/* apply timens offset for boottime and convert nsec -> ticks */
 	start_time =
 		nsec_to_clock_t(timens_add_boottime_ns(task->start_boottime));
+
+	/*
+	 * While uptime in container is fixed to container start time,
+	 * task start time need to be fixed too, otherwise wrong start
+	 * time will show in "ps".
+	 */
+	rcu_read_lock();
+	if (in_rich_container(current, RC_UPTIME)) {
+		init_tsk = task_active_pid_ns(current)->child_reaper;
+		start_time -= nsec_to_clock_t(timens_add_boottime_ns(init_tsk->start_boottime));
+	}
+	rcu_read_unlock();
 
 	seq_put_decimal_ull(m, "", pid_nr_ns(pid, ns));
 	seq_puts(m, " (");

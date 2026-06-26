@@ -2582,7 +2582,16 @@ static int task_is_throttled_rt(struct task_struct *p, int cpu)
 	struct rt_rq *rt_rq;
 
 #ifdef CONFIG_RT_GROUP_SCHED // XXX maybe add task_rt_rq(), see also sched_rt_period_rt_rq
-	rt_rq = task_group(p)->rt_rq[cpu];
+	/*
+	 * When rt_group_sched is runtime-disabled, non-root task_groups do
+	 * not own a per-cpu rt_rq array. Fall back to the root rq's rt_rq,
+	 * matching the redirection set_task_rq() applies to p->rt.rt_rq.
+	 */
+	if (rt_group_sched_enabled())
+		rt_rq = task_group(p)->rt_rq[cpu];
+	else
+		rt_rq = &cpu_rq(cpu)->rt;
+	/* Invariant: with rt_group_sched off, rt_rq must belong to root. */
 	WARN_ON(!rt_group_sched_enabled() && rt_rq->tg != &root_task_group);
 #else
 	rt_rq = &cpu_rq(cpu)->rt;
@@ -2591,6 +2600,16 @@ static int task_is_throttled_rt(struct task_struct *p, int cpu)
 	return rt_rq_throttled(rt_rq);
 }
 #endif /* CONFIG_SCHED_CORE */
+
+#ifdef CONFIG_SCHED_SLI
+static void update_nr_uninterruptible_rt(struct task_struct *p, long inc)
+{
+	struct sched_rt_entity *se = &p->rt;
+
+	for_each_sched_rt_entity(se)
+		rt_rq_of_se(se)->nr_uninterruptible += inc;
+}
+#endif
 
 DEFINE_SCHED_CLASS(rt) = {
 	.enqueue_task		= enqueue_task_rt,
@@ -2623,6 +2642,9 @@ DEFINE_SCHED_CLASS(rt) = {
 
 #ifdef CONFIG_SCHED_CORE
 	.task_is_throttled	= task_is_throttled_rt,
+#endif
+#ifdef CONFIG_SCHED_SLI
+	.update_nr_uninterruptible = update_nr_uninterruptible_rt,
 #endif
 
 #ifdef CONFIG_UCLAMP_TASK

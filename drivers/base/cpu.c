@@ -21,6 +21,8 @@
 #include <linux/pm_qos.h>
 #include <linux/delay.h>
 #include <linux/sched/isolation.h>
+#include <linux/cpuset.h>
+#include <linux/pid_namespace.h>
 
 #include "base.h"
 
@@ -217,8 +219,28 @@ static ssize_t show_cpus_attr(struct device *dev,
 			      char *buf)
 {
 	struct cpu_attr *ca = container_of(attr, struct cpu_attr, attr);
+	struct cpumask cpuset_allowed;
+	struct task_struct __maybe_unused *scenario;
+	bool rich_container;
 
-	return cpumap_print_to_pagebuf(true, buf, ca->map);
+	rcu_read_lock();
+	rich_container = in_rich_container(current, RC_CPUINFO);
+	rcu_read_unlock();
+
+	if (rich_container && !strcmp(attr->attr.name, "online")) {
+		read_lock(&tasklist_lock);
+		scenario = rich_container_get_scenario();
+		get_task_struct(scenario);
+		read_unlock(&tasklist_lock);
+
+		rich_container_get_cpus(scenario, &cpuset_allowed);
+
+		put_task_struct(scenario);
+	}
+	else
+		cpumask_copy(&cpuset_allowed, ca->map);
+
+	return cpumap_print_to_pagebuf(true, buf, &cpuset_allowed);
 }
 
 #define _CPU_ATTR(name, map) \

@@ -144,4 +144,64 @@ static inline bool task_is_in_init_pid_ns(struct task_struct *tsk)
 	return task_active_pid_ns(tsk) == &init_pid_ns;
 }
 
+struct rich_container_feature {
+	const char *name;
+	int id;
+};
+
+enum rc_feature_id {
+	RC_CPUINFO,
+	RC_MEMINFO,
+	RC_CPUUSAGE,
+	RC_UPTIME,
+	RC_LOADAVG,
+	RC_DISKQUOTA,
+	RC_FEATURE_COUNT,
+};
+
+#ifdef CONFIG_RICH_CONTAINER
+extern int sysctl_rich_container_enable;
+extern u16 rc_feature_disable_mask;
+
+extern int sysctl_rich_container_source;
+extern int sysctl_rich_container_cpuinfo_source;
+extern unsigned int sysctl_rich_container_cpuinfo_sharesbase;
+
+static inline struct task_struct *rich_container_get_scenario(void)
+{
+	if (sysctl_rich_container_source == 1)
+		return task_active_pid_ns(current)->child_reaper;
+
+	return current;
+}
+
+static inline bool in_rich_container(struct task_struct *tsk,
+				     enum rc_feature_id id)
+{
+	if (sysctl_rich_container_enable == 0)
+		return false;
+
+	return (task_active_pid_ns(tsk) != &init_pid_ns)
+		&& child_task_group(tsk)
+		&& !(rc_feature_disable_mask & (1 << id));
+}
+
+void rich_container_get_cpuset_cpus(struct cpumask *pmask);
+#else
+static inline bool in_rich_container(struct task_struct *tsk,
+				     enum rc_feature_id id)
+{
+	return false;
+}
+
+static inline void rich_container_get_cpuset_cpus(struct cpumask *pmask)
+{
+}
+
+static inline struct task_struct *rich_container_get_scenario(void)
+{
+	return NULL;
+}
+#endif
+
 #endif /* _LINUX_PID_NS_H */
