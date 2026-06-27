@@ -16,9 +16,6 @@
 
 #include "sys_regs.h"
 
-/* Protection against the sysreg repainting madness... */
-#define NV_FTR(r, f)		ID_AA64##r##_EL1_##f
-
 /*
  * Ratio of live shadow S2 MMU per vcpu. This is a trade-off between
  * memory usage and potential number of different sets of S2 PTs in
@@ -53,6 +50,10 @@ int kvm_vcpu_init_nested(struct kvm_vcpu *vcpu)
 	struct kvm *kvm = vcpu->kvm;
 	struct kvm_s2_mmu *tmp;
 	int num_mmus, ret = 0;
+
+	if (test_bit(KVM_ARM_VCPU_HAS_EL2_E2H0, kvm->arch.vcpu_features) &&
+	    !cpus_have_final_cap(ARM64_HAS_HCR_NV1))
+		return -EINVAL;
 
 	/*
 	 * Let's treat memory allocation failures as benign: If we fail to
@@ -634,9 +635,9 @@ static struct kvm_s2_mmu *get_s2_mmu_nested(struct kvm_vcpu *vcpu)
 	/* Set the scene for the next search */
 	kvm->arch.nested_mmus_next = (i + 1) % kvm->arch.nested_mmus_size;
 
-	/* Clear the old state */
+	/* Make sure we don't forget to do the laundry */
 	if (kvm_s2_mmu_valid(s2_mmu))
-		kvm_stage2_unmap_range(s2_mmu, 0, kvm_phys_size(s2_mmu));
+		s2_mmu->pending_unmap = true;
 
 	/*
 	 * The virtual VMID (modulo CnP) will be used as a key when matching
@@ -652,6 +653,16 @@ static struct kvm_s2_mmu *get_s2_mmu_nested(struct kvm_vcpu *vcpu)
 
 out:
 	atomic_inc(&s2_mmu->refcnt);
+
+	/*
+	 * Set the vCPU request to perform an unmap, even if the pending unmap
+	 * originates from another vCPU. This guarantees that the MMU has been
+	 * completely unmapped before any vCPU actually uses it, and allows
+	 * multiple vCPUs to lend a hand with completing the unmap.
+	 */
+	if (s2_mmu->pending_unmap)
+		kvm_make_request(KVM_REQ_NESTED_S2_UNMAP, vcpu);
+
 	return s2_mmu;
 }
 
@@ -665,6 +676,13 @@ void kvm_init_nested_s2_mmu(struct kvm_s2_mmu *mmu)
 
 void kvm_vcpu_load_hw_mmu(struct kvm_vcpu *vcpu)
 {
+	/*
+	 * The vCPU kept its reference on the MMU after the last put, keep
+	 * rolling with it.
+	 */
+	if (vcpu->arch.hw_mmu)
+		return;
+
 	if (is_hyp_ctxt(vcpu)) {
 		vcpu->arch.hw_mmu = &vcpu->kvm->arch.mmu;
 	} else {
@@ -676,10 +694,18 @@ void kvm_vcpu_load_hw_mmu(struct kvm_vcpu *vcpu)
 
 void kvm_vcpu_put_hw_mmu(struct kvm_vcpu *vcpu)
 {
-	if (kvm_is_nested_s2_mmu(vcpu->kvm, vcpu->arch.hw_mmu)) {
+	/*
+	 * Keep a reference on the associated stage-2 MMU if the vCPU is
+	 * scheduling out and not in WFI emulation, suggesting it is likely to
+	 * reuse the MMU sometime soon.
+	 */
+	if (vcpu->scheduled_out && !vcpu_get_flag(vcpu, IN_WFI))
+		return;
+
+	if (kvm_is_nested_s2_mmu(vcpu->kvm, vcpu->arch.hw_mmu))
 		atomic_dec(&vcpu->arch.hw_mmu->refcnt);
-		vcpu->arch.hw_mmu = NULL;
-	}
+
+	vcpu->arch.hw_mmu = NULL;
 }
 
 /*
@@ -732,7 +758,7 @@ void kvm_nested_s2_wp(struct kvm *kvm)
 	}
 }
 
-void kvm_nested_s2_unmap(struct kvm *kvm)
+void kvm_nested_s2_unmap(struct kvm *kvm, bool may_block)
 {
 	int i;
 
@@ -742,7 +768,7 @@ void kvm_nested_s2_unmap(struct kvm *kvm)
 		struct kvm_s2_mmu *mmu = &kvm->arch.nested_mmus[i];
 
 		if (kvm_s2_mmu_valid(mmu))
-			kvm_stage2_unmap_range(mmu, 0, kvm_phys_size(mmu));
+			kvm_stage2_unmap_range(mmu, 0, kvm_phys_size(mmu), may_block);
 	}
 }
 
@@ -776,6 +802,21 @@ void kvm_arch_flush_shadow_all(struct kvm *kvm)
 	kvm_uninit_stage2_mmu(kvm);
 }
 
+#define has_tgran_2(__r, __sz)						\
+	({								\
+		u64 _s1, _s2, _mmfr0 = __r;				\
+									\
+		_s2 = SYS_FIELD_GET(ID_AA64MMFR0_EL1,			\
+				    TGRAN##__sz##_2, _mmfr0);		\
+									\
+		_s1 = SYS_FIELD_GET(ID_AA64MMFR0_EL1,			\
+				    TGRAN##__sz, _mmfr0);		\
+									\
+		((_s2 != ID_AA64MMFR0_EL1_TGRAN##__sz##_2_NI &&		\
+		  _s2 != ID_AA64MMFR0_EL1_TGRAN##__sz##_2_TGRAN##__sz) || \
+		 (_s2 == ID_AA64MMFR0_EL1_TGRAN##__sz##_2_TGRAN##__sz && \
+		  _s1 != ID_AA64MMFR0_EL1_TGRAN##__sz##_NI));		\
+	})
 /*
  * Our emulated CPU doesn't support all the possible features. For the
  * sake of simplicity (and probably mental sanity), wipe out a number
@@ -783,153 +824,167 @@ void kvm_arch_flush_shadow_all(struct kvm *kvm)
  * This list should get updated as new features get added to the NV
  * support, and new extension to the architecture.
  */
-static u64 limit_nv_id_reg(u32 id, u64 val)
+u64 limit_nv_id_reg(struct kvm *kvm, u32 reg, u64 val)
 {
-	u64 tmp;
+	u64 orig_val = val;
 
-	switch (id) {
+	switch (reg) {
 	case SYS_ID_AA64ISAR0_EL1:
 		/* Support everything but TME */
-		val &= ~NV_FTR(ISAR0, TME);
+		val &= ~ID_AA64ISAR0_EL1_TME;
 		break;
 
 	case SYS_ID_AA64ISAR1_EL1:
-		/* Support everything but Spec Invalidation */
-		val &= ~(GENMASK_ULL(63, 56)	|
-			 NV_FTR(ISAR1, SPECRES));
+		/* Support everything but LS64 and Spec Invalidation */
+		val &= ~(ID_AA64ISAR1_EL1_LS64	|
+			 ID_AA64ISAR1_EL1_SPECRES);
 		break;
 
 	case SYS_ID_AA64PFR0_EL1:
-		/* No AMU, MPAM, S-EL2, RAS or SVE */
-		val &= ~(GENMASK_ULL(55, 52)	|
-			 NV_FTR(PFR0, AMU)	|
-			 NV_FTR(PFR0, MPAM)	|
-			 NV_FTR(PFR0, SEL2)	|
-			 NV_FTR(PFR0, RAS)	|
-			 NV_FTR(PFR0, SVE)	|
-			 NV_FTR(PFR0, EL3)	|
-			 NV_FTR(PFR0, EL2)	|
-			 NV_FTR(PFR0, EL1));
-		/* 64bit EL1/EL2/EL3 only */
-		val |= FIELD_PREP(NV_FTR(PFR0, EL1), 0b0001);
-		val |= FIELD_PREP(NV_FTR(PFR0, EL2), 0b0001);
-		val |= FIELD_PREP(NV_FTR(PFR0, EL3), 0b0001);
+		/* No RME, AMU, MPAM, S-EL2, or RAS */
+		val &= ~(ID_AA64PFR0_EL1_RME	|
+			 ID_AA64PFR0_EL1_AMU	|
+			 ID_AA64PFR0_EL1_MPAM	|
+			 ID_AA64PFR0_EL1_SEL2	|
+			 ID_AA64PFR0_EL1_RAS	|
+			 ID_AA64PFR0_EL1_EL3	|
+			 ID_AA64PFR0_EL1_EL2	|
+			 ID_AA64PFR0_EL1_EL1	|
+			 ID_AA64PFR0_EL1_EL0);
+		/* 64bit only at any EL */
+		val |= SYS_FIELD_PREP_ENUM(ID_AA64PFR0_EL1, EL0, IMP);
+		val |= SYS_FIELD_PREP_ENUM(ID_AA64PFR0_EL1, EL1, IMP);
+		val |= SYS_FIELD_PREP_ENUM(ID_AA64PFR0_EL1, EL2, IMP);
+		val |= SYS_FIELD_PREP_ENUM(ID_AA64PFR0_EL1, EL3, IMP);
 		break;
 
 	case SYS_ID_AA64PFR1_EL1:
 		/* Only support BTI, SSBS, CSV2_frac */
-		val &= (NV_FTR(PFR1, BT)	|
-			NV_FTR(PFR1, SSBS)	|
-			NV_FTR(PFR1, CSV2_frac));
+		val &= (ID_AA64PFR1_EL1_BT	|
+			ID_AA64PFR1_EL1_SSBS	|
+			ID_AA64PFR1_EL1_CSV2_frac);
 		break;
 
 	case SYS_ID_AA64MMFR0_EL1:
-		/* Hide ECV, ExS, Secure Memory */
-		val &= ~(NV_FTR(MMFR0, ECV)		|
-			 NV_FTR(MMFR0, EXS)		|
-			 NV_FTR(MMFR0, TGRAN4_2)	|
-			 NV_FTR(MMFR0, TGRAN16_2)	|
-			 NV_FTR(MMFR0, TGRAN64_2)	|
-			 NV_FTR(MMFR0, SNSMEM));
+		/* Hide ExS, Secure Memory */
+		val &= ~(ID_AA64MMFR0_EL1_EXS		|
+			 ID_AA64MMFR0_EL1_TGRAN4_2	|
+			 ID_AA64MMFR0_EL1_TGRAN16_2	|
+			 ID_AA64MMFR0_EL1_TGRAN64_2	|
+			 ID_AA64MMFR0_EL1_SNSMEM);
+
+		/* Hide CNTPOFF if present */
+		val = ID_REG_LIMIT_FIELD_ENUM(val, ID_AA64MMFR0_EL1, ECV, IMP);
 
 		/* Disallow unsupported S2 page sizes */
 		switch (PAGE_SIZE) {
 		case SZ_64K:
-			val |= FIELD_PREP(NV_FTR(MMFR0, TGRAN16_2), 0b0001);
+			val |= SYS_FIELD_PREP_ENUM(ID_AA64MMFR0_EL1, TGRAN16_2, NI);
 			fallthrough;
 		case SZ_16K:
-			val |= FIELD_PREP(NV_FTR(MMFR0, TGRAN4_2), 0b0001);
+			val |= SYS_FIELD_PREP_ENUM(ID_AA64MMFR0_EL1, TGRAN4_2, NI);
 			fallthrough;
 		case SZ_4K:
 			/* Support everything */
 			break;
 		}
+
 		/*
-		 * Since we can't support a guest S2 page size smaller than
-		 * the host's own page size (due to KVM only populating its
-		 * own S2 using the kernel's page size), advertise the
-		 * limitation using FEAT_GTG.
+		 * Since we can't support a guest S2 page size smaller
+		 * than the host's own page size (due to KVM only
+		 * populating its own S2 using the kernel's page
+		 * size), advertise the limitation using FEAT_GTG.
 		 */
 		switch (PAGE_SIZE) {
 		case SZ_4K:
-			val |= FIELD_PREP(NV_FTR(MMFR0, TGRAN4_2), 0b0010);
+			if (has_tgran_2(orig_val, 4))
+				val |= SYS_FIELD_PREP_ENUM(ID_AA64MMFR0_EL1, TGRAN4_2, IMP);
 			fallthrough;
 		case SZ_16K:
-			val |= FIELD_PREP(NV_FTR(MMFR0, TGRAN16_2), 0b0010);
+			if (has_tgran_2(orig_val, 16))
+				val |= SYS_FIELD_PREP_ENUM(ID_AA64MMFR0_EL1, TGRAN16_2, IMP);
 			fallthrough;
 		case SZ_64K:
-			val |= FIELD_PREP(NV_FTR(MMFR0, TGRAN64_2), 0b0010);
+			if (has_tgran_2(orig_val, 64))
+				val |= SYS_FIELD_PREP_ENUM(ID_AA64MMFR0_EL1, TGRAN64_2, IMP);
 			break;
 		}
+
 		/* Cap PARange to 48bits */
-		tmp = FIELD_GET(NV_FTR(MMFR0, PARANGE), val);
-		if (tmp > 0b0101) {
-			val &= ~NV_FTR(MMFR0, PARANGE);
-			val |= FIELD_PREP(NV_FTR(MMFR0, PARANGE), 0b0101);
-		}
+		val = ID_REG_LIMIT_FIELD_ENUM(val, ID_AA64MMFR0_EL1, PARANGE, 48);
 		break;
 
 	case SYS_ID_AA64MMFR1_EL1:
-		val &= (NV_FTR(MMFR1, HCX)	|
-			NV_FTR(MMFR1, PAN)	|
-			NV_FTR(MMFR1, LO)	|
-			NV_FTR(MMFR1, HPDS)	|
-			NV_FTR(MMFR1, VH)	|
-			NV_FTR(MMFR1, VMIDBits));
+		val &= (ID_AA64MMFR1_EL1_HCX	|
+			ID_AA64MMFR1_EL1_PAN	|
+			ID_AA64MMFR1_EL1_LO	|
+			ID_AA64MMFR1_EL1_HPDS	|
+			ID_AA64MMFR1_EL1_VH	|
+			ID_AA64MMFR1_EL1_VMIDBits);
+		/* FEAT_E2H0 implies no VHE */
+		if (test_bit(KVM_ARM_VCPU_HAS_EL2_E2H0, kvm->arch.vcpu_features))
+			val &= ~ID_AA64MMFR1_EL1_VH;
 		break;
 
 	case SYS_ID_AA64MMFR2_EL1:
-		val &= ~(NV_FTR(MMFR2, BBM)	|
-			 NV_FTR(MMFR2, TTL)	|
+		val &= ~(ID_AA64MMFR2_EL1_BBM	|
+			 ID_AA64MMFR2_EL1_TTL	|
 			 GENMASK_ULL(47, 44)	|
-			 NV_FTR(MMFR2, ST)	|
-			 NV_FTR(MMFR2, CCIDX)	|
-			 NV_FTR(MMFR2, VARange));
+			 ID_AA64MMFR2_EL1_ST	|
+			 ID_AA64MMFR2_EL1_CCIDX	|
+			 ID_AA64MMFR2_EL1_VARange);
 
 		/* Force TTL support */
-		val |= FIELD_PREP(NV_FTR(MMFR2, TTL), 0b0001);
+		val |= SYS_FIELD_PREP_ENUM(ID_AA64MMFR2_EL1, TTL, IMP);
 		break;
 
 	case SYS_ID_AA64MMFR4_EL1:
-		val = 0;
-		if (!cpus_have_final_cap(ARM64_HAS_HCR_NV1))
-			val |= FIELD_PREP(NV_FTR(MMFR4, E2H0),
-					  ID_AA64MMFR4_EL1_E2H0_NI_NV1);
-		break;
-
-	case SYS_ID_AA64DFR0_EL1:
-		/* Only limited support for PMU, Debug, BPs and WPs */
-		val &= (NV_FTR(DFR0, PMUVer)	|
-			NV_FTR(DFR0, WRPs)	|
-			NV_FTR(DFR0, BRPs)	|
-			NV_FTR(DFR0, DebugVer));
-
-		/* Cap Debug to ARMv8.1 */
-		tmp = FIELD_GET(NV_FTR(DFR0, DebugVer), val);
-		if (tmp > 0b0111) {
-			val &= ~NV_FTR(DFR0, DebugVer);
-			val |= FIELD_PREP(NV_FTR(DFR0, DebugVer), 0b0111);
+		/*
+		 * You get EITHER
+		 *
+		 * - FEAT_VHE without FEAT_E2H0
+		 * - FEAT_NV limited to FEAT_NV2
+		 * - HCR_EL2.NV1 being RES0
+		 *
+		 * OR
+		 *
+		 * - FEAT_E2H0 without FEAT_VHE nor FEAT_NV
+		 *
+		 * Life is too short for anything else.
+		 */
+		if (test_bit(KVM_ARM_VCPU_HAS_EL2_E2H0, kvm->arch.vcpu_features)) {
+			val = 0;
+		} else {
+			val = SYS_FIELD_PREP_ENUM(ID_AA64MMFR4_EL1, NV_frac, NV2_ONLY);
+			val |= SYS_FIELD_PREP_ENUM(ID_AA64MMFR4_EL1, E2H0, NI_NV1);
 		}
 		break;
 
-	default:
-		/* Unknown register, just wipe it clean */
-		val = 0;
+	case SYS_ID_AA64DFR0_EL1:
+		/* Only limited support for PMU, Debug, BPs, WPs, and HPMN0 */
+		val &= (ID_AA64DFR0_EL1_PMUVer	|
+			ID_AA64DFR0_EL1_WRPs	|
+			ID_AA64DFR0_EL1_BRPs	|
+			ID_AA64DFR0_EL1_DebugVer|
+			ID_AA64DFR0_EL1_HPMN0);
+
+		/* Cap Debug to ARMv8.1 */
+		val = ID_REG_LIMIT_FIELD_ENUM(val, ID_AA64DFR0_EL1, DebugVer, VHE);
 		break;
 	}
 
 	return val;
 }
 
-u64 kvm_vcpu_sanitise_vncr_reg(const struct kvm_vcpu *vcpu, enum vcpu_sysreg sr)
+u64 kvm_vcpu_apply_reg_masks(const struct kvm_vcpu *vcpu,
+			     enum vcpu_sysreg sr, u64 v)
 {
-	u64 v = ctxt_sys_reg(&vcpu->arch.ctxt, sr);
 	struct kvm_sysreg_masks *masks;
 
 	masks = vcpu->kvm->arch.sysreg_masks;
 
 	if (masks) {
-		sr -= __VNCR_START__;
+		sr -= __SANITISED_REG_START__;
 
 		v &= ~masks->mask[sr].res0;
 		v |= masks->mask[sr].res1;
@@ -938,34 +993,32 @@ u64 kvm_vcpu_sanitise_vncr_reg(const struct kvm_vcpu *vcpu, enum vcpu_sysreg sr)
 	return v;
 }
 
-static void set_sysreg_masks(struct kvm *kvm, int sr, u64 res0, u64 res1)
+static __always_inline void set_sysreg_masks(struct kvm *kvm, int sr, u64 res0, u64 res1)
 {
-	int i = sr - __VNCR_START__;
+	int i = sr - __SANITISED_REG_START__;
+
+	BUILD_BUG_ON(!__builtin_constant_p(sr));
+	BUILD_BUG_ON(sr < __SANITISED_REG_START__);
+	BUILD_BUG_ON(sr >= NR_SYS_REGS);
 
 	kvm->arch.sysreg_masks->mask[i].res0 = res0;
 	kvm->arch.sysreg_masks->mask[i].res1 = res1;
 }
 
-int kvm_init_nv_sysregs(struct kvm *kvm)
+int kvm_init_nv_sysregs(struct kvm_vcpu *vcpu)
 {
+	struct kvm *kvm = vcpu->kvm;
 	u64 res0, res1;
-	int ret = 0;
 
-	mutex_lock(&kvm->arch.config_lock);
+	lockdep_assert_held(&kvm->arch.config_lock);
 
 	if (kvm->arch.sysreg_masks)
 		goto out;
 
 	kvm->arch.sysreg_masks = kzalloc(sizeof(*(kvm->arch.sysreg_masks)),
 					 GFP_KERNEL_ACCOUNT);
-	if (!kvm->arch.sysreg_masks) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	for (int i = 0; i < KVM_ARM_ID_REG_NUM; i++)
-		kvm->arch.id_regs[i] = limit_nv_id_reg(IDX_IDREG(i),
-						       kvm->arch.id_regs[i]);
+	if (!kvm->arch.sysreg_masks)
+		return -ENOMEM;
 
 	/* VTTBR_EL2 */
 	res0 = res1 = 0;
@@ -1005,10 +1058,11 @@ int kvm_init_nv_sysregs(struct kvm *kvm)
 		res0 |= HCR_FIEN;
 	if (!kvm_has_feat(kvm, ID_AA64MMFR2_EL1, FWB, IMP))
 		res0 |= HCR_FWB;
-	if (!kvm_has_feat(kvm, ID_AA64MMFR2_EL1, NV, NV2))
-		res0 |= HCR_NV2;
-	if (!kvm_has_feat(kvm, ID_AA64MMFR2_EL1, NV, IMP))
-		res0 |= (HCR_AT | HCR_NV1 | HCR_NV);
+	/* Implementation choice: NV2 is the only supported config */
+	if (!kvm_has_feat(kvm, ID_AA64MMFR4_EL1, NV_frac, NV2_ONLY))
+		res0 |= (HCR_NV2 | HCR_NV | HCR_AT);
+	if (!kvm_has_feat(kvm, ID_AA64MMFR4_EL1, E2H0, NI))
+		res0 |= HCR_NV1;
 	if (!(__vcpu_has_feature(&kvm->arch, KVM_ARM_VCPU_PTRAUTH_ADDRESS) &&
 	      __vcpu_has_feature(&kvm->arch, KVM_ARM_VCPU_PTRAUTH_GENERIC)))
 		res0 |= (HCR_API | HCR_APK);
@@ -1018,6 +1072,8 @@ int kvm_init_nv_sysregs(struct kvm *kvm)
 		res0 |= (HCR_TEA | HCR_TERR);
 	if (!kvm_has_feat(kvm, ID_AA64MMFR1_EL1, LO, IMP))
 		res0 |= HCR_TLOR;
+	if (!kvm_has_feat(kvm, ID_AA64MMFR1_EL1, VH, IMP))
+		res0 |= HCR_E2H;
 	if (!kvm_has_feat(kvm, ID_AA64MMFR4_EL1, E2H0, IMP))
 		res1 |= HCR_E2H;
 	set_sysreg_masks(kvm, HCR_EL2, res0, res1);
@@ -1087,21 +1143,21 @@ int kvm_init_nv_sysregs(struct kvm *kvm)
 			 HFGxTR_EL2_ERXPFGF_EL1 | HFGxTR_EL2_ERXPFGCTL_EL1 |
 			 HFGxTR_EL2_ERXPFGCDN_EL1 | HFGxTR_EL2_ERXADDR_EL1);
 	if (!kvm_has_feat(kvm, ID_AA64ISAR1_EL1, LS64, LS64_ACCDATA))
-		res1 |= HFGxTR_EL2_nACCDATA_EL1;
+		res0 |= HFGxTR_EL2_nACCDATA_EL1;
 	if (!kvm_has_feat(kvm, ID_AA64PFR1_EL1, GCS, IMP))
-		res1 |= (HFGxTR_EL2_nGCS_EL0 | HFGxTR_EL2_nGCS_EL1);
+		res0 |= (HFGxTR_EL2_nGCS_EL0 | HFGxTR_EL2_nGCS_EL1);
 	if (!kvm_has_feat(kvm, ID_AA64PFR1_EL1, SME, IMP))
-		res1 |= (HFGxTR_EL2_nSMPRI_EL1 | HFGxTR_EL2_nTPIDR2_EL0);
+		res0 |= (HFGxTR_EL2_nSMPRI_EL1 | HFGxTR_EL2_nTPIDR2_EL0);
 	if (!kvm_has_feat(kvm, ID_AA64PFR1_EL1, THE, IMP))
-		res1 |= HFGxTR_EL2_nRCWMASK_EL1;
+		res0 |= HFGxTR_EL2_nRCWMASK_EL1;
 	if (!kvm_has_feat(kvm, ID_AA64MMFR3_EL1, S1PIE, IMP))
-		res1 |= (HFGxTR_EL2_nPIRE0_EL1 | HFGxTR_EL2_nPIR_EL1);
+		res0 |= (HFGxTR_EL2_nPIRE0_EL1 | HFGxTR_EL2_nPIR_EL1);
 	if (!kvm_has_feat(kvm, ID_AA64MMFR3_EL1, S1POE, IMP))
-		res1 |= (HFGxTR_EL2_nPOR_EL0 | HFGxTR_EL2_nPOR_EL1);
+		res0 |= (HFGxTR_EL2_nPOR_EL0 | HFGxTR_EL2_nPOR_EL1);
 	if (!kvm_has_feat(kvm, ID_AA64MMFR3_EL1, S2POE, IMP))
-		res1 |= HFGxTR_EL2_nS2POR_EL1;
+		res0 |= HFGxTR_EL2_nS2POR_EL1;
 	if (!kvm_has_feat(kvm, ID_AA64MMFR3_EL1, AIE, IMP))
-		res1 |= (HFGxTR_EL2_nMAIR2_EL1 | HFGxTR_EL2_nAMAIR2_EL1);
+		res0 |= (HFGxTR_EL2_nMAIR2_EL1 | HFGxTR_EL2_nAMAIR2_EL1);
 	set_sysreg_masks(kvm, HFGRTR_EL2, res0 | __HFGRTR_EL2_RES0, res1);
 	set_sysreg_masks(kvm, HFGWTR_EL2, res0 | __HFGWTR_EL2_RES0, res1);
 
@@ -1137,10 +1193,10 @@ int kvm_init_nv_sysregs(struct kvm *kvm)
 			 HDFGRTR_EL2_TRBPTR_EL1 | HDFGRTR_EL2_TRBSR_EL1 |
 			 HDFGRTR_EL2_TRBTRG_EL1);
 	if (!kvm_has_feat(kvm, ID_AA64DFR0_EL1, BRBE, IMP))
-		res1 |= (HDFGRTR_EL2_nBRBIDR | HDFGRTR_EL2_nBRBCTL |
+		res0 |= (HDFGRTR_EL2_nBRBIDR | HDFGRTR_EL2_nBRBCTL |
 			 HDFGRTR_EL2_nBRBDATA);
 	if (!kvm_has_feat(kvm, ID_AA64DFR0_EL1, PMSVer, V1P2))
-		res1 |= HDFGRTR_EL2_nPMSNEVFR_EL1;
+		res0 |= HDFGRTR_EL2_nPMSNEVFR_EL1;
 	set_sysreg_masks(kvm, HDFGRTR_EL2, res0 | HDFGRTR_EL2_RES0, res1);
 
 	/* Reuse the bits from the read-side and add the write-specific stuff */
@@ -1176,9 +1232,9 @@ int kvm_init_nv_sysregs(struct kvm *kvm)
 		res0 |= (HFGITR_EL2_CFPRCTX | HFGITR_EL2_DVPRCTX |
 			 HFGITR_EL2_CPPRCTX);
 	if (!kvm_has_feat(kvm, ID_AA64DFR0_EL1, BRBE, IMP))
-		res1 |= (HFGITR_EL2_nBRBINJ | HFGITR_EL2_nBRBIALL);
+		res0 |= (HFGITR_EL2_nBRBINJ | HFGITR_EL2_nBRBIALL);
 	if (!kvm_has_feat(kvm, ID_AA64PFR1_EL1, GCS, IMP))
-		res1 |= (HFGITR_EL2_nGCSPUSHM_EL1 | HFGITR_EL2_nGCSSTR_EL1 |
+		res0 |= (HFGITR_EL2_nGCSPUSHM_EL1 | HFGITR_EL2_nGCSSTR_EL1 |
 			 HFGITR_EL2_nGCSEPP);
 	if (!kvm_has_feat(kvm, ID_AA64ISAR1_EL1, SPECRES, COSP_RCTX))
 		res0 |= HFGITR_EL2_COSPRCTX;
@@ -1200,8 +1256,75 @@ int kvm_init_nv_sysregs(struct kvm *kvm)
 		res0 |= SCTLR_EL1_EPAN;
 	set_sysreg_masks(kvm, SCTLR_EL1, res0, res1);
 
-out:
-	mutex_unlock(&kvm->arch.config_lock);
+	/* MDCR_EL2 */
+	res0 = MDCR_EL2_RES0;
+	res1 = MDCR_EL2_RES1;
+	if (!kvm_has_feat(kvm, ID_AA64DFR0_EL1, PMUVer, IMP))
+		res0 |= (MDCR_EL2_HPMN | MDCR_EL2_TPMCR |
+			 MDCR_EL2_TPM | MDCR_EL2_HPME);
+	if (!kvm_has_feat(kvm, ID_AA64DFR0_EL1, PMSVer, IMP))
+		res0 |= MDCR_EL2_E2PB | MDCR_EL2_TPMS;
+	if (!kvm_has_feat(kvm, ID_AA64DFR1_EL1, SPMU, IMP))
+		res0 |= MDCR_EL2_EnSPM;
+	if (!kvm_has_feat(kvm, ID_AA64DFR0_EL1, PMUVer, V3P1))
+		res0 |= MDCR_EL2_HPMD;
+	if (!kvm_has_feat(kvm, ID_AA64DFR0_EL1, TraceFilt, IMP))
+		res0 |= MDCR_EL2_TTRF;
+	if (!kvm_has_feat(kvm, ID_AA64DFR0_EL1, PMUVer, V3P5))
+		res0 |= MDCR_EL2_HCCD | MDCR_EL2_HLP;
+	if (!kvm_has_feat(kvm, ID_AA64DFR0_EL1, TraceBuffer, IMP))
+		res0 |= MDCR_EL2_E2TB;
+	if (!kvm_has_feat(kvm, ID_AA64MMFR0_EL1, FGT, IMP))
+		res0 |= MDCR_EL2_TDCC;
+	if (!kvm_has_feat(kvm, ID_AA64DFR0_EL1, MTPMU, IMP) ||
+	    kvm_has_feat(kvm, ID_AA64PFR0_EL1, EL3, IMP))
+		res0 |= MDCR_EL2_MTPME;
+	if (!kvm_has_feat(kvm, ID_AA64DFR0_EL1, PMUVer, V3P7))
+		res0 |= MDCR_EL2_HPMFZO;
+	if (!kvm_has_feat(kvm, ID_AA64DFR0_EL1, PMSS, IMP))
+		res0 |= MDCR_EL2_PMSSE;
+	if (!kvm_has_feat(kvm, ID_AA64DFR0_EL1, PMSVer, V1P2))
+		res0 |= MDCR_EL2_HPMFZS;
+	if (!kvm_has_feat(kvm, ID_AA64DFR1_EL1, EBEP, IMP))
+		res0 |= MDCR_EL2_PMEE;
+	if (!kvm_has_feat(kvm, ID_AA64DFR0_EL1, DebugVer, V8P9))
+		res0 |= MDCR_EL2_EBWE;
+	if (!kvm_has_feat(kvm, ID_AA64DFR2_EL1, STEP, IMP))
+		res0 |= MDCR_EL2_EnSTEPOP;
+	set_sysreg_masks(kvm, MDCR_EL2, res0, res1);
 
-	return ret;
+	/* CNTHCTL_EL2 */
+	res0 = GENMASK(63, 20);
+	res1 = 0;
+	if (!kvm_has_feat(kvm, ID_AA64PFR0_EL1, RME, IMP))
+		res0 |= CNTHCTL_CNTPMASK | CNTHCTL_CNTVMASK;
+	if (!kvm_has_feat(kvm, ID_AA64MMFR0_EL1, ECV, CNTPOFF)) {
+		res0 |= CNTHCTL_ECV;
+		if (!kvm_has_feat(kvm, ID_AA64MMFR0_EL1, ECV, IMP))
+			res0 |= (CNTHCTL_EL1TVT | CNTHCTL_EL1TVCT |
+				 CNTHCTL_EL1NVPCT | CNTHCTL_EL1NVVCT);
+	}
+	if (!kvm_has_feat(kvm, ID_AA64MMFR1_EL1, VH, IMP))
+		res0 |= GENMASK(11, 8);
+	set_sysreg_masks(kvm, CNTHCTL_EL2, res0, res1);
+
+out:
+	for (enum vcpu_sysreg sr = __SANITISED_REG_START__; sr < NR_SYS_REGS; sr++)
+		(void)__vcpu_sys_reg(vcpu, sr);
+
+	return 0;
+}
+
+void check_nested_vcpu_requests(struct kvm_vcpu *vcpu)
+{
+	if (kvm_check_request(KVM_REQ_NESTED_S2_UNMAP, vcpu)) {
+		struct kvm_s2_mmu *mmu = vcpu->arch.hw_mmu;
+
+		write_lock(&vcpu->kvm->mmu_lock);
+		if (mmu->pending_unmap) {
+			kvm_stage2_unmap_range(mmu, 0, kvm_phys_size(mmu), true);
+			mmu->pending_unmap = false;
+		}
+		write_unlock(&vcpu->kvm->mmu_lock);
+	}
 }
