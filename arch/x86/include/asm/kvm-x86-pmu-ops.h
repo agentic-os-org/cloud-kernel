@@ -26,9 +26,5 @@ KVM_X86_PMU_OP_OPTIONAL(reset)
 KVM_X86_PMU_OP_OPTIONAL(deliver_pmi)
 KVM_X86_PMU_OP_OPTIONAL(cleanup)
 
-KVM_X86_PMU_OP_OPTIONAL(write_global_ctrl)
-KVM_X86_PMU_OP_OPTIONAL(mediated_load)
-KVM_X86_PMU_OP_OPTIONAL(mediated_put)
-
 #undef KVM_X86_PMU_OP
 #undef KVM_X86_PMU_OP_OPTIONAL

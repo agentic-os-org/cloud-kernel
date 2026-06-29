@@ -37,25 +37,12 @@ struct kvm_pmu_ops {
 	void (*deliver_pmi)(struct kvm_vcpu *vcpu);
 	void (*cleanup)(struct kvm_vcpu *vcpu);
 
-	bool (*is_mediated_pmu_supported)(struct x86_pmu_capability *host_pmu);
-	void (*mediated_load)(struct kvm_vcpu *vcpu);
-	void (*mediated_put)(struct kvm_vcpu *vcpu);
-	void (*write_global_ctrl)(u64 global_ctrl);
-
 	const u64 EVENTSEL_EVENT;
 	const int MAX_NR_GP_COUNTERS;
 	const int MIN_NR_GP_COUNTERS;
-
-	const u32 PERF_GLOBAL_CTRL;
-	const u32 GP_EVENTSEL_BASE;
-	const u32 GP_COUNTER_BASE;
-	const u32 FIXED_COUNTER_BASE;
-	const u32 MSR_STRIDE;
 };
 
 void kvm_pmu_ops_update(const struct kvm_pmu_ops *pmu_ops);
-
-void kvm_handle_guest_mediated_pmi(void);
 
 static inline bool kvm_pmu_has_perf_global_ctrl(struct kvm_pmu *pmu)
 {
@@ -71,11 +58,6 @@ static inline bool kvm_pmu_has_perf_global_ctrl(struct kvm_pmu *pmu)
 	return pmu->version > 1;
 }
 
-static inline bool kvm_vcpu_has_mediated_pmu(struct kvm_vcpu *vcpu)
-{
-	return enable_mediated_pmu && vcpu_to_pmu(vcpu)->version;
-}
-
 static inline u64 pmc_bitmask(struct kvm_pmc *pmc)
 {
 	struct kvm_pmu *pmu = pmc_to_pmu(pmc);
@@ -87,9 +69,6 @@ static inline u64 pmc_read_counter(struct kvm_pmc *pmc)
 {
 	u64 counter, enabled, running;
 
-	if (kvm_vcpu_has_mediated_pmu(pmc->vcpu))
-		return pmc->counter & pmc_bitmask(pmc);
-
 	counter = pmc->counter;
 	if (pmc->perf_event && !pmc->is_paused)
 		counter += perf_event_read_value(pmc->perf_event,
@@ -100,11 +79,6 @@ static inline u64 pmc_read_counter(struct kvm_pmc *pmc)
 
 static inline void pmc_write_counter(struct kvm_pmc *pmc, u64 val)
 {
-	if (kvm_vcpu_has_mediated_pmu(pmc->vcpu)) {
-		pmc->counter = val & pmc_bitmask(pmc);
-		return;
-	}
-
 	pmc->counter += val - pmc_read_counter(pmc);
 	pmc->counter &= pmc_bitmask(pmc);
 }
@@ -190,7 +164,47 @@ static inline bool pmc_speculative_in_use(struct kvm_pmc *pmc)
 
 extern struct x86_pmu_capability kvm_pmu_cap;
 
-void kvm_init_pmu_capability(struct kvm_pmu_ops *pmu_ops);
+static inline void kvm_init_pmu_capability(const struct kvm_pmu_ops *pmu_ops)
+{
+	bool is_intel = boot_cpu_data.x86_vendor == X86_VENDOR_INTEL;
+	int min_nr_gp_ctrs = pmu_ops->MIN_NR_GP_COUNTERS;
+
+	/*
+	 * Hybrid PMUs don't play nice with virtualization without careful
+	 * configuration by userspace, and KVM's APIs for reporting supported
+	 * vPMU features do not account for hybrid PMUs.  Disable vPMU support
+	 * for hybrid PMUs until KVM gains a way to let userspace opt-in.
+	 */
+	if (cpu_feature_enabled(X86_FEATURE_HYBRID_CPU))
+		enable_pmu = false;
+
+	if (enable_pmu) {
+		perf_get_x86_pmu_capability(&kvm_pmu_cap);
+
+		/*
+		 * WARN if perf did NOT disable hardware PMU if the number of
+		 * architecturally required GP counters aren't present, i.e. if
+		 * there are a non-zero number of counters, but fewer than what
+		 * is architecturally required.
+		 */
+		if (!kvm_pmu_cap.num_counters_gp ||
+		    WARN_ON_ONCE(kvm_pmu_cap.num_counters_gp < min_nr_gp_ctrs))
+			enable_pmu = false;
+		else if (is_intel && !kvm_pmu_cap.version)
+			enable_pmu = false;
+	}
+
+	if (!enable_pmu) {
+		memset(&kvm_pmu_cap, 0, sizeof(kvm_pmu_cap));
+		return;
+	}
+
+	kvm_pmu_cap.version = min(kvm_pmu_cap.version, 2);
+	kvm_pmu_cap.num_counters_gp = min(kvm_pmu_cap.num_counters_gp,
+					  pmu_ops->MAX_NR_GP_COUNTERS);
+	kvm_pmu_cap.num_counters_fixed = min(kvm_pmu_cap.num_counters_fixed,
+					     KVM_PMC_MAX_FIXED);
+}
 
 static inline void kvm_pmu_request_counter_reprogram(struct kvm_pmc *pmc)
 {
@@ -225,11 +239,6 @@ static inline bool pmc_is_globally_enabled(struct kvm_pmc *pmc)
 	return test_bit(pmc->idx, (unsigned long *)&pmu->global_ctrl);
 }
 
-static inline bool kvm_pmu_is_fastpath_emulation_allowed(struct kvm_vcpu *vcpu)
-{
-	return !kvm_vcpu_has_mediated_pmu(vcpu);
-}
-
 void kvm_pmu_deliver_pmi(struct kvm_vcpu *vcpu);
 void kvm_pmu_handle_event(struct kvm_vcpu *vcpu);
 int kvm_pmu_rdpmc(struct kvm_vcpu *vcpu, unsigned pmc, u64 *data);
@@ -245,12 +254,7 @@ void kvm_pmu_destroy(struct kvm_vcpu *vcpu);
 int kvm_vm_ioctl_set_pmu_event_filter(struct kvm *kvm, void __user *argp);
 void kvm_pmu_trigger_event(struct kvm_vcpu *vcpu, u64 perf_hw_id);
 
-void kvm_mediated_pmu_load(struct kvm_vcpu *vcpu);
-void kvm_mediated_pmu_put(struct kvm_vcpu *vcpu);
-
 bool is_vmware_backdoor_pmc(u32 pmc_idx);
-bool kvm_need_perf_global_ctrl_intercept(struct kvm_vcpu *vcpu);
-bool kvm_need_rdpmc_intercept(struct kvm_vcpu *vcpu);
 
 extern struct kvm_pmu_ops intel_pmu_ops;
 extern struct kvm_pmu_ops amd_pmu_ops;

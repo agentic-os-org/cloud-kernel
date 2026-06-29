@@ -9,10 +9,6 @@
 #include "kvm_cache_regs.h"
 #include "kvm_emulate.h"
 
-#define MSR_TYPE_R	1
-#define MSR_TYPE_W	2
-#define MSR_TYPE_RW	3
-
 struct kvm_caps {
 	/* control of guest tsc rate supported? */
 	bool has_tsc_control;
@@ -334,7 +330,6 @@ extern u64 host_arch_capabilities;
 extern struct kvm_caps kvm_caps;
 
 extern bool enable_pmu;
-extern bool enable_mediated_pmu;
 
 /*
  * Get a filtered version of KVM's supported XCR0 that strips out dynamic
