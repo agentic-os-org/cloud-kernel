@@ -56,13 +56,12 @@ void *__erofs_bread(struct super_block *sb, struct erofs_buf *buf,
 	struct address_space *const mapping = inode->i_mapping;
 	pgoff_t index = offset >> PAGE_SHIFT;
 	struct page *page = buf->page;
+	unsigned int nofs_flag;
 
 	if (!page || page->index != index) {
 		erofs_put_metabuf(buf);
 #ifdef CONFIG_EROFS_FS_RAFS_V6
 		if (sb && erofs_is_rafsv6_mode(sb)) {
-			unsigned int nofs_flag;
-
 			nofs_flag = memalloc_nofs_save();
 			if (IS_DAX(inode)) {
 				page = mapping->a_ops->startpfn(mapping, index,
@@ -78,8 +77,11 @@ void *__erofs_bread(struct super_block *sb, struct erofs_buf *buf,
 		} else
 #endif
 		{
-			page = read_cache_page_gfp(mapping, index,
-				   mapping_gfp_constraint(mapping, ~__GFP_FS));
+			nofs_flag = memalloc_nofs_save();
+			page = read_cache_page(mapping, index,
+					       (filler_t *)mapping->a_ops->readpage,
+					       buf->file);
+			memalloc_nofs_restore(nofs_flag);
 		}
 
 		if (IS_ERR(page))
@@ -112,9 +114,11 @@ void erofs_init_metabuf(struct erofs_buf *buf, struct super_block *sb)
 {
 	struct erofs_sb_info *sbi = EROFS_SB(sb);
 
-	if (erofs_is_fileio_mode(sbi))
+	buf->file = NULL;
+	if (erofs_is_fileio_mode(sbi)) {
+		buf->file = sbi->fdev;		/* some fs like FUSE needs it */
 		buf->inode = file_inode(sbi->fdev);
-	else if (erofs_is_fscache_mode(sb))
+	} else if (erofs_is_fscache_mode(sb))
 		buf->inode = sbi->s_fscache->inode;
 #ifdef CONFIG_EROFS_FS_RAFS_V6
 	else if (erofs_is_rafsv6_mode(sb))
