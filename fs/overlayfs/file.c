@@ -13,6 +13,7 @@
 #include <linux/security.h>
 #include <linux/mm.h>
 #include <linux/fs.h>
+#include <linux/huge_mm.h>
 #include "overlayfs.h"
 
 struct ovl_aio_req {
@@ -735,6 +736,7 @@ const struct file_operations ovl_file_operations = {
 	.flush		= ovl_flush,
 	.splice_read    = ovl_splice_read,
 	.splice_write   = ovl_splice_write,
+	.get_unmapped_area = thp_get_unmapped_area,
 
 	.copy_file_range	= ovl_copy_file_range,
 	.remap_file_range	= ovl_remap_file_range,
