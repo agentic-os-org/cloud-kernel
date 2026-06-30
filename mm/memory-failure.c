@@ -1394,6 +1394,34 @@ static int identify_page_state(unsigned long pfn, struct page *p,
 	return page_action(ps, p, pfn);
 }
 
+/*
+ * Positive identification of pages the hwpoison handler cannot recover:
+ * pages owned by kernel internals with no userspace mapping to unmap, no
+ * file mapping to invalidate, and no migration target.
+ */
+static inline bool is_kernel_owned_page(struct page *page)
+{
+	struct page *head;
+	bool kernel_owned;
+
+	/* PG_reserved is a per-page flag, never set on a compound page. */
+	if (PageReserved(page))
+		return true;
+
+	/*
+	 * Page-type bits live only on the head page, so resolve any tail
+	 * first.  The check takes no refcount; recheck the head afterwards
+	 * so a concurrent split or compound free cannot leave us trusting
+	 * a stale view.
+	 */
+retry:
+	head = compound_head(page);
+	kernel_owned = PageSlab(head) || PageTable(head);
+	if (head != compound_head(page))
+		goto retry;
+	return kernel_owned;
+}
+
 static int try_to_split_thp_page(struct page *page, const char *msg)
 {
 	lock_page(page);
@@ -1715,6 +1743,24 @@ try_again:
 
 	orig_head = hpage = compound_head(p);
 	num_poisoned_pages_inc();
+
+	/*
+	 * Kernel-owned pages (PG_reserved, slab, page tables) have no
+	 * userspace mapping to unmap, no file mapping to invalidate and
+	 * no migration entry: memory failure cannot recover them.  Bump
+	 * the refcount is useless and can even mislead the handler (a
+	 * slab compound page's PG_head makes PageTransHuge() true and the
+	 * THP split would interpret page->mapping, which is the slab
+	 * cache, as an address_space).  PG_hwpoison is already set above,
+	 * which bars the page from the allocator.  Report and bail.
+	 */
+	if (is_kernel_owned_page(p)) {
+		if (flags & MF_COUNT_INCREASED)
+			put_page(p);
+		action_result(pfn, MF_MSG_KERNEL, MF_IGNORED);
+		res = -EBUSY;
+		goto unlock_mutex;
+	}
 
 	/*
 	 * We need/can do nothing about count=0 pages.
