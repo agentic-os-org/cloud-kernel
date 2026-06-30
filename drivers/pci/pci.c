@@ -5003,7 +5003,7 @@ void pci_dev_unlock(struct pci_dev *dev)
 }
 EXPORT_SYMBOL_GPL(pci_dev_unlock);
 
-static void pci_dev_save_and_disable(struct pci_dev *dev)
+void pci_dev_save_and_disable(struct pci_dev *dev)
 {
 	const struct pci_error_handlers *err_handler =
 			dev->driver ? dev->driver->err_handler : NULL;
@@ -5036,8 +5036,9 @@ static void pci_dev_save_and_disable(struct pci_dev *dev)
 	 */
 	pci_write_config_word(dev, PCI_COMMAND, PCI_COMMAND_INTX_DISABLE);
 }
+EXPORT_SYMBOL_GPL(pci_dev_save_and_disable);
 
-static void pci_dev_restore(struct pci_dev *dev)
+void pci_dev_restore(struct pci_dev *dev)
 {
 	const struct pci_error_handlers *err_handler =
 			dev->driver ? dev->driver->err_handler : NULL;
@@ -5054,6 +5055,7 @@ static void pci_dev_restore(struct pci_dev *dev)
 	else if (dev->driver)
 		pci_warn(dev, "reset done");
 }
+EXPORT_SYMBOL_GPL(pci_dev_restore);
 
 /* dev->reset_methods[] is a 0-terminated list of indices into this array */
 const struct pci_reset_fn_method pci_reset_fn_methods[] = {

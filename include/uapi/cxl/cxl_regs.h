@@ -1,0 +1,161 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
+/*
+ * CXL Standard defines
+ *
+ * Hardware register offsets and bit-field masks for the CXL Component
+ * Register block, as defined by the CXL Specification r4.0.
+ */
+
+#ifndef _UAPI_CXL_REGS_H_
+#define _UAPI_CXL_REGS_H_
+
+#include <asm/bitsperlong.h>  /* __BITS_PER_LONG; needed by __GENMASK() */
+#include <linux/const.h>     /* _BITUL(), _BITULL() */
+#include <linux/bits.h>      /* __GENMASK() */
+
+/* CXL 4.0 8.2.3 CXL Component Register Layout and Definition */
+#define CXL_COMPONENT_REG_BLOCK_SIZE 0x00010000
+
+/* CXL 4.0 8.2.4 CXL.cache and CXL.mem Registers*/
+#define CXL_CM_OFFSET 0x1000
+#define CXL_CM_CAP_HDR_OFFSET 0x0
+#define   CXL_CM_CAP_HDR_ID_MASK __GENMASK(15, 0)
+#define     CM_CAP_HDR_CAP_ID 1
+#define   CXL_CM_CAP_HDR_VERSION_MASK __GENMASK(19, 16)
+#define     CM_CAP_HDR_CAP_VERSION 1
+#define   CXL_CM_CAP_HDR_CACHE_MEM_VERSION_MASK __GENMASK(23, 20)
+#define     CM_CAP_HDR_CACHE_MEM_VERSION 1
+#define   CXL_CM_CAP_HDR_ARRAY_SIZE_MASK __GENMASK(31, 24)
+#define CXL_CM_CAP_PTR_MASK __GENMASK(31, 20)
+
+/* CXL HDM Decoder Capability Structure */
+#define CXL_HDM_DECODER_CAP_OFFSET 0x0
+#define   CXL_HDM_DECODER_COUNT_MASK __GENMASK(3, 0)
+#define   CXL_HDM_DECODER_TARGET_COUNT_MASK __GENMASK(7, 4)
+#define   CXL_HDM_DECODER_INTERLEAVE_11_8 _BITUL(8)
+#define   CXL_HDM_DECODER_INTERLEAVE_14_12 _BITUL(9)
+#define   CXL_HDM_DECODER_POISON_ON_DECODE_ERR _BITUL(10)
+#define   CXL_HDM_DECODER_INTERLEAVE_3_6_12_WAY _BITUL(11)
+#define   CXL_HDM_DECODER_INTERLEAVE_16_WAY _BITUL(12)
+#define   CXL_HDM_DECODER_UIO_CAPABLE _BITUL(13)
+#define   CXL_HDM_DECODER_UIO_COUNT_MASK __GENMASK(19, 16)
+#define   CXL_HDM_DECODER_MEMDATA_NXM _BITUL(20)
+#define   CXL_HDM_DECODER_COHERENCY_MODELS_MASK    __GENMASK(22, 21)
+#define CXL_HDM_DECODER_CTRL_OFFSET 0x4
+#define   CXL_HDM_DECODER_ENABLE _BITUL(1)
+#define CXL_HDM_DECODER0_BASE_LOW_OFFSET(i) (0x20 * (i) + 0x10)
+#define CXL_HDM_DECODER0_BASE_HIGH_OFFSET(i) (0x20 * (i) + 0x14)
+#define CXL_HDM_DECODER0_SIZE_LOW_OFFSET(i) (0x20 * (i) + 0x18)
+#define CXL_HDM_DECODER0_SIZE_HIGH_OFFSET(i) (0x20 * (i) + 0x1c)
+#define CXL_HDM_DECODER0_CTRL_OFFSET(i) (0x20 * (i) + 0x20)
+#define   CXL_HDM_DECODER0_CTRL_IG_MASK __GENMASK(3, 0)
+#define   CXL_HDM_DECODER0_CTRL_IW_MASK __GENMASK(7, 4)
+#define   CXL_HDM_DECODER0_CTRL_LOCK _BITUL(8)
+#define   CXL_HDM_DECODER0_CTRL_COMMIT _BITUL(9)
+#define   CXL_HDM_DECODER0_CTRL_COMMITTED _BITUL(10)
+#define   CXL_HDM_DECODER0_CTRL_COMMIT_ERROR _BITUL(11)
+#define   CXL_HDM_DECODER0_CTRL_HOSTONLY _BITUL(12)
+#define CXL_HDM_DECODER0_TL_LOW(i) (0x20 * (i) + 0x24)
+#define CXL_HDM_DECODER0_TL_HIGH(i) (0x20 * (i) + 0x28)
+#define CXL_HDM_DECODER0_SKIP_LOW(i) CXL_HDM_DECODER0_TL_LOW(i)
+#define CXL_HDM_DECODER0_SKIP_HIGH(i) CXL_HDM_DECODER0_TL_HIGH(i)
+
+/*
+ * CXL r4.0 8.1.3: DVSEC for CXL Devices
+ *
+ * Register offsets are relative to the DVSEC capability base address,
+ * as discovered via PCI_EXT_CAP_ID_DVSEC with DVSEC ID 0x0.
+ * All registers in this section are 16-bit wide.
+ */
+
+/* DVSEC register offsets */
+#define CXL_DVSEC_CAPABILITY_OFFSET       0x0a
+#define CXL_DVSEC_CONTROL_OFFSET          0x0c
+#define CXL_DVSEC_STATUS_OFFSET           0x0e
+#define CXL_DVSEC_CONTROL2_OFFSET         0x10
+#define CXL_DVSEC_STATUS2_OFFSET          0x12
+#define CXL_DVSEC_LOCK_OFFSET             0x14
+#define CXL_DVSEC_CAPABILITY2_OFFSET      0x16
+#define CXL_DVSEC_RANGE1_SIZE_HIGH_OFFSET 0x18
+#define CXL_DVSEC_RANGE1_SIZE_LOW_OFFSET  0x1c
+#define CXL_DVSEC_RANGE1_BASE_HIGH_OFFSET 0x20
+#define CXL_DVSEC_RANGE1_BASE_LOW_OFFSET  0x24
+#define CXL_DVSEC_RANGE2_SIZE_HIGH_OFFSET 0x28
+#define CXL_DVSEC_RANGE2_SIZE_LOW_OFFSET  0x2c
+#define CXL_DVSEC_RANGE2_BASE_HIGH_OFFSET 0x30
+#define CXL_DVSEC_RANGE2_BASE_LOW_OFFSET  0x34
+#define CXL_DVSEC_CAPABILITY3_OFFSET      0x38
+
+/* DVSEC Range Base Low registers: bits [27:0] are reserved */
+#define CXL_DVSEC_RANGE_BASE_LOW_RSVD_MASK __GENMASK(27, 0)
+
+/* CXL r4.0 8.1.3.1 Table 8-5 DVSEC CXL Capability (offset 0x0A) */
+#define CXL_DVSEC_CAP_CACHE_CAPABLE             _BITUL(0)
+#define CXL_DVSEC_CAP_IO_CAPABLE                _BITUL(1)
+#define CXL_DVSEC_CAP_MEM_CAPABLE               _BITUL(2)
+#define CXL_DVSEC_CAP_MEM_HW_INIT_MODE          _BITUL(3)
+#define CXL_DVSEC_CAP_HDM_COUNT_MASK            __GENMASK(5, 4)
+#define CXL_DVSEC_CAP_CACHE_WBI_CAPABLE         _BITUL(6)
+#define CXL_DVSEC_CAP_CXL_RESET_CAPABLE         _BITUL(7)
+#define CXL_DVSEC_CAP_CXL_RESET_TIMEOUT_MASK    __GENMASK(10, 8)
+#define CXL_DVSEC_CAP_CXL_RESET_MEM_CLR_CAPABLE _BITUL(11)
+#define CXL_DVSEC_CAP_TSP_CAPABLE               _BITUL(12)
+#define CXL_DVSEC_CAP_MLD_CAPABLE               _BITUL(13)
+#define CXL_DVSEC_CAP_VIRAL_CAPABLE             _BITUL(14)
+#define CXL_DVSEC_CAP_PM_INIT_REPORTING_CAPABLE _BITUL(15)
+
+/* CXL r4.0 8.1.3.2 Table 8-6 DVSEC CXL Control (offset 0x0C) */
+#define CXL_DVSEC_CTRL_CACHE_ENABLE              _BITUL(0)
+#define CXL_DVSEC_CTRL_IO_ENABLE                 _BITUL(1)
+#define CXL_DVSEC_CTRL_MEM_ENABLE                _BITUL(2)
+#define CXL_DVSEC_CTRL_CACHE_SF_COVERAGE_MASK    __GENMASK(7, 3)
+#define CXL_DVSEC_CTRL_CACHE_SF_GRANULARITY_MASK __GENMASK(10, 8)
+#define CXL_DVSEC_CTRL_CACHE_CLEAN_EVICTION      _BITUL(11)
+#define CXL_DVSEC_CTRL_P2P_MEM_ENABLE            _BITUL(12)
+/* bit 13: RsvdP */
+#define CXL_DVSEC_CTRL_VIRAL_ENABLE              _BITUL(14)
+/* bit 15: RsvdP */
+
+/* CXL r4.0 8.1.3.3 Table 8-7 DVSEC CXL Status (offset 0x0E) */
+/* bits 13:0 = RsvdZ */
+#define CXL_DVSEC_STATUS_VIRAL_STATUS _BITUL(14)
+/* bit 15 = RsvdZ */
+
+/* CXL r4.0 8.1.3.4 Table 8-8 DVSEC CXL Control2 (offset 0x10) */
+#define CXL_DVSEC_CTRL2_DISABLE_CACHING          _BITUL(0)
+#define CXL_DVSEC_CTRL2_INITIATE_CACHE_WBI       _BITUL(1)
+#define CXL_DVSEC_CTRL2_INITIATE_CXL_RESET       _BITUL(2)
+#define CXL_DVSEC_CTRL2_CXL_RESET_MEM_CLR_ENABLE _BITUL(3)
+#define CXL_DVSEC_CTRL2_DESIRED_VOLATILE_HDM     _BITUL(4)
+#define CXL_DVSEC_CTRL2_MOD_COMPLETION_ENABLE    _BITUL(5)
+/* bits 15:6 = RsvdP */
+
+/* CXL r4.0 8.1.3.5 Table 8-9 DVSEC CXL Status2 (offset 0x12) */
+#define CXL_DVSEC_STATUS2_CACHE_INVALID           _BITUL(0)
+#define CXL_DVSEC_STATUS2_CXL_RESET_COMPLETE      _BITUL(1)
+#define CXL_DVSEC_STATUS2_CXL_RESET_ERROR         _BITUL(2)
+/* RW1CS; RsvdZ if Cap3.Volatile_HDM_Configurability=0 */
+#define CXL_DVSEC_STATUS2_VOLATILE_HDM_PRES_ERROR _BITUL(3)
+/* bits 14:4 = RsvdZ */
+#define CXL_DVSEC_STATUS2_PM_INIT_COMPLETION      _BITUL(15)
+
+/* CXL r4.0 _8.1.3.6 Table 8-10 _ DVSEC CXL Lock (offset 0x14) */
+#define CXL_DVSEC_LOCK_CONFIG_LOCK _BITUL(0)
+/* bits 15:1 = RsvdP */
+
+/* CXL r4.0 8.1.3.7 Table 8-11 DVSEC CXL Capability2 (offset 0x16) */
+#define CXL_DVSEC_CAP2_CACHE_SIZE_UNIT_MASK     __GENMASK(3, 0)
+#define CXL_DVSEC_CAP2_FALLBACK_CAPABILITY_MASK __GENMASK(5, 4)
+#define CXL_DVSEC_CAP2_MOD_COMPLETION_CAPABLE   _BITUL(6)
+#define CXL_DVSEC_CAP2_NO_CLEAN_WRITEBACK       _BITUL(7)
+#define CXL_DVSEC_CAP2_CACHE_SIZE_MASK          __GENMASK(15, 8)
+
+/* CXL r4.0 8.1.3.14 Table 8-20 DVSEC CXL Capability3 (offset 0x38) */
+#define CXL_DVSEC_CAP3_DEFAULT_VOLATILE_HDM_COLD_RESET _BITUL(0)
+#define CXL_DVSEC_CAP3_DEFAULT_VOLATILE_HDM_WARM_RESET _BITUL(1)
+#define CXL_DVSEC_CAP3_DEFAULT_VOLATILE_HDM_HOT_RESET  _BITUL(2)
+#define CXL_DVSEC_CAP3_VOLATILE_HDM_CONFIGURABILITY    _BITUL(3)
+#define CXL_DVSEC_CAP3_P2P_MEM_CAPABLE                 _BITUL(4)
+/* bits 15:5 = RsvdP */
+
+#endif /* _UAPI_CXL_REGS_H_ */

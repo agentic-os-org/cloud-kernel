@@ -495,6 +495,25 @@ int cxl_dpa_setup(struct cxl_dev_state *cxlds, const struct cxl_dpa_info *info)
 }
 EXPORT_SYMBOL_GPL(cxl_dpa_setup);
 
+int cxl_set_capacity(struct cxl_dev_state *cxlds, u64 capacity)
+{
+	struct cxl_dpa_info info = {
+		.size = capacity,
+	};
+
+	if (capacity) {
+		info.part[0].range = (struct range) {
+			.start = 0,
+			.end = capacity - 1,
+		};
+		info.part[0].mode = CXL_PARTMODE_RAM;
+		info.nr_partitions = 1;
+	}
+
+	return cxl_dpa_setup(cxlds, &info);
+}
+EXPORT_SYMBOL_NS_GPL(cxl_set_capacity, "CXL");
+
 int devm_cxl_dpa_reserve(struct cxl_endpoint_decoder *cxled,
 				resource_size_t base, resource_size_t len,
 				resource_size_t skipped)
@@ -565,6 +584,7 @@ int cxl_dpa_free(struct cxl_endpoint_decoder *cxled)
 	devm_cxl_dpa_release(cxled);
 	return 0;
 }
+EXPORT_SYMBOL_NS_GPL(cxl_dpa_free, "CXL");
 
 int cxl_dpa_set_part(struct cxl_endpoint_decoder *cxled,
 		     enum cxl_partition_mode mode)
@@ -595,6 +615,64 @@ int cxl_dpa_set_part(struct cxl_endpoint_decoder *cxled,
 	cxled->part = part;
 	return 0;
 }
+
+static int find_free_decoder(struct device *dev, const void *data)
+{
+	struct cxl_endpoint_decoder *cxled;
+	struct cxl_port *port;
+
+	if (!is_endpoint_decoder(dev))
+		return 0;
+
+	cxled = to_cxl_endpoint_decoder(dev);
+	port = cxled_to_port(cxled);
+
+	return cxled->cxld.id == (port->hdm_end + 1);
+}
+
+static struct cxl_endpoint_decoder *
+cxl_find_free_decoder(struct cxl_memdev *cxlmd)
+{
+	struct cxl_port *endpoint = cxlmd->endpoint;
+	struct device *dev;
+
+	guard(rwsem_read)(&cxl_rwsem.dpa);
+	dev = device_find_child(&endpoint->dev, NULL, find_free_decoder);
+	if (!dev)
+		return NULL;
+
+	return to_cxl_endpoint_decoder(dev);
+}
+
+struct cxl_endpoint_decoder *cxl_request_dpa(struct cxl_memdev *cxlmd,
+					     enum cxl_partition_mode mode,
+					     resource_size_t alloc)
+{
+	struct cxl_endpoint_decoder *cxled;
+	int rc;
+
+	if (!IS_ALIGNED(alloc, SZ_256M))
+		return ERR_PTR(-EINVAL);
+
+	cxled = cxl_find_free_decoder(cxlmd);
+	if (!cxled)
+		return ERR_PTR(-ENODEV);
+
+	rc = cxl_dpa_set_part(cxled, mode);
+	if (rc)
+		goto err_put;
+
+	rc = cxl_dpa_alloc(cxled, alloc);
+	if (rc)
+		goto err_put;
+
+	return cxled;
+
+err_put:
+	put_device(&cxled->cxld.dev);
+	return ERR_PTR(rc);
+}
+EXPORT_SYMBOL_NS_GPL(cxl_request_dpa, "CXL");
 
 static int __cxl_dpa_alloc(struct cxl_endpoint_decoder *cxled, u64 size)
 {
@@ -678,6 +756,44 @@ int cxl_dpa_alloc(struct cxl_endpoint_decoder *cxled, u64 size)
 
 	return devm_add_action_or_reset(&port->dev, cxl_dpa_release, cxled);
 }
+
+static int find_committed_endpoint_decoder(struct device *dev, const void *data)
+{
+	struct cxl_endpoint_decoder *cxled;
+	struct cxl_port *port;
+
+	if (!is_endpoint_decoder(dev))
+		return 0;
+
+	cxled = to_cxl_endpoint_decoder(dev);
+	port = cxled_to_port(cxled);
+
+	return cxled->cxld.id == port->hdm_end;
+}
+
+struct cxl_endpoint_decoder *cxl_get_committed_decoder(struct cxl_memdev *cxlmd,
+						       struct cxl_region **cxlr)
+{
+	struct cxl_port *endpoint = cxlmd->endpoint;
+	struct cxl_endpoint_decoder *cxled;
+	struct device *cxled_dev;
+
+	if (!endpoint)
+		return NULL;
+
+	guard(rwsem_read)(&cxl_rwsem.dpa);
+	cxled_dev = device_find_child(&endpoint->dev, NULL,
+				      find_committed_endpoint_decoder);
+	if (!cxled_dev)
+		return NULL;
+
+	cxled = to_cxl_endpoint_decoder(cxled_dev);
+	*cxlr = cxled->cxld.region;
+
+	put_device(cxled_dev);
+	return cxled;
+}
+EXPORT_SYMBOL_NS_GPL(cxl_get_committed_decoder, "CXL");
 
 static void cxld_set_interleave(struct cxl_decoder *cxld, u32 *ctrl)
 {
@@ -1031,13 +1147,14 @@ static int init_hdm_decoder(struct cxl_port *port, struct cxl_decoder *cxld,
 			return -ENXIO;
 		}
 
+		port->commit_end = cxld->id;
+
 		if (size == 0) {
-			dev_warn(&port->dev,
+			dev_dbg(&port->dev,
 				 "decoder%d.%d: Committed with zero size\n",
 				 port->id, cxld->id);
-			return -ENXIO;
+			return -ENOSPC;
 		}
-		port->commit_end = cxld->id;
 	} else {
 		if (cxled) {
 			struct cxl_memdev *cxlmd = cxled_to_memdev(cxled);
@@ -1193,6 +1310,8 @@ static int devm_cxl_enumerate_decoders(struct cxl_hdm *cxlhdm,
 
 		rc = init_hdm_decoder(port, cxld, hdm, i, &dpa_base, info);
 		if (rc) {
+			if (rc == -ENOSPC)
+				continue;
 			dev_warn(&port->dev,
 				 "Failed to initialize decoder%d.%d\n",
 				 port->id, i);

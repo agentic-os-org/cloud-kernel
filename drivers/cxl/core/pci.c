@@ -4,6 +4,8 @@
 #include <linux/io-64-nonatomic-lo-hi.h>
 #include <linux/device.h>
 #include <linux/delay.h>
+#include <linux/memory_hotplug.h>
+#include <linux/memregion.h>
 #include <linux/pci.h>
 #include <linux/pci-doe.h>
 #include <linux/aer.h>
@@ -12,6 +14,9 @@
 #include <cxl.h>
 #include "core.h"
 #include "trace.h"
+
+/* Initial sibling array capacity: covers max non-ARI functions per slot */
+#define CXL_RESET_SIBLINGS_INIT	8
 
 /**
  * DOC: cxl core pci
@@ -141,16 +146,24 @@ static int cxl_dvsec_mem_range_active(struct cxl_dev_state *cxlds, int id)
 	return 0;
 }
 
-/*
- * Wait up to @media_ready_timeout for the device to report memory
- * active.
+/**
+ * cxl_await_range_active - Wait for all HDM DVSEC memory ranges to be active
+ * @cxlds: CXL device state (DVSEC and HDM count must be valid)
+ *
+ * For each HDM decoder range reported in the CXL DVSEC capability, waits for
+ * the range to report MEM INFO VALID (up to 1s per range), then MEM ACTIVE
+ * (up to media_ready_timeout seconds per range, default 60s). Used by
+ * cxl_await_media_ready() and by callers that only need range readiness
+ * without checking the memory device status register.
+ *
+ * Return: 0 if all ranges become valid and active, -ETIMEDOUT if a timeout
+ * occurs, or a negative errno from config read on failure.
  */
-int cxl_await_media_ready(struct cxl_dev_state *cxlds)
+int cxl_await_range_active(struct cxl_dev_state *cxlds)
 {
 	struct pci_dev *pdev = to_pci_dev(cxlds->dev);
 	int d = cxlds->cxl_dvsec;
 	int rc, i, hdm_count;
-	u64 md_status;
 	u16 cap;
 
 	rc = pci_read_config_word(pdev,
@@ -170,6 +183,23 @@ int cxl_await_media_ready(struct cxl_dev_state *cxlds)
 		if (rc)
 			return rc;
 	}
+
+	return 0;
+}
+EXPORT_SYMBOL_NS_GPL(cxl_await_range_active, "CXL");
+
+/*
+ * Wait up to @media_ready_timeout for the device to report memory
+ * active.
+ */
+int cxl_await_media_ready(struct cxl_dev_state *cxlds)
+{
+	u64 md_status;
+	int rc;
+
+	rc = cxl_await_range_active(cxlds);
+	if (rc)
+		return rc;
 
 	md_status = readq(cxlds->regs.memdev + CXLMDEV_STATUS_OFFSET);
 	if (!CXLMDEV_READY(md_status))
@@ -447,6 +477,35 @@ int cxl_hdm_decode_init(struct cxl_dev_state *cxlds, struct cxl_hdm *cxlhdm,
 	return 0;
 }
 EXPORT_SYMBOL_NS_GPL(cxl_hdm_decode_init, "CXL");
+
+/**
+ * cxl_get_hdm_info - Get HDM decoder register block location and count
+ * @cxlds: CXL device state (must have component regs enumerated via
+ *	   cxl_probe_component_regs())
+ * @count:  number of HDM decoders in the block (from HDM Capability bits [3:0])
+ * @offset: byte offset of HDM decoder block within the component register BAR
+ * @size:   size in bytes of the HDM decoder block
+ *
+ * Return: 0 on success. -ENODEV if the HDM decoder block is not present.
+ */
+int cxl_get_hdm_info(struct cxl_dev_state *cxlds, u8 *count,
+		     resource_size_t *offset, resource_size_t *size)
+{
+	struct cxl_reg_map *hdm = &cxlds->reg_map.component_map.hdm_decoder;
+
+	if (WARN_ON(!count || !offset || !size))
+		return -EINVAL;
+
+	if (!hdm->valid)
+		return -ENODEV;
+
+	*count	= hdm->count;
+	*offset = hdm->offset;
+	*size	= hdm->size;
+
+	return 0;
+}
+EXPORT_SYMBOL_NS_GPL(cxl_get_hdm_info, "CXL");
 
 #define CXL_DOE_TABLE_ACCESS_REQ_CODE		0x000000ff
 #define   CXL_DOE_TABLE_ACCESS_REQ_CODE_READ	0
@@ -925,4 +984,625 @@ int cxl_port_get_possible_dports(struct cxl_port *port)
 	pci_walk_bus(bus, count_dports, &ctx);
 
 	return ctx.count;
+}
+
+/*
+ * CXL Reset support - core-provided reset logic for CXL devices.
+ *
+ * These functions implement the CXL reset sequence.
+ */
+
+/*
+ * If CXL memory backed by this decoder is online as System RAM, offline
+ * and remove it per CXL spec requirements before issuing CXL Reset.
+ * Returns 0 if memory was not online or was successfully offlined.
+ */
+static int cxl_is_system_ram(struct resource *res, void *arg)
+{
+	return 1;
+}
+
+static int __maybe_unused cxl_offline_memory(struct device *dev, void *data)
+{
+	struct cxl_endpoint_decoder *cxled;
+	struct cxl_region *cxlr;
+	struct cxl_region_params *p;
+	int rc;
+
+	if (!is_endpoint_decoder(dev))
+		return 0;
+
+	cxled = to_cxl_endpoint_decoder(dev);
+	guard(rwsem_read)(&cxl_rwsem.region);
+
+	cxlr = cxled->cxld.region;
+	if (!cxlr)
+		return 0;
+
+	p = &cxlr->params;
+	if (!p->res)
+		return 0;
+
+	if (walk_iomem_res_desc(IORES_DESC_NONE,
+				IORESOURCE_SYSTEM_RAM | IORESOURCE_BUSY,
+				p->res->start, p->res->end, NULL,
+				cxl_is_system_ram) <= 0)
+		return 0;
+
+	dev_info(dev, "Offlining CXL memory [%pr] for reset\n", p->res);
+
+#ifdef CONFIG_MEMORY_HOTREMOVE
+	rc = offline_and_remove_memory(p->res->start, resource_size(p->res));
+	if (rc) {
+		dev_err(dev,
+			"Failed to offline CXL memory [%pr]: %d\n",
+			p->res, rc);
+		return rc;
+	}
+#else
+	dev_err(dev, "Memory hotremove not supported, cannot offline CXL memory\n");
+	rc = -EOPNOTSUPP;
+	return rc;
+#endif
+
+	return 0;
+}
+
+static int __maybe_unused cxl_reset_prepare_memdev(struct cxl_memdev *cxlmd)
+{
+	struct cxl_port *endpoint;
+	struct device *dev;
+
+	if (!cxlmd || !cxlmd->cxlds)
+		return -ENODEV;
+
+	dev = cxlmd->cxlds->dev;
+	endpoint = cxlmd->endpoint;
+	if (!endpoint || IS_ERR(endpoint))
+		return 0;
+
+	return device_for_each_child(&endpoint->dev, NULL,
+				      cxl_offline_memory);
+}
+
+static int __maybe_unused cxl_decoder_flush_cache(struct device *dev, void *data)
+{
+	struct cxl_endpoint_decoder *cxled;
+	struct cxl_region *cxlr;
+	struct resource *res;
+
+	if (!is_endpoint_decoder(dev))
+		return 0;
+
+	cxled = to_cxl_endpoint_decoder(dev);
+	guard(rwsem_read)(&cxl_rwsem.region);
+
+	cxlr = cxled->cxld.region;
+	if (!cxlr || !cxlr->params.res)
+		return 0;
+
+	res = cxlr->params.res;
+	cpu_cache_invalidate_memregion(res->start, resource_size(res));
+	return 0;
+}
+
+static int __maybe_unused cxl_reset_flush_cpu_caches(struct cxl_memdev *cxlmd)
+{
+	struct cxl_port *endpoint;
+
+	if (!cxlmd)
+		return 0;
+
+	endpoint = cxlmd->endpoint;
+	if (!endpoint || IS_ERR(endpoint))
+		return 0;
+
+	if (!cpu_cache_has_invalidate_memregion())
+		return 0;
+
+	device_for_each_child(&endpoint->dev, NULL, cxl_decoder_flush_cache);
+	return 0;
+}
+
+/*
+ * Serialize all CXL reset operations globally.
+ */
+static DEFINE_MUTEX(cxl_reset_mutex);
+
+struct cxl_reset_context {
+	struct pci_dev *target;
+	struct pci_dev **pci_functions;
+	int pci_func_count;
+	int pci_func_cap;
+};
+
+/*
+ * Check if a sibling function is non-CXL using the Non-CXL Function Map
+ * DVSEC. Returns true if fn is listed as non-CXL, false otherwise (including
+ * on any read failure).
+ */
+static bool cxl_is_non_cxl_function(struct pci_dev *pdev,
+				     u16 func_map_dvsec, int fn)
+{
+	int reg, bit;
+	u32 map;
+
+	if (pci_ari_enabled(pdev->bus)) {
+		reg = fn / 32;
+		bit = fn % 32;
+	} else {
+		reg = 0;
+		bit = fn;
+	}
+
+	if (pci_read_config_dword(pdev,
+				   func_map_dvsec + PCI_DVSEC_CXL_FUNCTION_MAP_REG + (reg * 4),
+				   &map))
+		return false;
+
+	return map & BIT(bit);
+}
+
+struct cxl_reset_walk_ctx {
+	struct cxl_reset_context *ctx;
+	u16 func_map_dvsec;
+	int error;
+	bool ari;
+};
+
+static int cxl_reset_collect_sibling(struct pci_dev *func, void *data)
+{
+	struct cxl_reset_walk_ctx *wctx = data;
+	struct cxl_reset_context *ctx = wctx->ctx;
+	struct pci_dev *pdev = ctx->target;
+	u16 dvsec, cap;
+	int fn;
+
+	if (func == pdev)
+		return 0;
+
+	if (!wctx->ari &&
+	    PCI_SLOT(func->devfn) != PCI_SLOT(pdev->devfn))
+		return 0;
+
+	fn = wctx->ari ? func->devfn : PCI_FUNC(func->devfn);
+	if (wctx->func_map_dvsec &&
+	    cxl_is_non_cxl_function(pdev, wctx->func_map_dvsec, fn))
+		return 0;
+
+	/* Only coordinate with siblings that have CXL.cachemem */
+	dvsec = pci_find_dvsec_capability(func, PCI_VENDOR_ID_CXL,
+					  PCI_DVSEC_CXL_DEVICE);
+	if (!dvsec)
+		return 0;
+	if (pci_read_config_word(func, dvsec + PCI_DVSEC_CXL_CAP, &cap))
+		return 0;
+	if (!(cap & (PCI_DVSEC_CXL_CACHE_CAPABLE |
+		     PCI_DVSEC_CXL_MEM_CAPABLE)))
+		return 0;
+
+	/* Grow sibling array; double capacity for ARI devices when running out of space */
+	if (ctx->pci_func_count >= ctx->pci_func_cap) {
+		struct pci_dev **new;
+		int new_cap = ctx->pci_func_cap ? ctx->pci_func_cap * 2
+						: CXL_RESET_SIBLINGS_INIT;
+
+		new = krealloc(ctx->pci_functions,
+			       new_cap * sizeof(*new), GFP_KERNEL);
+		if (!new) {
+			wctx->error = -ENOMEM;
+			return 1;
+		}
+		ctx->pci_functions = new;
+		ctx->pci_func_cap = new_cap;
+	}
+
+	pci_dev_get(func);
+	ctx->pci_functions[ctx->pci_func_count++] = func;
+	return 0;
+}
+
+static void cxl_pci_functions_reset_release(struct cxl_reset_context *ctx)
+{
+	int i;
+
+	for (i = 0; i < ctx->pci_func_count; i++)
+		pci_dev_put(ctx->pci_functions[i]);
+	kfree(ctx->pci_functions);
+	ctx->pci_functions = NULL;
+	ctx->pci_func_count = 0;
+	ctx->pci_func_cap = 0;
+}
+
+static int cxl_pci_functions_reset_prepare(struct cxl_reset_context *ctx)
+{
+	struct pci_dev *pdev = ctx->target;
+	struct cxl_reset_walk_ctx wctx;
+	int i;
+
+	ctx->pci_func_count = 0;
+	ctx->pci_functions = NULL;
+	ctx->pci_func_cap = 0;
+
+	wctx.ctx = ctx;
+	wctx.ari = pci_ari_enabled(pdev->bus);
+	wctx.error = 0;
+	wctx.func_map_dvsec = pci_find_dvsec_capability(pdev,
+			PCI_VENDOR_ID_CXL, PCI_DVSEC_CXL_FUNCTION_MAP);
+
+	/* Collect CXL.cachemem siblings under pci_bus_sem */
+	pci_walk_bus(pdev->bus, cxl_reset_collect_sibling, &wctx);
+	if (wctx.error) {
+		cxl_pci_functions_reset_release(ctx);
+		return wctx.error;
+	}
+
+	/* Lock and save/disable siblings outside pci_bus_sem */
+	for (i = 0; i < ctx->pci_func_count; i++) {
+		pci_dev_lock(ctx->pci_functions[i]);
+		pci_dev_save_and_disable(ctx->pci_functions[i]);
+	}
+
+	return 0;
+}
+
+static void cxl_pci_functions_reset_done(struct cxl_reset_context *ctx)
+{
+	int i;
+
+	for (i = 0; i < ctx->pci_func_count; i++) {
+		pci_dev_restore(ctx->pci_functions[i]);
+		pci_dev_unlock(ctx->pci_functions[i]);
+	}
+	cxl_pci_functions_reset_release(ctx);
+}
+
+/*
+ * CXL device reset execution
+ */
+int cxl_dev_reset(struct pci_dev *pdev, int dvsec, bool mem_clr_en)
+{
+	static const u32 reset_timeout_ms[] = { 10, 100, 1000, 10000, 100000 };
+	u16 cap, ctrl2, status2;
+	u32 timeout_ms;
+	int rc, idx;
+
+	if (!pci_wait_for_pending_transaction(pdev))
+		pci_err(pdev, "timed out waiting for pending transactions\n");
+
+	rc = pci_read_config_word(pdev, dvsec + PCI_DVSEC_CXL_CAP, &cap);
+	if (rc)
+		return rc;
+
+	rc = pci_read_config_word(pdev, dvsec + PCI_DVSEC_CXL_CTRL2, &ctrl2);
+	if (rc)
+		return rc;
+
+	/*
+	 * Disable caching and initiate cache writeback+invalidation if the
+	 * device supports it. Poll for completion.
+	 * Per CXL r3.2 section 9.6, software may use the cache size from
+	 * DVSEC CXL Capability2 to compute a suitable timeout; we use a
+	 * default of 10ms.
+	 */
+	if (cap & PCI_DVSEC_CXL_CACHE_WBI_CAPABLE) {
+		u32 wbi_poll_us = 100;
+		s32 wbi_remaining_us = 10000;
+
+		ctrl2 |= PCI_DVSEC_CXL_DISABLE_CACHING;
+		rc = pci_write_config_word(pdev, dvsec + PCI_DVSEC_CXL_CTRL2,
+					   ctrl2);
+		if (rc)
+			return rc;
+
+		ctrl2 |= PCI_DVSEC_CXL_INIT_CACHE_WBI;
+		rc = pci_write_config_word(pdev, dvsec + PCI_DVSEC_CXL_CTRL2,
+					   ctrl2);
+		if (rc)
+			return rc;
+
+		do {
+			usleep_range(wbi_poll_us, wbi_poll_us + 1);
+			wbi_remaining_us -= wbi_poll_us;
+			rc = pci_read_config_word(pdev,
+						  dvsec + PCI_DVSEC_CXL_STATUS2,
+						  &status2);
+			if (rc)
+				return rc;
+		} while (!(status2 & PCI_DVSEC_CXL_CACHE_INV) &&
+			 wbi_remaining_us > 0);
+
+		if (!(status2 & PCI_DVSEC_CXL_CACHE_INV)) {
+			pci_err(pdev, "CXL cache WB+I timed out\n");
+			return -ETIMEDOUT;
+		}
+	} else if (cap & PCI_DVSEC_CXL_CACHE_CAPABLE) {
+		ctrl2 |= PCI_DVSEC_CXL_DISABLE_CACHING;
+		rc = pci_write_config_word(pdev, dvsec + PCI_DVSEC_CXL_CTRL2,
+					   ctrl2);
+		if (rc)
+			return rc;
+	}
+
+	if (cap & PCI_DVSEC_CXL_RST_MEM_CLR_CAPABLE) {
+		rc = pci_read_config_word(pdev, dvsec + PCI_DVSEC_CXL_CTRL2,
+					  &ctrl2);
+		if (rc)
+			return rc;
+
+		/*
+		 * Explicitly set or clear RST_MEM_CLR_EN rather than only
+		 * setting it.  A previous reset may have left the bit set in
+		 * hardware; if mem_clr_en is false we must clear it so that a
+		 * guest-triggered reset does not unexpectedly scrub DPA.
+		 */
+		if (mem_clr_en)
+			ctrl2 |= PCI_DVSEC_CXL_RST_MEM_CLR_EN;
+		else
+			ctrl2 &= ~PCI_DVSEC_CXL_RST_MEM_CLR_EN;
+
+		rc = pci_write_config_word(pdev, dvsec + PCI_DVSEC_CXL_CTRL2,
+					   ctrl2);
+		if (rc)
+			return rc;
+	}
+
+	idx = FIELD_GET(PCI_DVSEC_CXL_RST_TIMEOUT, cap);
+	if (idx >= ARRAY_SIZE(reset_timeout_ms))
+		idx = ARRAY_SIZE(reset_timeout_ms) - 1;
+	timeout_ms = reset_timeout_ms[idx];
+
+	rc = pci_read_config_word(pdev, dvsec + PCI_DVSEC_CXL_CTRL2, &ctrl2);
+	if (rc)
+		return rc;
+
+	ctrl2 |= PCI_DVSEC_CXL_INIT_CXL_RST;
+	rc = pci_write_config_word(pdev, dvsec + PCI_DVSEC_CXL_CTRL2, ctrl2);
+	if (rc)
+		return rc;
+
+	msleep(timeout_ms);
+
+	rc = pci_read_config_word(pdev, dvsec + PCI_DVSEC_CXL_STATUS2,
+				  &status2);
+	if (rc)
+		return rc;
+
+	if (status2 & PCI_DVSEC_CXL_RST_ERR) {
+		pci_err(pdev, "CXL reset error\n");
+		return -EIO;
+	}
+
+	if (!(status2 & PCI_DVSEC_CXL_RST_DONE)) {
+		pci_err(pdev, "CXL reset timeout\n");
+		return -ETIMEDOUT;
+	}
+
+	rc = pci_read_config_word(pdev, dvsec + PCI_DVSEC_CXL_CTRL2, &ctrl2);
+	if (rc)
+		return rc;
+
+	ctrl2 &= ~PCI_DVSEC_CXL_DISABLE_CACHING;
+	rc = pci_write_config_word(pdev, dvsec + PCI_DVSEC_CXL_CTRL2, ctrl2);
+	if (rc)
+		return rc;
+
+	return 0;
+}
+EXPORT_SYMBOL_NS_GPL(cxl_dev_reset, "CXL");
+
+/**
+ * cxl_dev_reset_locked() - cxl_dev_reset() under cxl_reset_mutex with sibling
+ *                          CXL.cachemem function save/restore.
+ * @pdev: Target CXL function
+ * @dvsec: CXL DVSEC capability offset (pci_find_dvsec_capability())
+ * @mem_clr_en: Pass-through to cxl_dev_reset() (Mem_Clr_Enable in CTRL2)
+ *
+ * Return: 0 on success, negative errno from cxl_dev_reset() or sibling
+ * coordination failure.
+ */
+int cxl_dev_reset_locked(struct pci_dev *pdev, int dvsec, bool mem_clr_en)
+{
+	struct cxl_reset_context ctx = { .target = pdev };
+	bool siblings_prepared = false;
+	int rc;
+
+	mutex_lock(&cxl_reset_mutex);
+	pci_dev_lock(pdev);
+
+	pci_dev_save_and_disable(pdev);
+	rc = cxl_pci_functions_reset_prepare(&ctx);
+	if (!rc) {
+		siblings_prepared = true;
+		rc = cxl_dev_reset(pdev, dvsec, mem_clr_en);
+	}
+
+	if (siblings_prepared)
+		cxl_pci_functions_reset_done(&ctx);
+
+	pci_dev_restore(pdev);
+	pci_dev_unlock(pdev);
+	mutex_unlock(&cxl_reset_mutex);
+
+	return rc;
+}
+EXPORT_SYMBOL_NS_GPL(cxl_dev_reset_locked, "CXL");
+
+static int match_memdev_by_parent(struct device *dev, const void *parent)
+{
+	return is_cxl_memdev(dev) && dev->parent == parent;
+}
+
+static int __cxl_do_reset(struct pci_dev *pdev, struct cxl_memdev *cxlmd,
+			  int dvsec)
+{
+	struct cxl_reset_context ctx = { .target = pdev };
+	bool siblings_prepared = false;
+	int rc;
+
+	mutex_lock(&cxl_reset_mutex);
+	pci_dev_lock(pdev);
+
+	if (cxlmd) {
+		guard(device)(&cxlmd->dev);
+
+		rc = cxl_reset_prepare_memdev(cxlmd);
+		if (rc)
+			goto out_unlock;
+
+		cxl_reset_flush_cpu_caches(cxlmd);
+	}
+
+	pci_dev_save_and_disable(pdev);
+
+	rc = cxl_pci_functions_reset_prepare(&ctx);
+	if (!rc) {
+		siblings_prepared = true;
+		rc = cxl_dev_reset(pdev, dvsec, true);
+	}
+
+	if (siblings_prepared)
+		cxl_pci_functions_reset_done(&ctx);
+
+	pci_dev_restore(pdev);
+
+out_unlock:
+	pci_dev_unlock(pdev);
+	mutex_unlock(&cxl_reset_mutex);
+
+	return rc;
+}
+
+static int cxl_do_reset(struct pci_dev *pdev)
+{
+	int dvsec;
+
+	dvsec = pci_find_dvsec_capability(pdev, PCI_VENDOR_ID_CXL,
+					  PCI_DVSEC_CXL_DEVICE);
+	if (!dvsec)
+		return -ENODEV;
+
+	struct device *memdev __free(put_device) =
+		bus_find_device(&cxl_bus_type, NULL, &pdev->dev,
+				match_memdev_by_parent);
+	if (!memdev)
+		return __cxl_do_reset(pdev, NULL, dvsec);
+
+	struct cxl_memdev *cxlmd = to_cxl_memdev(memdev);
+
+	return __cxl_do_reset(pdev, cxlmd, dvsec);
+}
+
+/*
+ * CXL reset sysfs attribute management.
+ *
+ * The cxl_reset attribute is added to PCI devices that advertise CXL Reset
+ * capability. Managed entirely by the CXL module via subsys_interface on
+ * pci_bus_type, avoiding cross-module symbol dependencies between the PCI
+ * core (built-in) and CXL (potentially modular).
+ *
+ * subsys_interface handles existing devices at register time and hot-plug
+ * add/remove automatically. On unregister, remove_dev runs for all tracked
+ * devices under bus core serialization.
+ */
+
+bool pci_cxl_reset_capable(struct pci_dev *pdev)
+{
+	int dvsec;
+	u16 cap;
+
+	dvsec = pci_find_dvsec_capability(pdev, PCI_VENDOR_ID_CXL,
+					  PCI_DVSEC_CXL_DEVICE);
+	if (!dvsec)
+		return false;
+
+	if (pci_read_config_word(pdev, dvsec + PCI_DVSEC_CXL_CAP, &cap))
+		return false;
+
+	if (!(cap & PCI_DVSEC_CXL_CACHE_CAPABLE) ||
+	    !(cap & PCI_DVSEC_CXL_MEM_CAPABLE))
+		return false;
+
+	return !!(cap & PCI_DVSEC_CXL_RST_CAPABLE);
+}
+EXPORT_SYMBOL_NS_GPL(pci_cxl_reset_capable, "CXL");
+
+static ssize_t cxl_reset_store(struct device *dev,
+			       struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	int rc;
+
+	if (!sysfs_streq(buf, "1"))
+		return -EINVAL;
+
+	rc = cxl_do_reset(pdev);
+	return rc ? rc : count;
+}
+static DEVICE_ATTR_WO(cxl_reset);
+
+static umode_t cxl_reset_attr_is_visible(struct kobject *kobj,
+					  struct attribute *a, int n)
+{
+	struct pci_dev *pdev = to_pci_dev(kobj_to_dev(kobj));
+
+	if (!pci_cxl_reset_capable(pdev))
+		return 0;
+
+	return a->mode;
+}
+
+static struct attribute *cxl_reset_attrs[] = {
+	&dev_attr_cxl_reset.attr,
+	NULL,
+};
+
+static const struct attribute_group cxl_reset_attr_group = {
+	.attrs = cxl_reset_attrs,
+	.is_visible = cxl_reset_attr_is_visible,
+};
+
+static int cxl_reset_add_dev(struct device *dev,
+			     struct subsys_interface *sif)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+
+	if (!pci_cxl_reset_capable(pdev))
+		return 0;
+
+	return sysfs_create_group(&dev->kobj, &cxl_reset_attr_group);
+}
+
+static void cxl_reset_remove_dev(struct device *dev,
+				 struct subsys_interface *sif)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+
+	if (!pci_cxl_reset_capable(pdev))
+		return;
+
+	sysfs_remove_group(&dev->kobj, &cxl_reset_attr_group);
+}
+
+static struct subsys_interface cxl_reset_interface = {
+	.name		= "cxl_reset",
+	.subsys		= &pci_bus_type,
+	.add_dev	= cxl_reset_add_dev,
+	.remove_dev	= cxl_reset_remove_dev,
+};
+
+void cxl_reset_sysfs_init(void)
+{
+	int rc;
+
+	rc = subsys_interface_register(&cxl_reset_interface);
+	if (rc)
+		pr_warn("CXL: failed to register cxl_reset interface (%d)\n",
+			rc);
+}
+
+void cxl_reset_sysfs_exit(void)
+{
+	subsys_interface_unregister(&cxl_reset_interface);
 }
