@@ -236,6 +236,7 @@ struct erofs_buf {
 	struct address_space *mapping;
 #endif
 	struct inode *inode;
+	struct file *file;
 	struct page *page;
 	void *base;
 	enum erofs_kmap_type kmap_type;
