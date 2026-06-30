@@ -491,7 +491,6 @@ static int ext4_map_query_blocks(handle_t *handle, struct inode *inode,
 static int ext4_map_create_blocks(handle_t *handle, struct inode *inode,
 				  struct ext4_map_blocks *map, int flags)
 {
-	struct extent_status es;
 	unsigned int status;
 	int err, retval = 0;
 
@@ -550,16 +549,6 @@ static int ext4_map_create_blocks(handle_t *handle, struct inode *inode,
 					 map->m_len);
 		if (err)
 			return err;
-	}
-
-	/*
-	 * If the extent has been zeroed out, we don't need to update
-	 * extent status tree.
-	 */
-	if (flags & EXT4_GET_BLOCKS_PRE_IO &&
-	    ext4_es_lookup_extent(inode, map->m_lblk, NULL, &es)) {
-		if (ext4_es_is_written(&es))
-			return retval;
 	}
 
 	status = map->m_flags & EXT4_MAP_UNWRITTEN ?
@@ -2262,7 +2251,7 @@ static int mpage_map_one_extent(handle_t *handle, struct mpage_da_data *mpd)
 			   EXT4_GET_BLOCKS_IO_SUBMIT;
 	dioread_nolock = ext4_should_dioread_nolock(inode);
 	if (dioread_nolock)
-		get_blocks_flags |= EXT4_GET_BLOCKS_IO_CREATE_EXT;
+		get_blocks_flags |= EXT4_GET_BLOCKS_UNWRIT_EXT;
 
 	err = ext4_map_blocks(handle, inode, map, get_blocks_flags);
 	if (err < 0)
@@ -3432,6 +3421,9 @@ static int ext4_iomap_alloc(struct inode *inode, struct ext4_map_blocks *map,
 	u8 blkbits = inode->i_blkbits;
 	int ret, dio_credits, m_flags = 0, retries = 0;
 
+	if (flags & IOMAP_NOWAIT)
+		return -EAGAIN;
+
 	/*
 	 * Trim the mapping request to the maximum value that we can map at
 	 * once for direct I/O.
@@ -3467,7 +3459,7 @@ retry:
 	else if (((loff_t)map->m_lblk << blkbits) >= i_size_read(inode))
 		m_flags = EXT4_GET_BLOCKS_CREATE;
 	else if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
-		m_flags = EXT4_GET_BLOCKS_IO_CREATE_EXT;
+		m_flags = EXT4_GET_BLOCKS_CREATE_UNWRIT_EXT;
 
 	ret = ext4_map_blocks(handle, inode, map, m_flags);
 
@@ -3516,7 +3508,15 @@ static int ext4_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 		 */
 		if (offset + length <= i_size_read(inode)) {
 			ret = ext4_map_blocks(NULL, inode, &map, 0);
-			if (ret > 0 && (map.m_flags & EXT4_MAP_MAPPED))
+			/*
+			 * For DAX we convert extents to initialized
+			 * ones before copying the data, otherwise we do it
+			 * after I/O so there's no need to call into
+			 * ext4_iomap_alloc().
+			 */
+			if (ret > 0 && ((map.m_flags & EXT4_MAP_MAPPED) ||
+					(!(flags & IOMAP_DAX) &&
+					 (map.m_flags & EXT4_MAP_UNWRITTEN))))
 				goto out;
 		}
 		ret = ext4_iomap_alloc(inode, &map, flags);
@@ -3539,22 +3539,6 @@ out:
 	return 0;
 }
 
-static int ext4_iomap_overwrite_begin(struct inode *inode, loff_t offset,
-		loff_t length, unsigned flags, struct iomap *iomap,
-		struct iomap *srcmap)
-{
-	int ret;
-
-	/*
-	 * Even for writes we don't need to allocate blocks, so just pretend
-	 * we are reading to save overhead of starting a transaction.
-	 */
-	flags &= ~IOMAP_WRITE;
-	ret = ext4_iomap_begin(inode, offset, length, flags, iomap, srcmap);
-	WARN_ON_ONCE(!ret && iomap->type != IOMAP_MAPPED);
-	return ret;
-}
-
 static int ext4_iomap_end(struct inode *inode, loff_t offset, loff_t length,
 			  ssize_t written, unsigned flags, struct iomap *iomap)
 {
@@ -3573,11 +3557,6 @@ static int ext4_iomap_end(struct inode *inode, loff_t offset, loff_t length,
 
 const struct iomap_ops ext4_iomap_ops = {
 	.iomap_begin		= ext4_iomap_begin,
-	.iomap_end		= ext4_iomap_end,
-};
-
-const struct iomap_ops ext4_iomap_overwrite_ops = {
-	.iomap_begin		= ext4_iomap_overwrite_begin,
 	.iomap_end		= ext4_iomap_end,
 };
 

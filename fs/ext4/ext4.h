@@ -687,8 +687,6 @@ enum {
 	extent if blocks has been preallocated already*/
 #define EXT4_GET_BLOCKS_PRE_IO			0x0008
 #define EXT4_GET_BLOCKS_CONVERT			0x0010
-#define EXT4_GET_BLOCKS_IO_CREATE_EXT		(EXT4_GET_BLOCKS_PRE_IO|\
-					 EXT4_GET_BLOCKS_CREATE_UNWRIT_EXT)
 	/* Convert extent to initialized after IO complete */
 #define EXT4_GET_BLOCKS_IO_CONVERT_EXT		(EXT4_GET_BLOCKS_CONVERT|\
 					 EXT4_GET_BLOCKS_CREATE_UNWRIT_EXT)
@@ -3842,7 +3840,6 @@ static inline void ext4_clear_io_unwritten_flag(ext4_io_end_t *io_end)
 }
 
 extern const struct iomap_ops ext4_iomap_ops;
-extern const struct iomap_ops ext4_iomap_overwrite_ops;
 extern const struct iomap_ops ext4_iomap_report_ops;
 
 static inline int ext4_buffer_uptodate(struct buffer_head *bh)

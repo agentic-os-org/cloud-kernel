@@ -3818,21 +3818,12 @@ ext4_convert_unwritten_extents_endio(handle_t *handle, struct inode *inode,
 	ext_debug(inode, "logical block %llu, max_blocks %u\n",
 		  (unsigned long long)ee_block, ee_len);
 
-	/* If extent is larger than requested it is a clear sign that we still
-	 * have some extent state machine issues left. So extent_split is still
-	 * required.
-	 * TODO: Once all related issues will be fixed this situation should be
-	 * illegal.
-	 */
 	if (ee_block != map->m_lblk || ee_len > map->m_len) {
-#ifdef CONFIG_EXT4_DEBUG
-		ext4_warning(inode->i_sb, "Inode (%ld) finished: extent logical block %llu,"
-			     " len %u; IO logical block %llu, len %u",
-			     inode->i_ino, (unsigned long long)ee_block, ee_len,
-			     (unsigned long long)map->m_lblk, map->m_len);
-#endif
+		int flags = EXT4_GET_BLOCKS_CONVERT |
+			    EXT4_GET_BLOCKS_METADATA_NOFAIL;
+
 		path = ext4_split_convert_extents(handle, inode, map, path,
-						EXT4_GET_BLOCKS_CONVERT, NULL);
+						  flags, NULL);
 		if (IS_ERR(path))
 			return path;
 
@@ -3965,26 +3956,6 @@ ext4_ext_handle_unwritten_extents(handle_t *handle, struct inode *inode,
 	trace_ext4_ext_handle_unwritten_extents(inode, map, flags,
 						*allocated, newblock);
 
-	/* get_block() before submitting IO, split the extent */
-	if (flags & EXT4_GET_BLOCKS_PRE_IO) {
-		path = ext4_split_convert_extents(handle, inode, map, path,
-						  flags, allocated);
-		if (IS_ERR(path))
-			return path;
-		/*
-		 * shouldn't get a 0 allocated when splitting an extent unless
-		 * m_len is 0 (bug) or extent has been corrupted
-		 */
-		if (unlikely(*allocated == 0)) {
-			EXT4_ERROR_INODE(inode,
-					 "unexpected allocated == 0, m_len = %u",
-					 map->m_len);
-			err = -EFSCORRUPTED;
-			goto errout;
-		}
-		map->m_flags |= EXT4_MAP_UNWRITTEN;
-		goto out;
-	}
 	/* IO end_io complete, convert the filled extent to written */
 	if (flags & EXT4_GET_BLOCKS_CONVERT) {
 		path = ext4_convert_unwritten_extents_endio(handle, inode,
@@ -4038,7 +4009,6 @@ ext4_ext_handle_unwritten_extents(handle_t *handle, struct inode *inode,
 		goto errout;
 	}
 
-out:
 	map->m_flags |= EXT4_MAP_NEW;
 map_out:
 	map->m_flags |= EXT4_MAP_MAPPED;
