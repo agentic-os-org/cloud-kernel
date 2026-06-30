@@ -285,11 +285,11 @@ static netdev_tx_t teql_master_xmit(struct sk_buff *skb, struct net_device *dev)
 	int subq = skb_get_queue_mapping(skb);
 	struct sk_buff *skb_res = NULL;
 
-	start = master->slaves;
-
 restart:
 	nores = 0;
 	busy = 0;
+
+	start = master->slaves;
 
 	q = start;
 	if (!q)
