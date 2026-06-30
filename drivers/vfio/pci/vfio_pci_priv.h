@@ -41,6 +41,18 @@ ssize_t vfio_pci_config_rw_single(struct vfio_pci_core_device *vdev,
 				  char __user *buf, size_t count, loff_t *ppos,
 				  bool iswrite);
 
+int vfio_raw_config_write(struct vfio_pci_core_device *vdev, int pos,
+			  int count, struct perm_bits *perm,
+			  int offset, __le32 val);
+
+int vfio_raw_config_read(struct vfio_pci_core_device *vdev, int pos,
+			 int count, struct perm_bits *perm,
+			 int offset, __le32 *val);
+
+int vfio_direct_config_read(struct vfio_pci_core_device *vdev, int pos,
+			    int count, struct perm_bits *perm,
+			    int offset, __le32 *val);
+
 ssize_t vfio_pci_bar_rw(struct vfio_pci_core_device *vdev, char __user *buf,
 			size_t count, loff_t *ppos, bool iswrite);
 
@@ -136,5 +148,70 @@ static inline void vfio_pci_dma_buf_move(struct vfio_pci_core_device *vdev,
 {
 }
 #endif
+
+#if IS_ENABLED(CONFIG_VFIO_CXL_CORE)
+
+void vfio_pci_cxl_detect_and_init(struct vfio_pci_core_device *vdev);
+void vfio_pci_cxl_cleanup(struct vfio_pci_core_device *vdev);
+bool vfio_cxl_reset_capable(struct vfio_pci_core_device *vdev);
+void vfio_cxl_prepare_reset(struct vfio_pci_core_device *vdev);
+void vfio_cxl_finish_reset(struct vfio_pci_core_device *vdev);
+void vfio_cxl_zap_dpa(struct vfio_pci_core_device *vdev);
+void vfio_cxl_setup_dvsec_perms(struct vfio_pci_core_device *vdev);
+int vfio_cxl_register_cxl_region(struct vfio_pci_core_device *vdev);
+void vfio_cxl_unregister_cxl_region(struct vfio_pci_core_device *vdev);
+int  vfio_cxl_register_comp_regs_region(struct vfio_pci_core_device *vdev);
+int vfio_cxl_get_info(struct vfio_pci_core_device *vdev,
+		      struct vfio_info_cap *caps);
+int vfio_cxl_get_region_info(struct vfio_pci_core_device *vdev,
+			     struct vfio_region_info *info,
+			     struct vfio_info_cap *caps);
+u8 vfio_cxl_get_component_reg_bar(struct vfio_pci_core_device *vdev);
+bool vfio_cxl_mmap_overlaps_comp_regs(struct vfio_pci_core_device *vdev,
+				      u64 req_start, u64 req_len);
+
+#else
+
+static inline void
+vfio_pci_cxl_detect_and_init(struct vfio_pci_core_device *vdev) { }
+static inline void
+vfio_pci_cxl_cleanup(struct vfio_pci_core_device *vdev) { }
+static inline bool
+vfio_cxl_reset_capable(struct vfio_pci_core_device *vdev)
+{ return false; }
+static inline void
+vfio_cxl_prepare_reset(struct vfio_pci_core_device *vdev) { }
+static inline void
+vfio_cxl_finish_reset(struct vfio_pci_core_device *vdev) { }
+static inline void
+vfio_cxl_zap_dpa(struct vfio_pci_core_device *vdev) { }
+static inline void
+vfio_cxl_setup_dvsec_perms(struct vfio_pci_core_device *vdev) { }
+static inline int
+vfio_cxl_register_cxl_region(struct vfio_pci_core_device *vdev)
+{ return 0; }
+static inline void
+vfio_cxl_unregister_cxl_region(struct vfio_pci_core_device *vdev) { }
+static inline int
+vfio_cxl_register_comp_regs_region(struct vfio_pci_core_device *vdev)
+{ return 0; }
+static inline int
+vfio_cxl_get_info(struct vfio_pci_core_device *vdev,
+		  struct vfio_info_cap *caps)
+{ return -ENOTTY; }
+static inline int
+vfio_cxl_get_region_info(struct vfio_pci_core_device *vdev,
+			 struct vfio_region_info *info,
+			 struct vfio_info_cap *caps)
+{ return -ENOTTY; }
+static inline u8
+vfio_cxl_get_component_reg_bar(struct vfio_pci_core_device *vdev)
+{ return U8_MAX; }
+static inline bool
+vfio_cxl_mmap_overlaps_comp_regs(struct vfio_pci_core_device *vdev,
+				 u64 req_start, u64 req_len)
+{ return false; }
+
+#endif /* CONFIG_VFIO_CXL_CORE */
 
 #endif

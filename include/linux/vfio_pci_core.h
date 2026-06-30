@@ -29,6 +29,8 @@ struct vfio_pci_core_device;
 struct vfio_pci_region;
 struct p2pdma_provider;
 struct dma_buf_attachment;
+struct vfio_pci_cxl_state;
+struct perm_bits;
 
 struct vfio_pci_eventfd {
 	struct eventfd_ctx	*ctx;
@@ -127,6 +129,9 @@ struct vfio_pci_core_device {
 	bool			needs_pm_restore:1;
 	bool			pm_intx_masked:1;
 	bool			pm_runtime_engaged:1;
+#if IS_ENABLED(CONFIG_VFIO_CXL_CORE)
+	bool			disable_cxl:1;
+#endif
 	struct pci_saved_state	*pci_saved_state;
 	struct pci_saved_state	*pm_save;
 	int			ioeventfds_nr;
@@ -137,6 +142,13 @@ struct vfio_pci_core_device {
 	struct mutex		ioeventfds_lock;
 	struct list_head	ioeventfds_list;
 	struct vfio_pci_vf_token	*vf_token;
+	struct vfio_pci_cxl_state *cxl;
+	int (*dvsec_readfn)(struct vfio_pci_core_device *vdev, int pos,
+			    int count, struct perm_bits *perm,
+			    int offset, __le32 *val);
+	int (*dvsec_writefn)(struct vfio_pci_core_device *vdev, int pos,
+			     int count, struct perm_bits *perm,
+			     int offset, __le32 val);
 	struct list_head		sriov_pfs_item;
 	struct vfio_pci_core_device	*sriov_pf_core_dev;
 	struct notifier_block	nb;

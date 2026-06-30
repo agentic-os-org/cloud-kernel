@@ -1,0 +1,583 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * CXL DVSEC configuration space emulation for vfio-pci.
+ *
+ * Integrates into the existing vfio-pci-core ecap_perms[] framework using
+ * vdev->vconfig as the sole shadow buffer for DVSEC registers.
+ *
+ * Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved
+ */
+
+#include <linux/pci.h>
+#include <linux/unaligned.h>
+#include <linux/vfio_pci_core.h>
+
+#include "../vfio_pci_priv.h"
+#include "vfio_cxl_priv.h"
+
+static inline u16 _cxlds_get_dvsec(struct vfio_pci_cxl_state *cxl)
+{
+	return (u16)cxl->cxlds.cxl_dvsec;
+}
+
+/* Helpers to access vdev->vconfig at a DVSEC-relative offset */
+static inline u16 dvsec_virt_read16(struct vfio_pci_core_device *vdev,
+				    u16 off)
+{
+	u16 dvsec = _cxlds_get_dvsec(vdev->cxl);
+
+	return get_unaligned_le16(vdev->vconfig + dvsec + off);
+}
+
+static inline void dvsec_virt_write16(struct vfio_pci_core_device *vdev,
+				      u16 off, u16 val)
+{
+	u16 dvsec = _cxlds_get_dvsec(vdev->cxl);
+
+	put_unaligned_le16(val, vdev->vconfig + dvsec + off);
+}
+
+static inline u32 dvsec_virt_read32(struct vfio_pci_core_device *vdev,
+				    u16 off)
+{
+	u16 dvsec = _cxlds_get_dvsec(vdev->cxl);
+
+	return get_unaligned_le32(vdev->vconfig + dvsec + off);
+}
+
+static inline void dvsec_virt_write32(struct vfio_pci_core_device *vdev,
+				      u16 off, u32 val)
+{
+	u16 dvsec = _cxlds_get_dvsec(vdev->cxl);
+
+	put_unaligned_le32(val, vdev->vconfig + dvsec + off);
+}
+
+static u32 dvsec_virt_merge_write32(struct vfio_pci_core_device *vdev,
+				    u16 off, u16 byte_in_reg,
+				    int count, __le32 val)
+{
+	u32 cur = dvsec_virt_read32(vdev, off);
+	u32 data = le32_to_cpu(val);
+	u32 mask;
+
+	if (byte_in_reg + count > sizeof(u32))
+		return cur;
+
+	if (count == sizeof(u32))
+		return data;
+
+	mask = (1U << (count * 8)) - 1;
+	mask <<= byte_in_reg * 8;
+
+	return (cur & ~mask) | ((data << (byte_in_reg * 8)) & mask);
+}
+
+/* Individual DVSEC register write handlers */
+
+static void cxl_dvsec_control_write(struct vfio_pci_core_device *vdev,
+				    u16 new_val)
+{
+	u16 lock = dvsec_virt_read16(vdev, CXL_DVSEC_LOCK_OFFSET);
+	u16 cap3 = dvsec_virt_read16(vdev, CXL_DVSEC_CAPABILITY3_OFFSET);
+	u16 rev_mask = CXL_CTRL_RESERVED_MASK;
+
+	if (lock & CXL_DVSEC_LOCK_CONFIG_LOCK)
+		return; /* register is locked after first write */
+
+	if (!(cap3 & CXL_DVSEC_CAP3_P2P_MEM_CAPABLE))
+		rev_mask |= CXL_CTRL_P2P_REV_MASK;
+
+	new_val &= ~rev_mask;
+	new_val |= CXL_DVSEC_CTRL_IO_ENABLE; /* IO_Enable always returns 1 */
+
+	dvsec_virt_write16(vdev, CXL_DVSEC_CONTROL_OFFSET, new_val);
+}
+
+static void cxl_dvsec_status_write(struct vfio_pci_core_device *vdev,
+				   u16 new_val)
+{
+	u16 cur_val = dvsec_virt_read16(vdev, CXL_DVSEC_STATUS_OFFSET);
+
+	/*
+	 * VIRAL_STATUS (bit 14) is the only writable bit; all others are
+	 * reserved and always zero.
+	 */
+	new_val = cur_val & ~(new_val & CXL_DVSEC_STATUS_VIRAL_STATUS);
+	dvsec_virt_write16(vdev, CXL_DVSEC_STATUS_OFFSET, new_val);
+}
+
+/**
+ * vfio_cxl_reset - Service a guest CXL protocol reset.
+ * @vdev: VFIO PCI core device
+ *
+ * Unlike cxl_do_reset(), no host memory offlining is performed: the DPA
+ * region is guest memory, not host RAM.
+ *
+ * memory_lock is held for the entire sequence so neither BAR nor DPA
+ * mappings can fault back in. INIT_CXL_RST is not forwarded to hardware;
+ * cxl_dev_reset() drives the state machine directly.
+ *
+ * STATUS2 outcome bits are written back to vconfig on return so that the
+ * guest can poll for completion without going to hardware.
+ *
+ * Return: 0 on success, negative error code on failure.
+ */
+static int vfio_cxl_reset(struct vfio_pci_core_device *vdev)
+{
+	struct vfio_pci_cxl_state *cxl = vdev->cxl;
+	struct pci_dev *pdev = vdev->pdev;
+	u16 dvsec = _cxlds_get_dvsec(cxl);
+	u16 hw_status2 = 0;
+	int ret;
+
+	vfio_pci_zap_and_down_write_memory_lock(vdev);
+
+	/*
+	 * CXL r4.0 Table 8-9: device must clear CXL_Reset_Complete before
+	 * starting the reset flow, on the 0->1 transition of Initiate_CXL_Reset.
+	 * Clear both reset outcome bits so a polling guest sees an unambiguous
+	 * in-progress state rather than a stale result from a prior attempt.
+	 */
+	{
+		u16 s = dvsec_virt_read16(vdev, CXL_DVSEC_STATUS2_OFFSET);
+
+		s &= ~(CXL_DVSEC_STATUS2_CXL_RESET_COMPLETE |
+		       CXL_DVSEC_STATUS2_CXL_RESET_ERROR);
+		dvsec_virt_write16(vdev, CXL_DVSEC_STATUS2_OFFSET, s);
+	}
+
+	vfio_cxl_prepare_reset(vdev);
+
+	/*
+	 * Hand the actual reset off to cxl_dev_reset_locked() so the CXL core
+	 * applies its global reset mutex and saves/disables any CXL.cachemem
+	 * sibling functions on the bus.  A bare cxl_dev_reset() under just
+	 * pci_dev_lock() leaves those siblings vulnerable to half-reset states
+	 * and lets a guest-triggered CXL reset race a concurrent host sysfs
+	 * reset.
+	 */
+	ret = cxl_dev_reset_locked(pdev, cxl->cxlds.cxl_dvsec,
+				   !!(dvsec_virt_read16(vdev,
+					CXL_DVSEC_CONTROL2_OFFSET) &
+				      CXL_DVSEC_CTRL2_CXL_RESET_MEM_CLR_ENABLE));
+
+	vfio_cxl_finish_reset(vdev);
+
+	/*
+	 * Re-read STATUS2 from hardware after restore.  cxl_save_dvsec() /
+	 * cxl_restore_dvsec() cover CTRL, CTRL2, range_base_*, and LOCK;
+	 * STATUS2 is intentionally not saved or restored across the reset, so
+	 * the hardware value here is fresh post-reset (both outcome bits clear)
+	 * and reflects genuine hardware changes such as VOLATILE_HDM_PRES_ERROR
+	 * clearing.  Stamp the new outcome on top of that value below.
+	 */
+	pci_read_config_word(pdev, dvsec + CXL_DVSEC_STATUS2_OFFSET,
+			     &hw_status2);
+	hw_status2 &= ~(CXL_DVSEC_STATUS2_CXL_RESET_COMPLETE |
+			CXL_DVSEC_STATUS2_CXL_RESET_ERROR);
+	if (ret)
+		hw_status2 |= CXL_DVSEC_STATUS2_CXL_RESET_ERROR;
+	else
+		hw_status2 |= CXL_DVSEC_STATUS2_CXL_RESET_COMPLETE;
+	dvsec_virt_write16(vdev, CXL_DVSEC_STATUS2_OFFSET, hw_status2);
+
+	up_write(&vdev->memory_lock);
+	return ret;
+}
+
+static void cxl_dvsec_control2_write(struct vfio_pci_core_device *vdev,
+				     u16 new_val)
+{
+	struct pci_dev *pdev = vdev->pdev;
+	u16 dvsec = _cxlds_get_dvsec(vdev->cxl);
+	u16 abs_off = dvsec + CXL_DVSEC_CONTROL2_OFFSET;
+	u16 cap2 = dvsec_virt_read16(vdev, CXL_DVSEC_CAPABILITY2_OFFSET);
+	u16 cap3 = dvsec_virt_read16(vdev, CXL_DVSEC_CAPABILITY3_OFFSET);
+	u16 rev_mask = CXL_CTRL2_RESERVED_MASK;
+
+	if (!(cap3 & CXL_DVSEC_CAP3_VOLATILE_HDM_CONFIGURABILITY))
+		rev_mask |= CXL_CTRL2_VOLATILE_HDM_REV_MASK;
+	if (!(cap2 & CXL_DVSEC_CAP2_MOD_COMPLETION_CAPABLE))
+		rev_mask |= CXL_CTRL2_MODIFIED_COMP_REV_MASK;
+
+	new_val &= ~rev_mask;
+
+	/*
+	 * Cache WBI: forward to hardware.  cxl_dev_reset() programs
+	 * Disable_Caching first and then initiates Cache WBI with that bit
+	 * still set; replicate that ordering for VMM-delegated WBI by carrying
+	 * the just-written Disable_Caching value into the same hardware write.
+	 * new_val is the post-merge 16-bit shadow value, so it already reflects
+	 * a prior shadow-only Disable_Caching=1 followed by a WBI-only write.
+	 */
+	if (new_val & CXL_DVSEC_CTRL2_INITIATE_CACHE_WBI) {
+		u16 hw_val = CXL_DVSEC_CTRL2_INITIATE_CACHE_WBI;
+
+		if (new_val & CXL_DVSEC_CTRL2_DISABLE_CACHING)
+			hw_val |= CXL_DVSEC_CTRL2_DISABLE_CACHING;
+		pci_write_config_word(pdev, abs_off, hw_val);
+	}
+
+	/*
+	 * Commit the new CONTROL2 value to the shadow before triggering a
+	 * reset.  vfio_cxl_reset() reads Mem_Clr_Enable (bit 3) from the
+	 * shadow; if the shadow is written after the reset call, a guest write
+	 * that changes bit 3 in the same access as INITIATE_CXL_RESET would
+	 * reset with the stale bit 3 value instead of the one just written.
+	 */
+	dvsec_virt_write16(vdev, CXL_DVSEC_CONTROL2_OFFSET,
+			   new_val & ~CXL_CTRL2_HW_BITS_MASK);
+
+	/*
+	 * INIT_CXL_RST: not forwarded to hardware. cxl_dev_reset() drives
+	 * the state machine; forwarding it after the reset would fire a
+	 * second one. Drop writes on non-RST_CAPABLE devices silently; the
+	 * spec reserves the bit there and logging every write is just noise.
+	 */
+	if (new_val & CXL_DVSEC_CTRL2_INITIATE_CXL_RESET) {
+		if (vfio_cxl_reset_capable(vdev)) {
+			int rc = vfio_cxl_reset(vdev);
+
+			if (rc)
+				pci_warn(pdev,
+					 "vfio-cxl: CXL reset failed (%d)\n",
+					 rc);
+		}
+	}
+}
+
+static void cxl_dvsec_status2_write(struct vfio_pci_core_device *vdev,
+				    u16 new_val)
+{
+	u16 cap3 = dvsec_virt_read16(vdev, CXL_DVSEC_CAPABILITY3_OFFSET);
+	u16 dvsec = _cxlds_get_dvsec(vdev->cxl);
+	u16 abs_off = dvsec + CXL_DVSEC_STATUS2_OFFSET;
+
+	/*
+	 * VOLATILE_HDM_PRES_ERROR (bit 3) and PM_INIT_COMPLETION (bit 15) are
+	 * RW1CS.  Forward each to hardware on a 1-bit write, then mirror the
+	 * clear into the shadow so guest reads (which now come from the
+	 * shadow) do not see the bit stuck after a successful clear.
+	 *
+	 * All other STATUS2 bits are RO hardware outputs; ignore guest writes.
+	 */
+	if ((cap3 & CXL_DVSEC_CAP3_VOLATILE_HDM_CONFIGURABILITY) &&
+	    (new_val & CXL_DVSEC_STATUS2_VOLATILE_HDM_PRES_ERROR)) {
+		u16 v;
+
+		pci_write_config_word(vdev->pdev, abs_off,
+				      CXL_DVSEC_STATUS2_VOLATILE_HDM_PRES_ERROR);
+		v = dvsec_virt_read16(vdev, CXL_DVSEC_STATUS2_OFFSET);
+		v &= ~CXL_DVSEC_STATUS2_VOLATILE_HDM_PRES_ERROR;
+		dvsec_virt_write16(vdev, CXL_DVSEC_STATUS2_OFFSET, v);
+	}
+
+	if (new_val & CXL_DVSEC_STATUS2_PM_INIT_COMPLETION) {
+		u16 v;
+
+		pci_write_config_word(vdev->pdev, abs_off,
+				      CXL_DVSEC_STATUS2_PM_INIT_COMPLETION);
+		v = dvsec_virt_read16(vdev, CXL_DVSEC_STATUS2_OFFSET);
+		v &= ~CXL_DVSEC_STATUS2_PM_INIT_COMPLETION;
+		dvsec_virt_write16(vdev, CXL_DVSEC_STATUS2_OFFSET, v);
+	}
+}
+
+static void cxl_dvsec_lock_write(struct vfio_pci_core_device *vdev,
+				 u16 new_val)
+{
+	u16 cur_val = dvsec_virt_read16(vdev, CXL_DVSEC_LOCK_OFFSET);
+
+	/* Once the LOCK bit is set it can only be cleared by conventional reset */
+	if (cur_val & CXL_DVSEC_LOCK_CONFIG_LOCK)
+		return;
+
+	new_val &= ~CXL_LOCK_RESERVED_MASK;
+	dvsec_virt_write16(vdev, CXL_DVSEC_LOCK_OFFSET, new_val);
+}
+
+static void cxl_range_base_lo_write(struct vfio_pci_core_device *vdev,
+				    u16 dvsec_off, u32 new_val)
+{
+	new_val &= ~CXL_BASE_LO_RESERVED_MASK;
+	dvsec_virt_write32(vdev, dvsec_off, new_val);
+}
+
+/*
+ * status2_hw_shadow_merge - read STATUS2, merging hardware and vconfig shadow.
+ *
+ * RESET_COMPLETE and RESET_ERROR are written into vconfig by vfio_cxl_reset()
+ * after a protocol reset; pci_dev_restore() clears them from hardware, so they
+ * must survive in the shadow for a polling guest to see the reset outcome.
+ *
+ * All other STATUS2 bits are live hardware outputs and must come from hardware.
+ * In particular, CACHE_INVALID (bit 0) is polled by guests during a standalone
+ * write-back invalidation.
+ *
+ * @abs_pos: absolute PCI config space byte offset of the STATUS2 register.
+ */
+static u16 status2_hw_shadow_merge(struct vfio_pci_core_device *vdev, int abs_pos)
+{
+	const u16 shadow_mask = CXL_DVSEC_STATUS2_CXL_RESET_COMPLETE |
+				CXL_DVSEC_STATUS2_CXL_RESET_ERROR;
+	u16 hw = 0, virt;
+
+	pci_read_config_word(vdev->pdev, abs_pos, &hw);
+	virt = get_unaligned_le16(vdev->vconfig + abs_pos);
+	return (hw & ~shadow_mask) | (virt & shadow_mask);
+}
+
+/**
+ * vfio_cxl_dvsec_readfn - Per-device DVSEC read handler for CXL capable devices.
+ * @vdev:   VFIO PCI core device
+ * @pos:    Absolute byte position in PCI config space
+ * @count:  Number of bytes to read
+ * @perm:   Permission bits for this capability (passed through to fallback)
+ * @offset: Byte offset within the capability structure (passed through)
+ * @val:    Output buffer for the read value (little-endian)
+ *
+ * Called via vfio_pci_dvsec_dispatch_read() for CXL devices.  Returns shadow
+ * vconfig values for virtualized DVSEC registers (CONTROL, STATUS, CONTROL2,
+ * LOCK) so that userspace reads reflect emulated state rather than raw
+ * hardware.  All other DVSEC bytes pass through to vfio_raw_config_read().
+ *
+ * A 4-byte (DWORD) access at the CONTROL2 offset spans both CONTROL2 and
+ * STATUS2 since CONTROL2 is DWORD-aligned and the two registers are adjacent.
+ * In that case STATUS2 is returned via the hardware-merge path.
+ *
+ * Return: @count on success, or negative error code from the fallback read.
+ */
+static int vfio_cxl_dvsec_readfn(struct vfio_pci_core_device *vdev,
+				 int pos, int count,
+				 struct perm_bits *perm,
+				 int offset, __le32 *val)
+{
+	struct vfio_pci_cxl_state *cxl = vdev->cxl;
+	u16 dvsec, dvsec_off, reg_start, byte_in_reg;
+
+	if (!cxl)
+		return vfio_direct_config_read(vdev, pos, count, perm, offset,
+					       val);
+
+	dvsec = _cxlds_get_dvsec(cxl);
+	if ((u16)pos < dvsec || (u16)pos >= dvsec + cxl->dvsec_len)
+		return vfio_direct_config_read(vdev, pos, count, perm, offset,
+					       val);
+
+	dvsec_off = (u16)pos - dvsec;
+
+	/*
+	 * Route by the 2-byte-aligned start of the register so that a guest
+	 * read at the high byte (dvsec_off | 1) hits the shadow path instead
+	 * of falling through to the direct read and diverging from a prior
+	 * shadow write.
+	 */
+	reg_start = dvsec_off & ~1u;
+	byte_in_reg = dvsec_off - reg_start;
+
+	switch (reg_start) {
+	case CXL_DVSEC_CONTROL_OFFSET:
+	case CXL_DVSEC_STATUS_OFFSET:
+	case CXL_DVSEC_LOCK_OFFSET:
+		/* Fully virtualised; return shadow.  Byte/word reads work too. */
+		memcpy(val, vdev->vconfig + pos, count);
+		return count;
+	case CXL_DVSEC_CONTROL2_OFFSET:
+		if (count == 4 && byte_in_reg == 0) {
+			/*
+			 * 4-byte access at the DWORD-aligned CONTROL2 offset
+			 * spans both CONTROL2 (low 16 bits) and STATUS2 (high
+			 * 16 bits).  Return CONTROL2 from vconfig and STATUS2
+			 * via the hardware-merge path so CACHE_INVALID is fresh.
+			 */
+			__le32 combined = cpu_to_le32(
+				(u32)get_unaligned_le16(vdev->vconfig + pos) |
+				((u32)status2_hw_shadow_merge(vdev,
+					dvsec + CXL_DVSEC_STATUS2_OFFSET) << 16));
+			memcpy(val, &combined, 4);
+		} else {
+			memcpy(val, vdev->vconfig + pos, count);
+		}
+		return count;
+	case CXL_DVSEC_STATUS2_OFFSET: {
+		__le16 merged = cpu_to_le16(status2_hw_shadow_merge(vdev,
+				dvsec + CXL_DVSEC_STATUS2_OFFSET));
+		memcpy(val, ((u8 *)&merged) + byte_in_reg, count);
+		return count;
+	}
+	default:
+		return vfio_direct_config_read(vdev, pos, count,
+					       perm, offset, val);
+	}
+}
+
+/**
+ * vfio_cxl_dvsec_writefn - ecap_perms write handler for PCI_EXT_CAP_ID_DVSEC.
+ *
+ * Installed once into ecap_perms[PCI_EXT_CAP_ID_DVSEC].writefn by
+ * vfio_pci_init_perm_bits() when CONFIG_VFIO_CXL_CORE=y.  Applies to every
+ * device opened under vfio-pci; the vdev->cxl NULL check distinguishes CXL
+ * devices from non-CXL devices that happen to expose a DVSEC capability.
+ *
+ * @vdev:   VFIO PCI core device
+ * @pos:    Absolute byte position in PCI config space
+ * @count:  Number of bytes to write
+ * @perm:   Permission bits for this capability (passed through to fallback)
+ * @offset: Byte offset within the capability structure (passed through)
+ * @val:    Value to write (little-endian)
+ *
+ * Return: @count on success; non-CXL devices continue to
+ *         vfio_raw_config_write() which also returns @count or negative error.
+ */
+static int vfio_cxl_dvsec_writefn(struct vfio_pci_core_device *vdev,
+				  int pos, int count,
+				  struct perm_bits *perm,
+				  int offset, __le32 val)
+{
+	struct vfio_pci_cxl_state *cxl = vdev->cxl;
+	u16 dvsec, abs_off, dvsec_off, reg_start, byte_in_reg;
+	u16 dword_start, byte_in_dword;
+	u16 wval16;
+	u32 wval32;
+
+	if (!cxl)
+		return vfio_raw_config_write(vdev, pos, count, perm,
+					     offset, val);
+
+	dvsec = _cxlds_get_dvsec(cxl);
+	abs_off = (u16)pos;
+	if (abs_off < dvsec || abs_off >= dvsec + cxl->dvsec_len)
+		return vfio_raw_config_write(vdev, pos, count, perm,
+					     offset, val);
+
+	pci_dbg(vdev->pdev,
+		"vfio_cxl: DVSEC write: abs=0x%04x dvsec_off=0x%04x count=%d raw_val=0x%08x\n",
+		abs_off, abs_off - dvsec, count, le32_to_cpu(val));
+
+	dvsec_off = abs_off - dvsec;
+
+	/*
+	 * The 2-byte virtualised registers (CONTROL, STATUS, CONTROL2,
+	 * STATUS2, LOCK) all live at 2-byte-aligned offsets.  Compute the
+	 * register-aligned offset so writes at the high byte still hit the
+	 * right handler, and merge partial-byte writes against the shadow so
+	 * the high byte of the matched register is not zeroed.
+	 */
+	reg_start = dvsec_off & ~1u;
+	byte_in_reg = dvsec_off - reg_start;
+
+	dword_start = dvsec_off & ~3u;
+	byte_in_dword = dvsec_off - dword_start;
+
+	switch (dword_start) {
+	case CXL_DVSEC_RANGE1_BASE_HIGH_OFFSET:
+	case CXL_DVSEC_RANGE2_BASE_HIGH_OFFSET:
+		wval32 = dvsec_virt_merge_write32(vdev, dword_start, byte_in_dword, count, val);
+		dvsec_virt_write32(vdev, dword_start, wval32);
+		return count;
+	case CXL_DVSEC_RANGE1_BASE_LOW_OFFSET:
+	case CXL_DVSEC_RANGE2_BASE_LOW_OFFSET:
+		wval32 = dvsec_virt_merge_write32(vdev, dword_start, byte_in_dword, count, val);
+		cxl_range_base_lo_write(vdev, dword_start, wval32);
+		return count;
+	}
+
+	if (count == 1) {
+		u16 cur = dvsec_virt_read16(vdev, reg_start);
+		u8 byte = (u8)le32_to_cpu(val);
+
+		wval16 = byte_in_reg ? (cur & 0x00ff) | ((u16)byte << 8)
+				     : (cur & 0xff00) | byte;
+	} else {
+		wval16 = (u16)le32_to_cpu(val);
+	}
+
+	/* Route to the appropriate per-register handler */
+	switch (reg_start) {
+	case CXL_DVSEC_CONTROL_OFFSET:
+		cxl_dvsec_control_write(vdev, wval16);
+		if (count == 4 && byte_in_reg == 0) {
+			/*
+			 * High half of a 32-bit write at CONTROL is STATUS;
+			 * forward so RW1C VIRAL_STATUS is not silently dropped.
+			 */
+			cxl_dvsec_status_write(vdev,
+					       (u16)(le32_to_cpu(val) >> 16));
+		}
+		break;
+	case CXL_DVSEC_STATUS_OFFSET:
+		/*
+		 * STATUS is RO/W1C.  A one-byte write must only act on bits in
+		 * the byte the guest wrote: re-derive the value without merging
+		 * the other byte from shadow, otherwise W1C bits set in shadow
+		 * (e.g. VIRAL_STATUS) would be passed as fresh 1-writes and
+		 * unintentionally cleared.
+		 */
+		if (count == 1) {
+			u8 byte = (u8)le32_to_cpu(val);
+
+			wval16 = byte_in_reg ? ((u16)byte << 8) : byte;
+		}
+		cxl_dvsec_status_write(vdev, wval16);
+		break;
+	case CXL_DVSEC_CONTROL2_OFFSET:
+		cxl_dvsec_control2_write(vdev, wval16);
+		if (count == 4 && byte_in_reg == 0) {
+			/*
+			 * High half of a 32-bit write at CONTROL2 is STATUS2;
+			 * forward so RW1CS VOLATILE_HDM_PRES_ERROR is not
+			 * silently dropped.
+			 */
+			cxl_dvsec_status2_write(vdev,
+						(u16)(le32_to_cpu(val) >> 16));
+		}
+		break;
+	case CXL_DVSEC_STATUS2_OFFSET:
+		/*
+		 * STATUS2 is RO/RW1CS.  Same rule as STATUS: a one-byte write
+		 * must not let W1CS bits set in shadow leak in as fresh
+		 * 1-writes via the merge.
+		 */
+		if (count == 1) {
+			u8 byte = (u8)le32_to_cpu(val);
+
+			wval16 = byte_in_reg ? ((u16)byte << 8) : byte;
+		}
+		cxl_dvsec_status2_write(vdev, wval16);
+		break;
+	case CXL_DVSEC_LOCK_OFFSET:
+		cxl_dvsec_lock_write(vdev, wval16);
+		break;
+	default:
+		/* RO registers: header, capability, range sizes - discard */
+		break;
+	}
+
+	return count;
+}
+
+/**
+ * vfio_cxl_setup_dvsec_perms - Install per-device CXL DVSEC read/write hooks.
+ * @vdev: VFIO PCI core device
+ *
+ * Called once per device open after vfio_config_init() has seeded vdev->vconfig
+ * from hardware.  Installs vfio_cxl_dvsec_readfn and vfio_cxl_dvsec_writefn
+ * as per-device DVSEC handlers so that the global ecap_perms[DVSEC] dispatcher
+ * routes reads and writes through CXL-aware emulation.
+ *
+ * Forces CXL.io IO_ENABLE in the CONTROL vconfig shadow at init time so the
+ * initial guest read returns the correct value before the first write.
+ */
+void vfio_cxl_setup_dvsec_perms(struct vfio_pci_core_device *vdev)
+{
+	u16 ctrl = dvsec_virt_read16(vdev, CXL_DVSEC_CONTROL_OFFSET);
+
+	vdev->dvsec_readfn  = vfio_cxl_dvsec_readfn;
+	vdev->dvsec_writefn = vfio_cxl_dvsec_writefn;
+
+	/* Force IO_ENABLE; cxl_dvsec_control_write() maintains this invariant. */
+	ctrl |= CXL_DVSEC_CTRL_IO_ENABLE;
+	dvsec_virt_write16(vdev, CXL_DVSEC_CONTROL_OFFSET, ctrl);
+}
+EXPORT_SYMBOL_GPL(vfio_cxl_setup_dvsec_perms);

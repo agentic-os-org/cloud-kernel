@@ -591,7 +591,7 @@ void vfio_pci_core_disable(struct vfio_pci_core_device *vdev)
 	struct pci_dev *pdev = vdev->pdev;
 	struct vfio_pci_dummy_resource *dummy_res, *tmp;
 	struct vfio_pci_ioeventfd *ioeventfd, *ioeventfd_tmp;
-	int i, bar;
+	int i, bar, bars;
 
 	/* For needs_reset */
 	lockdep_assert_held(&vdev->vdev.dev_set->lock);
@@ -650,8 +650,10 @@ void vfio_pci_core_disable(struct vfio_pci_core_device *vdev)
 		bar = i + PCI_STD_RESOURCES;
 		if (!vdev->barmap[bar])
 			continue;
+		bars = (vdev->cxl && i == vfio_cxl_get_component_reg_bar(vdev)) ?
+			0 : (1 << bar);
 		pci_iounmap(pdev, vdev->barmap[bar]);
-		pci_release_selected_regions(pdev, 1 << bar);
+		pci_release_selected_regions(pdev, bars);
 		vdev->barmap[bar] = NULL;
 	}
 
@@ -997,6 +999,13 @@ static int vfio_pci_ioctl_get_info(struct vfio_pci_core_device *vdev,
 	if (vdev->reset_works)
 		info.flags |= VFIO_DEVICE_FLAGS_RESET;
 
+	if (vdev->cxl) {
+		ret = vfio_cxl_get_info(vdev, &caps);
+		if (ret)
+			return ret;
+		info.flags |= VFIO_DEVICE_FLAGS_CXL;
+	}
+
 	info.num_regions = VFIO_PCI_NUM_REGIONS + vdev->num_regions;
 	info.num_irqs = VFIO_PCI_NUM_IRQS;
 
@@ -1041,6 +1050,12 @@ int vfio_pci_ioctl_get_region_info(struct vfio_device *core_vdev,
 		container_of(core_vdev, struct vfio_pci_core_device, vdev);
 	struct pci_dev *pdev = vdev->pdev;
 	int i, ret;
+
+	if (vdev->cxl) {
+		ret = vfio_cxl_get_region_info(vdev, info, caps);
+		if (ret != -ENOTTY)
+			return ret;
+	}
 
 	switch (info->index) {
 	case VFIO_PCI_CONFIG_REGION_INDEX:
@@ -1231,6 +1246,9 @@ static int vfio_pci_ioctl_reset(struct vfio_pci_core_device *vdev,
 
 	vfio_pci_zap_and_down_write_memory_lock(vdev);
 
+	/* Zap CXL DPA region PTEs before hardware reset clears HDM state */
+	vfio_cxl_prepare_reset(vdev);
+
 	/*
 	 * This function can be invoked while the power state is non-D0. If
 	 * pci_try_reset_function() has been called while the power state is
@@ -1246,6 +1264,13 @@ static int vfio_pci_ioctl_reset(struct vfio_pci_core_device *vdev,
 	ret = pci_try_reset_function(vdev->pdev);
 	if (__vfio_pci_memory_enabled(vdev))
 		vfio_pci_dma_buf_move(vdev, false);
+
+	/*
+	 * finish_reset checks the COMMITTED bit from hardware
+	 * and only brings the region back if it is actually set.
+	 */
+	vfio_cxl_finish_reset(vdev);
+
 	up_write(&vdev->memory_lock);
 
 	return ret;
@@ -1627,6 +1652,13 @@ void vfio_pci_zap_and_down_write_memory_lock(struct vfio_pci_core_device *vdev)
 {
 	down_write(&vdev->memory_lock);
 	vfio_pci_zap_bars(vdev);
+	/*
+	 * Zap the CXL DPA region PTEs too: zap_bars only covers the BAR offset
+	 * range, while the DPA region lives in the device-region offset range
+	 * and would otherwise survive a runtime-PM entry or D3 transition.
+	 * No-op on non-CXL devices.
+	 */
+	vfio_cxl_zap_dpa(vdev);
 }
 
 u16 vfio_pci_memory_lock_and_enable(struct vfio_pci_core_device *vdev)
@@ -1758,6 +1790,18 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	req_start = pgoff << PAGE_SHIFT;
 
 	if (req_start + req_len > phys_len)
+		return -EINVAL;
+
+	/*
+	 * CXL devices: mmap is permitted for the GPU/accelerator register
+	 * windows listed in the sparse-mmap capability.  Block any request
+	 * that overlaps the CXL component register block
+	 * [comp_reg_offset, comp_reg_offset + comp_reg_size); those registers
+	 * must be accessed exclusively through the COMP_REGS device region so
+	 * that the emulation layer (notify_change) intercepts every write.
+	 */
+	if (vdev->cxl && index == vfio_cxl_get_component_reg_bar(vdev) &&
+	    vfio_cxl_mmap_overlaps_comp_regs(vdev, req_start, req_len))
 		return -EINVAL;
 
 	/*
@@ -2187,6 +2231,8 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 	if (ret)
 		goto out_vf;
 
+	vfio_pci_cxl_detect_and_init(vdev);
+
 	vfio_pci_probe_power_state(vdev);
 
 	/*
@@ -2211,6 +2257,15 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 	return 0;
 
 out_power:
+	/*
+	 * vfio_pci_cxl_detect_and_init() may have assigned vdev->cxl and
+	 * allocated comp_reg_virt[] / hdm_iobase / region state above.  The
+	 * normal teardown via vfio_pci_core_unregister_device() will not run
+	 * if registration failed, so release the CXL state here.  No-op when
+	 * vdev->cxl is NULL (non-CXL device or detect skipped).
+	 */
+	vfio_pci_cxl_cleanup(vdev);
+
 	if (!disable_idle_d3)
 		pm_runtime_get_noresume(dev);
 
@@ -2229,6 +2284,8 @@ void vfio_pci_core_unregister_device(struct vfio_pci_core_device *vdev)
 
 	vfio_pci_vf_uninit(vdev);
 	vfio_pci_vga_uninit(vdev);
+
+	vfio_pci_cxl_cleanup(vdev);
 
 	if (!disable_idle_d3)
 		pm_runtime_get_noresume(&vdev->pdev->dev);
@@ -2483,6 +2540,17 @@ static int vfio_pci_dev_set_hot_reset(struct vfio_device_set *dev_set,
 	}
 
 	/*
+	 * All devices in the set are now locked.  Commit the CXL prepare
+	 * step in its own pass: it clears region_active and zaps DPA PTEs,
+	 * which must be paired with a finish_reset call for every device it
+	 * touches.  Doing this only after all trylocks have succeeded keeps
+	 * a mid-loop failure from leaving earlier devices with
+	 * region_active=false and no matching reset.
+	 */
+	list_for_each_entry(vdev, &dev_set->device_list, vdev.dev_set_list)
+		vfio_cxl_prepare_reset(vdev);
+
+	/*
 	 * The pci_reset_bus() will reset all the devices in the bus.
 	 * The power state can be non-D0 for some of the devices in the bus.
 	 * For these devices, the pci_reset_bus() will internally set
@@ -2495,6 +2563,15 @@ static int vfio_pci_dev_set_hot_reset(struct vfio_device_set *dev_set,
 		vfio_pci_set_power_state(vdev, PCI_D0);
 
 	ret = pci_reset_bus(pdev);
+
+	/*
+	 * Mirror vfio_pci_ioctl_reset(): re-read the post-reset HDM state and
+	 * reactivate the DPA region for CXL devices that hardware committed.
+	 * Runs under each device's memory_lock write side acquired earlier and
+	 * pairs with the prepare_reset pass above.
+	 */
+	list_for_each_entry(vdev, &dev_set->device_list, vdev.dev_set_list)
+		vfio_cxl_finish_reset(vdev);
 
 	vdev = list_last_entry(&dev_set->device_list,
 			       struct vfio_pci_core_device, vdev.dev_set_list);
@@ -2595,3 +2672,4 @@ module_exit(vfio_pci_core_cleanup);
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
+MODULE_IMPORT_NS("CXL");
