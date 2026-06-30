@@ -5,9 +5,12 @@
 #ifndef __CXL_CXL_H__
 #define __CXL_CXL_H__
 
+#include <linux/bitfield.h>
 #include <linux/node.h>
 #include <linux/ioport.h>
+#include <linux/pci.h>
 #include <cxl/mailbox.h>
+#include <uapi/cxl/cxl_regs.h>
 
 /**
  * enum cxl_devtype - delineate type-2 from a generic type-3 device
@@ -70,11 +73,27 @@ struct cxl_regs {
 	);
 };
 
+#define   CXL_CM_CAP_CAP_ID_RAS 0x2
+#define   CXL_CM_CAP_CAP_ID_HDM 0x5
+#define   CXL_CM_CAP_CAP_HDM_VERSION 1
+
+/* HDM decoder control register constants CXL 3.0 8.2.5.19.7 */
+#define CXL_DECODER_MIN_GRANULARITY 256
+#define CXL_DECODER_MAX_ENCODED_IG 6
+
+static inline int cxl_hdm_decoder_count(u32 cap_hdr)
+{
+	int val = FIELD_GET(CXL_HDM_DECODER_COUNT_MASK, cap_hdr);
+
+	return val ? val * 2 : 1;
+}
+
 struct cxl_reg_map {
 	bool valid;
 	int id;
 	unsigned long offset;
 	unsigned long size;
+	u8 count;
 };
 
 struct cxl_component_reg_map {
@@ -99,9 +118,16 @@ struct cxl_pmu_reg_map {
  * @resource: physical resource base of the register block
  * @max_size: maximum mapping size to perform register search
  * @reg_type: see enum cxl_regloc_type
+ * @bar_index: PCI BAR index (0-5) when regblock is BAR-backed; 0xFF otherwise
+ * @bar_offset: offset within the BAR; only valid when bar_index <= 5
  * @component_map: cxl_reg_map for component registers
  * @device_map: cxl_reg_maps for device registers
  * @pmu_map: cxl_reg_maps for CXL Performance Monitoring Units
+ *
+ * When the register block is described by the Register Locator DVSEC with
+ * a BAR Indicator (BIR 0-5), bar_index and bar_offset are set so callers can
+ * use pci_iomap(pdev, bar_index, size) and base + bar_offset instead of
+ * ioremap(resource).
  */
 struct cxl_register_map {
 	struct device *host;
@@ -109,6 +135,8 @@ struct cxl_register_map {
 	resource_size_t resource;
 	resource_size_t max_size;
 	u8 reg_type;
+	u8 bar_index;
+	resource_size_t bar_offset;
 	union {
 		struct cxl_component_reg_map component_map;
 		struct cxl_device_reg_map device_map;
@@ -148,6 +176,24 @@ struct cxl_dpa_partition {
 };
 
 #define CXL_NR_PARTITIONS_MAX 2
+
+struct cxl_memdev_attach {
+	int (*probe)(struct cxl_memdev *cxlmd);
+};
+
+/**
+ * struct cxl_attach_region - accelerator region handling
+ * @attach: invoked at cxl_memdev_attach_region() with endpoint device locked.
+ * @detach: invoked at endpoint release.
+ * @data: pointer referencing accelerator data for attach and detach calls.
+ * @region: initialised with autodiscovered region values linked to memdev.
+ */
+struct cxl_attach_region {
+	int (*attach)(void *);
+	void (*detach)(void *);
+	void *data;
+	struct range region;
+};
 
 /**
  * struct cxl_dev_state - The driver device state
@@ -223,4 +269,49 @@ struct cxl_dev_state *_devm_cxl_dev_state_create(struct device *dev,
 		(drv_struct *)_devm_cxl_dev_state_create(parent, type, serial, dvsec,	\
 						      sizeof(drv_struct), mbox);	\
 	})
+
+int cxl_set_capacity(struct cxl_dev_state *cxlds, u64 capacity);
+struct cxl_memdev *devm_cxl_add_memdev(struct cxl_dev_state *cxlds,
+				       const struct cxl_memdev_attach *attach);
+struct cxl_region;
+int cxl_memdev_attach_region(struct cxl_memdev *cxlmd, struct cxl_attach_region *attach);
+
+#ifdef CONFIG_CXL_REGION
+bool cxl_region_contains_soft_reserve(struct resource *res);
+#else
+static inline bool cxl_region_contains_soft_reserve(struct resource *res)
+{
+	return false;
+}
+#endif
+struct cxl_component_reg_map;
+void cxl_probe_component_regs(struct device *dev, void __iomem *base,
+			      struct cxl_component_reg_map *map);
+
+int cxl_regblock_get_bar_info(const struct cxl_register_map *map, u8 *bar_index,
+			      resource_size_t *bar_offset);
+
+#ifdef CONFIG_CXL_BUS
+
+int cxl_get_hdm_info(struct cxl_dev_state *cxlds, u8 *count,
+		     resource_size_t *offset, resource_size_t *size);
+
+#else
+
+static inline
+int cxl_get_hdm_info(struct cxl_dev_state *cxlds, u8 *count,
+		     resource_size_t *offset, resource_size_t *size)
+{ return -EOPNOTSUPP; }
+
+#endif /* CONFIG_CXL_BUS */
+
+/* f951acc: split from media-ready wait */
+struct cxl_dev_state;
+int cxl_await_range_active(struct cxl_dev_state *cxlds);
+
+/* a6a063d: exported reset helpers for VFIO */
+int cxl_dev_reset(struct pci_dev *pdev, int dvsec, bool mem_clr_en);
+int cxl_dev_reset_locked(struct pci_dev *pdev, int dvsec, bool mem_clr_en);
+bool pci_cxl_reset_capable(struct pci_dev *pdev);
+
 #endif /* __CXL_CXL_H__ */
