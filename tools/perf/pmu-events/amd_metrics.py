@@ -268,7 +268,13 @@ def AmdDtlb() -> Optional[MetricGroup]:
 def AmdItlb():
     global _zen_model
     l2h = Event("bp_l1_tlb_miss_l2_tlb_hit", "bp_l1_tlb_miss_l2_hit")
-    l2m = Event("l2_itlb_misses")
+    # On Zen >=4, l2_itlb_misses exists only as a derived MetricName, not as
+    # an EventName, so referring to it as an event fails at runtime with
+    # "Unable to find PMU or event on a PMU of 'l2_itlb_misses'". Fall back
+    # to the underlying hardware events that those models actually expose.
+    l2m = Event("l2_itlb_misses",
+                "bp_l1_tlb_miss_l2_tlb_miss.all",
+                "bp_l1_tlb_miss_l2_tlb_miss")
     l2r = l2h + l2m
 
     itlb_l1_mg = None
