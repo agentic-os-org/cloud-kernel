@@ -4492,6 +4492,84 @@ int lru_gen_print_memcg(struct seq_file *m, struct mem_cgroup *memcg)
 	return 0;
 }
 
+/*
+ * Read-only per-memcg cold/hot histogram derived from the MGLRU
+ * generations, aggregated across nodes. Unlike lru_gen_print_memcg() this
+ * has no write side and produces no aging; it just reshapes the existing
+ * generation data into a stable cold/hot view in kB.
+ *
+ * Generations are aligned across nodes by their distance from max_seq:
+ * offset 0 is the youngest (hottest) generation, larger offsets are older
+ * (colder). For a single-node memcg the offset equals max_seq - seq exactly;
+ * across nodes the per-offset counts are summed and the reported age is the
+ * oldest birth seen at that offset.
+ */
+int lru_gen_idle_stats_show(struct seq_file *m, struct mem_cgroup *memcg)
+{
+	unsigned long anon_pages[MAX_NR_GENS] = {};
+	unsigned long file_pages[MAX_NR_GENS] = {};
+	unsigned int age_ms[MAX_NR_GENS] = {};
+	bool valid[MAX_NR_GENS] = {};
+	unsigned long now = jiffies;
+	int nid, off;
+
+	for_each_node_state(nid, N_MEMORY) {
+		struct lruvec *lruvec;
+		struct lru_gen_folio *lrugen;
+		unsigned long seq;
+
+		lruvec = get_lruvec(memcg, nid);
+		if (!lruvec)
+			continue;
+
+		DEFINE_MAX_SEQ(lruvec);
+		DEFINE_MIN_SEQ(lruvec);
+
+		lrugen = &lruvec->lrugen;
+		seq = evictable_min_seq(min_seq, MAX_SWAPPINESS / 2);
+
+		for (; seq <= max_seq; seq++) {
+			int gen = lru_gen_from_seq(seq);
+			unsigned long birth = READ_ONCE(lrugen->timestamps[gen]);
+			unsigned int ms = jiffies_to_msecs(now - birth);
+			bool anon_valid = seq >= min_seq[LRU_GEN_ANON];
+			bool file_valid = seq >= min_seq[LRU_GEN_FILE];
+			int zone;
+
+			/* youngest generation (max_seq) maps to offset 0 */
+			off = max_seq - seq;
+			if (off < 0 || off >= MAX_NR_GENS)
+				continue;
+
+			valid[off] = true;
+			if (ms > age_ms[off])
+				age_ms[off] = ms;
+
+			for (zone = 0; zone < MAX_NR_ZONES; zone++) {
+				long *np = lrugen->nr_pages[gen][LRU_GEN_ANON];
+				long *fp = lrugen->nr_pages[gen][LRU_GEN_FILE];
+
+				if (anon_valid)
+					anon_pages[off] += max(READ_ONCE(np[zone]), 0L);
+				if (file_valid)
+					file_pages[off] += max(READ_ONCE(fp[zone]), 0L);
+			}
+		}
+	}
+
+	seq_puts(m, "#  gen      age_ms      anon_kb      file_kb\n");
+	for (off = 0; off < MAX_NR_GENS; off++) {
+		if (!valid[off])
+			continue;
+
+		seq_printf(m, " %5d %11u %12lu %12lu\n", off, age_ms[off],
+			   anon_pages[off] << (PAGE_SHIFT - 10),
+			   file_pages[off] << (PAGE_SHIFT - 10));
+	}
+
+	return 0;
+}
+
 
 static int run_aging(struct lruvec *lruvec, unsigned long seq,
 		     int swappiness, bool force_scan);

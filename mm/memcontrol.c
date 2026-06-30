@@ -8690,6 +8690,13 @@ static ssize_t memcg_lru_gen_write(struct kernfs_open_file *of,
 {
 	return lru_gen_memcg_write(of, buf, nbytes, off);
 }
+
+static int memcg_lru_gen_idle_stats_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_seq(m);
+
+	return lru_gen_idle_stats_show(m, memcg);
+}
 #endif
 
 static struct cftype memory_files[] = {
@@ -8928,6 +8935,10 @@ static struct cftype memory_files[] = {
 		.name = "lru_gen",
 		.seq_show = memcg_lru_gen_show,
 		.write = memcg_lru_gen_write,
+	},
+	{
+		.name = "lru_gen_idle_stats",
+		.seq_show = memcg_lru_gen_idle_stats_show,
 	},
 #endif
 	{ }	/* terminate */
@@ -10007,6 +10018,10 @@ static struct cftype memsw_files[] = {
 		.name = "lru_gen",
 		.seq_show = memcg_lru_gen_show,
 		.write = memcg_lru_gen_write,
+	},
+	{
+		.name = "lru_gen_idle_stats",
+		.seq_show = memcg_lru_gen_idle_stats_show,
 	},
 #endif
 	{ },	/* terminate */
