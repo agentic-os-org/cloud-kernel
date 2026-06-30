@@ -2287,6 +2287,7 @@ static int perf_kwork__record(struct perf_kwork *kwork,
 			      int argc, const char **argv)
 {
 	const char **rec_argv;
+	const char **save_argv = NULL;
 	unsigned int rec_argc, i, j;
 	struct kwork_class *class;
 	int ret;
@@ -2328,11 +2329,26 @@ static int perf_kwork__record(struct perf_kwork *kwork,
 		pr_debug("%s ", rec_argv[j]);
 	pr_debug("\n");
 
+	/*
+	 * cmd_record() invokes parse_options(PARSE_OPT_STOP_AT_NON_OPTION),
+	 * which reorders rec_argv[] in place: the workload args after "--"
+	 * are memmove()d to the head, so the original strdup'd pointers may
+	 * appear twice in rec_argv[]. Snapshot them before the call so the
+	 * cleanup loop frees each pointer exactly once.
+	 */
+	save_argv = calloc(rec_argc, sizeof(char *));
+	if (!save_argv) {
+		ret = -ENOMEM;
+		goto EXIT;
+	}
+	memcpy(save_argv, rec_argv, rec_argc * sizeof(char *));
+
 	ret = cmd_record(i, rec_argv);
 
 EXIT:
 	for (i = 0; i < rec_argc; i++)
-		free((void *)rec_argv[i]);
+		free((void *)(save_argv ? save_argv[i] : rec_argv[i]));
+	free(save_argv);
 	free(rec_argv);
 	return ret;
 }

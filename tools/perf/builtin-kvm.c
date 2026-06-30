@@ -1650,6 +1650,7 @@ kvm_events_record(struct perf_kvm_stat *kvm, int argc, const char **argv)
 {
 	unsigned int rec_argc, i, j, events_tp_size;
 	const char **rec_argv;
+	const char **save_argv = NULL;
 	const char * const record_args[] = {
 		"record",
 		"-R",
@@ -1716,11 +1717,27 @@ kvm_events_record(struct perf_kvm_stat *kvm, int argc, const char **argv)
 	set_option_flag(record_options, 0, "transaction", PARSE_OPT_DISABLED);
 
 	record_usage = kvm_stat_record_usage;
+
+	/*
+	 * cmd_record() invokes parse_options(PARSE_OPT_STOP_AT_NON_OPTION),
+	 * which reorders rec_argv[] in place: workload args after "--" are
+	 * memmove()d to the head, so the original strdup'd pointers may
+	 * appear twice in rec_argv[]. Snapshot them before the call so the
+	 * cleanup loop frees each pointer exactly once.
+	 */
+	save_argv = calloc(rec_argc, sizeof(char *));
+	if (!save_argv) {
+		ret = -ENOMEM;
+		goto EXIT;
+	}
+	memcpy(save_argv, rec_argv, rec_argc * sizeof(char *));
+
 	ret = cmd_record(i, rec_argv);
 
 EXIT:
 	for (i = 0; i < rec_argc; i++)
-		free((void *)rec_argv[i]);
+		free((void *)(save_argv ? save_argv[i] : rec_argv[i]));
+	free(save_argv);
 	free(rec_argv);
 	return ret;
 }
@@ -1996,6 +2013,7 @@ static int __cmd_record(const char *file_name, int argc, const char **argv)
 {
 	int rec_argc, i = 0, j, ret;
 	const char **rec_argv;
+	const char **save_argv = NULL;
 
 	/*
 	 * Besides the 2 more options "-o" and "filename",
@@ -2019,11 +2037,20 @@ static int __cmd_record(const char *file_name, int argc, const char **argv)
 	if (ret)
 		goto EXIT;
 
+	/* See perf_kwork__record(): cmd_record() reorders argv in place. */
+	save_argv = calloc(rec_argc, sizeof(char *));
+	if (!save_argv) {
+		ret = -ENOMEM;
+		goto EXIT;
+	}
+	memcpy(save_argv, rec_argv, rec_argc * sizeof(char *));
+
 	ret = cmd_record(i, rec_argv);
 
 EXIT:
 	for (i = 0; i < rec_argc; i++)
-		free((void *)rec_argv[i]);
+		free((void *)(save_argv ? save_argv[i] : rec_argv[i]));
+	free(save_argv);
 	free(rec_argv);
 	return ret;
 }
@@ -2032,6 +2059,7 @@ static int __cmd_report(const char *file_name, int argc, const char **argv)
 {
 	int rec_argc, i = 0, j, ret;
 	const char **rec_argv;
+	const char **save_argv = NULL;
 
 	rec_argc = argc + 2;
 	rec_argv = calloc(rec_argc + 1, sizeof(char *));
@@ -2046,11 +2074,20 @@ static int __cmd_report(const char *file_name, int argc, const char **argv)
 
 	BUG_ON(i != rec_argc);
 
+	/* See perf_kwork__record(): cmd_report() reorders argv in place. */
+	save_argv = calloc(rec_argc, sizeof(char *));
+	if (!save_argv) {
+		ret = -ENOMEM;
+		goto EXIT;
+	}
+	memcpy(save_argv, rec_argv, rec_argc * sizeof(char *));
+
 	ret = cmd_report(i, rec_argv);
 
 EXIT:
 	for (i = 0; i < rec_argc; i++)
-		free((void *)rec_argv[i]);
+		free((void *)(save_argv ? save_argv[i] : rec_argv[i]));
+	free(save_argv);
 	free(rec_argv);
 	return ret;
 }
@@ -2060,6 +2097,7 @@ __cmd_buildid_list(const char *file_name, int argc, const char **argv)
 {
 	int rec_argc, i = 0, j, ret;
 	const char **rec_argv;
+	const char **save_argv = NULL;
 
 	rec_argc = argc + 2;
 	rec_argv = calloc(rec_argc + 1, sizeof(char *));
@@ -2074,11 +2112,20 @@ __cmd_buildid_list(const char *file_name, int argc, const char **argv)
 
 	BUG_ON(i != rec_argc);
 
+	/* See perf_kwork__record(): cmd_buildid_list() reorders argv in place. */
+	save_argv = calloc(rec_argc, sizeof(char *));
+	if (!save_argv) {
+		ret = -ENOMEM;
+		goto EXIT;
+	}
+	memcpy(save_argv, rec_argv, rec_argc * sizeof(char *));
+
 	ret = cmd_buildid_list(i, rec_argv);
 
 EXIT:
 	for (i = 0; i < rec_argc; i++)
-		free((void *)rec_argv[i]);
+		free((void *)(save_argv ? save_argv[i] : rec_argv[i]));
+	free(save_argv);
 	free(rec_argv);
 	return ret;
 }
@@ -2087,6 +2134,7 @@ static int __cmd_top(int argc, const char **argv)
 {
 	int rec_argc, i = 0, ret;
 	const char **rec_argv;
+	const char **save_argv = NULL;
 
 	/*
 	 * kvm_add_default_arch_event() may add 2 extra options, so
@@ -2106,11 +2154,20 @@ static int __cmd_top(int argc, const char **argv)
 	if (ret)
 		goto EXIT;
 
+	/* See perf_kwork__record(): cmd_top() reorders argv in place. */
+	save_argv = calloc(rec_argc, sizeof(char *));
+	if (!save_argv) {
+		ret = -ENOMEM;
+		goto EXIT;
+	}
+	memcpy(save_argv, rec_argv, rec_argc * sizeof(char *));
+
 	ret = cmd_top(i, rec_argv);
 
 EXIT:
 	for (i = 0; i < rec_argc; i++)
-		free((void *)rec_argv[i]);
+		free((void *)(save_argv ? save_argv[i] : rec_argv[i]));
+	free(save_argv);
 	free(rec_argv);
 	return ret;
 }
