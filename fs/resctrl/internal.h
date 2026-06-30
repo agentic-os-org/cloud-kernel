@@ -43,6 +43,7 @@ struct rdt_fs_context {
 	bool				enable_mba_mbps;
 	bool				enable_debug;
 	bool				enable_hwdrc;
+	bool				enable_abi_playground;
 };
 
 static inline struct rdt_fs_context *rdt_fc2context(struct fs_context *fc)
@@ -252,6 +253,7 @@ struct rdtgroup {
 
 #define RFTYPE_TOP			BIT(6)
 
+/* files that are specific to a type of resource, e.g. throttle_mode */
 #define RFTYPE_RES_CACHE		BIT(8)
 
 #define RFTYPE_RES_MB			BIT(9)
@@ -261,6 +263,11 @@ struct rdtgroup {
 #define RFTYPE_ASSIGN_CONFIG		BIT(11)
 
 #define RFTYPE_RES_PERF_PKG		BIT(12)
+
+/* files that are specific to a type of control, e.g. percent_min */
+#define RFTYPE_SCHEMA_BITMAP		BIT(13)
+#define RFTYPE_SCHEMA_PERCENT		BIT(14)
+#define RFTYPE_SCHEMA_MBPS		BIT(15)
 
 #define RFTYPE_CTRL_INFO		(RFTYPE_INFO | RFTYPE_CTRL)
 
@@ -314,6 +321,8 @@ struct mbm_state {
 	u64	prev_bw_bytes;
 	u32	prev_bw;
 };
+
+DECLARE_STATIC_KEY_FALSE(resctrl_abi_playground);
 
 extern struct mutex rdtgroup_mutex;
 
@@ -378,9 +387,9 @@ int alloc_rmid(u32 closid);
 
 void free_rmid(u32 closid, u32 rmid);
 
-int resctrl_l3_mon_resource_init(void);
+int resctrl_mon_init(void);
 
-void resctrl_l3_mon_resource_exit(void);
+void resctrl_mon_exit(void);
 
 void mon_event_count(void *info);
 
@@ -466,6 +475,11 @@ int resctrl_io_alloc_cbm_show(struct kernfs_open_file *of, struct seq_file *seq,
 ssize_t resctrl_io_alloc_cbm_write(struct kernfs_open_file *of, char *buf,
 				   size_t nbytes, loff_t off);
 u32 resctrl_io_alloc_closid(struct rdt_resource *r);
+
+int mbm_MB_assignments_show(struct kernfs_open_file *of, struct seq_file *s, void *v);
+
+ssize_t mbm_MB_assignments_write(struct kernfs_open_file *of, char *buf, size_t nbytes,
+				 loff_t off);
 
 #ifdef CONFIG_RESCTRL_FS_PSEUDO_LOCK
 int rdtgroup_locksetup_enter(struct rdtgroup *rdtgrp);

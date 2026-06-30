@@ -8,6 +8,7 @@
 #include <linux/atomic.h>
 #include <linux/bitmap.h>
 #include <linux/cpumask.h>
+#include <linux/debugfs.h>
 #include <linux/io.h>
 #include <linux/jump_label.h>
 #include <linux/llist.h>
@@ -67,6 +68,7 @@ struct mpam_msc {
 	/* Not modified after mpam_is_enabled() becomes true */
 	enum mpam_msc_iface	iface;
 	u32			nrdy_usec;
+	u64			nrdy_retry_count;
 	cpumask_t		accessibility;
 	bool			has_extd_esr;
 
@@ -116,19 +118,25 @@ struct mpam_msc {
 	/*
 	 * mon_sel_lock protects access to the MSC hardware registers that are
 	 * affected by MPAMCFG_MON_SEL, and the mbwu_state.
-	 * Access to mon_sel is needed from both process and interrupt contexts,
-	 * but is complicated by firmware-backed platforms that can't make any
-	 * access unless they can sleep.
-	 * Always use the mpam_mon_sel_lock() helpers.
-	 * Accesses to mon_sel need to be able to fail if they occur in the wrong
-	 * context.
+	 * Both the 'inner' and 'outer' must be taken.
+	 * For real MMIO MSC, the outer lock is unnecessary - but keeps the
+	 * code common with:
+	 * Firmware backed MSC need to sleep when accessing the MSC, which
+	 * means some code-paths will always fail. For these MSC the outer
+	 * lock is providing the protection, and the inner lock fails to
+	 * be taken if the task is unable to sleep.
+	 *
 	 * If needed, take msc->probe_lock first.
 	 */
-	raw_spinlock_t		_mon_sel_lock;
-	unsigned long		_mon_sel_flags;
+	struct mutex		outer_mon_sel_lock;
+	bool			outer_lock_held;
+	raw_spinlock_t		inner_mon_sel_lock;
+	unsigned long		inner_mon_sel_flags;
 
 	void __iomem		*mapped_hwpage;
 	size_t			mapped_hwpage_sz;
+
+	struct dentry		*debugfs;
 
 	/* Values only used on some platforms for quirks */
 	u32			t241_id;
@@ -136,30 +144,56 @@ struct mpam_msc {
 	struct mpam_garbage	garbage;
 };
 
-/* Returning false here means accesses to mon_sel must fail and report an error. */
-static inline bool __must_check mpam_mon_sel_lock(struct mpam_msc *msc)
+static inline bool __must_check mpam_mon_sel_inner_lock(struct mpam_msc *msc)
 {
-	/* Locking will require updating to support a firmware backed interface */
-	if (WARN_ON_ONCE(msc->iface != MPAM_IFACE_MMIO))
-		return false;
+	/*
+	 * The outer lock may be taken by a CPU that then issues an IPI to run
+	 * a helper that takes the inner lock. lockdep can't help us here.
+	 */
+	WARN_ON_ONCE(!READ_ONCE(msc->outer_lock_held));
 
-	raw_spin_lock_irqsave(&msc->_mon_sel_lock, msc->_mon_sel_flags);
-	return true;
+	if (msc->iface == MPAM_IFACE_MMIO) {
+		raw_spin_lock_irqsave(&msc->inner_mon_sel_lock, msc->inner_mon_sel_flags);
+		return true;
+	}
+
+	/* Accesses must fail if we are not pre-emptible */
+	return !!preemptible();
 }
 
-static inline void mpam_mon_sel_unlock(struct mpam_msc *msc)
+static inline void mpam_mon_sel_inner_unlock(struct mpam_msc *msc)
 {
-	raw_spin_unlock_irqrestore(&msc->_mon_sel_lock, msc->_mon_sel_flags);
+	WARN_ON_ONCE(!READ_ONCE(msc->outer_lock_held));
+
+	if (msc->iface == MPAM_IFACE_MMIO)
+		raw_spin_unlock_irqrestore(&msc->inner_mon_sel_lock, msc->inner_mon_sel_flags);
+}
+
+static inline void mpam_mon_sel_outer_lock(struct mpam_msc *msc)
+{
+	mutex_lock(&msc->outer_mon_sel_lock);
+	msc->outer_lock_held = true;
+}
+
+static inline void mpam_mon_sel_outer_unlock(struct mpam_msc *msc)
+{
+	msc->outer_lock_held = false;
+	mutex_unlock(&msc->outer_mon_sel_lock);
 }
 
 static inline void mpam_mon_sel_lock_held(struct mpam_msc *msc)
 {
-	lockdep_assert_held_once(&msc->_mon_sel_lock);
+	WARN_ON_ONCE(!READ_ONCE(msc->outer_lock_held));
+	if (msc->iface == MPAM_IFACE_MMIO)
+		lockdep_assert_held_once(&msc->inner_mon_sel_lock);
+	else
+		lockdep_assert_preemption_enabled();
 }
 
 static inline void mpam_mon_sel_lock_init(struct mpam_msc *msc)
 {
-	raw_spin_lock_init(&msc->_mon_sel_lock);
+	raw_spin_lock_init(&msc->inner_mon_sel_lock);
+	mutex_init(&msc->outer_mon_sel_lock);
 }
 
 /* Bits for mpam features bitmaps */
@@ -172,6 +206,7 @@ enum mpam_device_features {
 	mpam_feat_mbw_part,
 	mpam_feat_mbw_min,
 	mpam_feat_mbw_max,
+	mpam_feat_mbw_max_hardlim_rw,
 	mpam_feat_mbw_prop,
 	mpam_feat_intpri_part,
 	mpam_feat_intpri_part_0_low,
@@ -205,6 +240,11 @@ struct mpam_props {
 	u16			dspri_wd;
 	u16			num_csu_mon;
 	u16			num_mbwu_mon;
+	/*
+	 * MPAMF_MBW_IDR.MAX_LIM [1:0] when mpam_feat_mbw_max; else 0.
+	 * 0 = soft+hard, 1 = soft only, 2 = hard only, 3 = reserved.
+	 */
+	u8			mbw_max_lim;
 
 /*
  * Kunit tests use memset() to set up feature combinations that should be
@@ -310,6 +350,7 @@ struct mpam_class {
 	struct ida		ida_csu_mon;
 	struct ida		ida_mbwu_mon;
 
+	struct dentry		*debugfs;
 	struct mpam_garbage	garbage;
 };
 
@@ -320,6 +361,11 @@ struct mpam_config {
 	u32	cpbm;
 	u32	mbw_pbm;
 	u16	mbw_max;
+	bool	mbw_max_hardlim;
+	u16	cmax;
+	u16	cmin;
+
+	bool	cmax_softlim;
 
 	struct mpam_garbage	garbage;
 };
@@ -344,6 +390,7 @@ struct mpam_component {
 	/* parent: */
 	struct mpam_class	*class;
 
+	struct dentry		*debugfs;
 	struct mpam_garbage	garbage;
 };
 
@@ -362,12 +409,15 @@ struct mpam_vmsc {
 	/* parent: */
 	struct mpam_component	*comp;
 
+	struct dentry		*debugfs;
 	struct mpam_garbage	garbage;
 };
 
 struct mpam_msc_ris {
 	u8			ris_idx;
 	u64			idr;
+	u32			cpor_idr;
+	u32			ccap_idr;
 	struct mpam_props	props;
 	bool			in_reset_state;
 
@@ -385,6 +435,7 @@ struct mpam_msc_ris {
 	/* msmon mbwu configuration is preserved over reset */
 	struct msmon_mbwu_state	*mbwu_state;
 
+	struct dentry		*debugfs;
 	struct mpam_garbage	garbage;
 };
 
@@ -411,7 +462,20 @@ struct mpam_resctrl_res {
 struct mpam_resctrl_mon {
 	struct mpam_class	*class;
 
-	/* per-class data that resctrl needs will live here */
+	/*
+	 * Array of allocated MBWU monitors, indexed by (closid, rmid).
+	 * When ABMC is not in use, this array directly maps (closid, rmid)
+	 * to the allocated monitor. Otherwise this array is sparse, and
+	 * un-assigned (closid, rmid) are -1.
+	 */
+	int			*mbwu_idx_to_mon;
+
+	/*
+	 * Array of assigned MBWU monitors, indexed by idx argument.
+	 * When ABMC is not in use, this array can be NULL. Otherwise
+	 * it maps idx to the allocated monitor.
+	 */
+	int			*assigned_counters;
 };
 
 static inline int mpam_alloc_csu_mon(struct mpam_class *class)
@@ -470,6 +534,8 @@ void mpam_msmon_reset_mbwu(struct mpam_component *comp, struct mon_cfg *ctx);
 
 int mpam_get_cpumask_from_cache_id(unsigned long cache_id, u32 cache_level,
 				   cpumask_t *affinity);
+
+bool mpam_force_unknown_msc_test(struct mpam_msc *msc);
 
 #ifdef CONFIG_RESCTRL_FS
 int mpam_resctrl_setup(void);
@@ -571,6 +637,7 @@ static inline void mpam_resctrl_teardown_class(struct mpam_class *class) { }
 
 /* MPAMF_MBW_IDR - MPAM features memory bandwidth partitioning ID register */
 #define MPAMF_MBW_IDR_BWA_WD		GENMASK(5, 0)
+#define MPAMF_MBW_IDR_MAX_LIM		GENMASK(9, 8)
 #define MPAMF_MBW_IDR_HAS_MIN		BIT(10)
 #define MPAMF_MBW_IDR_HAS_MAX		BIT(11)
 #define MPAMF_MBW_IDR_HAS_PBM		BIT(12)

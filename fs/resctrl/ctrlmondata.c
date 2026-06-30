@@ -40,18 +40,10 @@ typedef int (ctrlval_parser_t)(struct rdt_parse_data *data,
  * hardware. The allocated bandwidth percentage is rounded to the next
  * control step available on the hardware.
  */
-static bool bw_validate(char *buf, u32 *data, struct rdt_resource *r)
+static bool bw_validate(char *buf, u32 *data, struct resctrl_schema *s)
 {
 	int ret;
 	u32 bw;
-
-	/*
-	 * Only linear delay values is supported for current Intel SKUs.
-	 */
-	if (!r->membw.delay_linear && r->membw.arch_needs_linear) {
-		rdt_last_cmd_puts("No support for non-linear MB domains\n");
-		return false;
-	}
 
 	ret = kstrtou32(buf, 10, &bw);
 	if (ret) {
@@ -60,18 +52,18 @@ static bool bw_validate(char *buf, u32 *data, struct rdt_resource *r)
 	}
 
 	/* Nothing else to do if software controller is enabled. */
-	if (is_mba_sc(r)) {
+	if (is_mba_sc(s->res)) {
 		*data = bw;
 		return true;
 	}
 
-	if (bw < r->membw.min_bw || bw > r->membw.max_bw) {
+	if (bw < s->membw.min_bw || bw > s->membw.max_bw) {
 		rdt_last_cmd_printf("MB value %u out of range [%d,%d]\n",
-				    bw, r->membw.min_bw, r->membw.max_bw);
+				    bw, s->membw.min_bw, s->membw.max_bw);
 		return false;
 	}
 
-	*data = roundup(bw, (unsigned long)r->membw.bw_gran);
+	*data = resctrl_arch_round_bw(bw, s);
 	return true;
 }
 
@@ -83,13 +75,7 @@ static int parse_bw(struct rdt_parse_data *data, struct resctrl_schema *s,
 	u32 closid = data->closid;
 	u32 bw_val;
 
-	cfg = &d->staged_config[s->conf_type];
-	if (cfg->have_new_ctrl) {
-		rdt_last_cmd_printf("Duplicate domain %d\n", d->hdr.id);
-		return -EINVAL;
-	}
-
-	if (!bw_validate(data->buf, &bw_val, r))
+	if (!bw_validate(data->buf, &bw_val, s))
 		return -EINVAL;
 
 	if (is_mba_sc(r)) {
@@ -97,7 +83,35 @@ static int parse_bw(struct rdt_parse_data *data, struct resctrl_schema *s,
 		return 0;
 	}
 
+	cfg = &d->staged_config[s->conf_type];
 	cfg->new_ctrl = bw_val;
+	cfg->have_new_ctrl = true;
+
+	return 0;
+}
+
+static bool hlim_validate(char *buf, u32 *data)
+{
+	int ret = kstrtou32(buf, 10, data);
+
+	if (ret || (*data != 0 && *data != 1)) {
+		rdt_last_cmd_printf("Invalid MB_HLIM value %s (expect 0 or 1)\n", buf);
+		return false;
+	}
+	return true;
+}
+
+static int parse_mb_hlim(struct rdt_parse_data *data, struct resctrl_schema *s,
+			 struct rdt_ctrl_domain *d)
+{
+	struct resctrl_staged_config *cfg;
+	u32 v;
+
+	if (!hlim_validate(data->buf, &v))
+		return -EINVAL;
+
+	cfg = &d->staged_config[s->conf_type];
+	cfg->new_ctrl = v;
 	cfg->have_new_ctrl = true;
 
 	return 0;
@@ -164,12 +178,6 @@ static int parse_cbm(struct rdt_parse_data *data, struct resctrl_schema *s,
 	u32 closid = data->closid;
 	u32 cbm_val;
 
-	cfg = &d->staged_config[s->conf_type];
-	if (cfg->have_new_ctrl) {
-		rdt_last_cmd_printf("Duplicate domain %d\n", d->hdr.id);
-		return -EINVAL;
-	}
-
 	/*
 	 * Cannot set up more than one pseudo-locked region in a cache
 	 * hierarchy.
@@ -206,6 +214,7 @@ static int parse_cbm(struct rdt_parse_data *data, struct resctrl_schema *s,
 		}
 	}
 
+	cfg = &d->staged_config[s->conf_type];
 	cfg->new_ctrl = cbm_val;
 	cfg->have_new_ctrl = true;
 
@@ -233,12 +242,17 @@ static int parse_line(char *line, struct resctrl_schema *s,
 	/* Walking r->domains, ensure it can't race with cpuhp */
 	lockdep_assert_cpus_held();
 
-	switch (r->schema_fmt) {
+	switch (s->schema_fmt) {
 	case RESCTRL_SCHEMA_BITMAP:
 		parse_ctrlval = &parse_cbm;
 		break;
-	case RESCTRL_SCHEMA_RANGE:
+	case RESCTRL_SCHEMA_PERCENT:
+	case RESCTRL_SCHEMA_MBPS:
+	case RESCTRL_SCHEMA__AMD_MBA:
 		parse_ctrlval = &parse_bw;
+		break;
+	case RESCTRL_SCHEMA_MB_HLIM:
+		parse_ctrlval = &parse_mb_hlim;
 		break;
 	}
 
@@ -246,8 +260,18 @@ static int parse_line(char *line, struct resctrl_schema *s,
 		return -EINVAL;
 
 	if (rdtgrp->mode == RDT_MODE_PSEUDO_LOCKSETUP &&
-	    (r->rid == RDT_RESOURCE_MBA || r->rid == RDT_RESOURCE_SMBA)) {
+	    (r->rid == RDT_RESOURCE_MBA || r->rid == RDT_RESOURCE_SMBA ||
+	     r->rid == RDT_RESOURCE_MB_HLIM)) {
 		rdt_last_cmd_puts("Cannot pseudo-lock MBA resource\n");
+		return -EINVAL;
+	}
+
+	/*
+	 * Only linear delay values is supported for current Intel SKUs.
+	 */
+	if (r->rid == RDT_RESOURCE_MBA &&
+	    !r->mba.delay_linear && r->mba.arch_needs_linear) {
+		rdt_last_cmd_puts("No support for non-linear MB domains\n");
 		return -EINVAL;
 	}
 
@@ -263,13 +287,18 @@ next:
 	dom = strim(dom);
 	list_for_each_entry(d, &r->ctrl_domains, hdr.list) {
 		if (d->hdr.id == dom_id) {
+			cfg = &d->staged_config[t];
+			if (cfg->have_new_ctrl) {
+				rdt_last_cmd_printf("Duplicate domain %d\n", d->hdr.id);
+				return -EINVAL;
+			}
+
 			data.buf = dom;
 			data.closid = rdtgrp->closid;
 			data.mode = rdtgrp->mode;
 			if (parse_ctrlval(&data, s, d))
 				return -EINVAL;
 			if (rdtgrp->mode ==  RDT_MODE_PSEUDO_LOCKSETUP) {
-				cfg = &d->staged_config[t];
 				/*
 				 * In pseudo-locking setup mode and just
 				 * parsed a valid CBM that should be

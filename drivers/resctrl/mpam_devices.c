@@ -9,6 +9,7 @@
 #include <linux/bitfield.h>
 #include <linux/bitmap.h>
 #include <linux/cacheinfo.h>
+#include <linux/cleanup.h>
 #include <linux/cpu.h>
 #include <linux/cpumask.h>
 #include <linux/device.h>
@@ -20,12 +21,14 @@
 #include <linux/list.h>
 #include <linux/lockdep.h>
 #include <linux/mutex.h>
+#include <linux/moduleparam.h>
 #include <linux/platform_device.h>
 #include <linux/printk.h>
 #include <linux/srcu.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
+#include <linux/xarray.h>
 
 #include "mpam_internal.h"
 
@@ -65,6 +68,8 @@ static DEFINE_MUTEX(mpam_cpuhp_state_lock);
 u16 mpam_partid_max;
 u8 mpam_pmg_max;
 static bool partid_max_init, partid_max_published;
+static u16 mpam_cmdline_partid_max;
+static bool mpam_cmdline_partid_max_overridden;
 static DEFINE_SPINLOCK(partid_max_lock);
 
 /*
@@ -82,6 +87,8 @@ static DECLARE_WORK(mpam_broken_work, &mpam_disable);
 
 /* When mpam is disabled, the printed reason to aid debugging */
 static char *mpam_disable_reason;
+
+static struct dentry *mpam_debugfs;
 
 /*
  * Whether resctrl has been setup. Used by cpuhp in preference to
@@ -164,11 +171,17 @@ static void mpam_free_garbage(void)
 /*
  * Once mpam is enabled, new requestors cannot further reduce the available
  * partid. Assert that the size is fixed, and new requestors will be turned
- * away.
+ * away. This is needed when walking over structures sized by PARTID.
+ *
+ * During mpam_disable() these structures are not fixed, but the MSC state
+ * is still reset using whatever sizes have been discovered so far. As only
+ * PARTID 0 will be used after mpam_disable(), any race would be benign.
+ * Skip the check if a mpam_disable_reason has been set.
  */
 static void mpam_assert_partid_sizes_fixed(void)
 {
-	WARN_ON_ONCE(!partid_max_published);
+	if (!mpam_disable_reason)
+		WARN_ON_ONCE(!partid_max_published);
 }
 
 static u32 __mpam_read_reg(struct mpam_msc *msc, u16 reg)
@@ -300,6 +313,9 @@ int mpam_register_requestor(u16 partid_max, u8 pmg_max)
 			return -EBUSY;
 	}
 
+	if (mpam_cmdline_partid_max_overridden)
+		mpam_partid_max = min(mpam_cmdline_partid_max, mpam_partid_max);
+
 	return 0;
 }
 EXPORT_SYMBOL(mpam_register_requestor);
@@ -333,6 +349,8 @@ static void mpam_class_destroy(struct mpam_class *class)
 {
 	lockdep_assert_held(&mpam_list_lock);
 
+	debugfs_remove_recursive(class->debugfs);
+	class->debugfs = NULL;
 	list_del_rcu(&class->classes_list);
 	add_to_garbage(class);
 }
@@ -353,7 +371,7 @@ mpam_class_find(u8 level_idx, enum mpam_class_types type)
 }
 
 static struct mpam_component *
-mpam_component_alloc(struct mpam_class *class, int id)
+mpam_component_alloc(struct mpam_class *class, u32 id)
 {
 	struct mpam_component *comp;
 
@@ -385,6 +403,8 @@ static void mpam_component_destroy(struct mpam_component *comp)
 
 	__destroy_component_cfg(comp);
 
+	debugfs_remove_recursive(comp->debugfs);
+	comp->debugfs = NULL;
 	list_del_rcu(&comp->class_list);
 	add_to_garbage(comp);
 
@@ -393,7 +413,7 @@ static void mpam_component_destroy(struct mpam_component *comp)
 }
 
 static struct mpam_component *
-mpam_component_find(struct mpam_class *class, int id)
+mpam_component_find(struct mpam_class *class, u32 id)
 {
 	struct mpam_component *comp;
 
@@ -435,6 +455,8 @@ static void mpam_vmsc_destroy(struct mpam_vmsc *vmsc)
 
 	lockdep_assert_held(&mpam_list_lock);
 
+	debugfs_remove_recursive(vmsc->debugfs);
+	vmsc->debugfs = NULL;
 	list_del_rcu(&vmsc->comp_list);
 	add_to_garbage(vmsc);
 
@@ -505,6 +527,11 @@ static int mpam_ris_get_affinity(struct mpam_msc *msc, cpumask_t *affinity,
 	case MPAM_CLASS_MEMORY:
 		get_cpumask_from_node_id(comp->comp_id, affinity);
 		/* affinity may be empty for CPU-less memory nodes */
+		if (cpumask_empty(affinity)) {
+			dev_warn_once(&msc->pdev->dev, "CPU-less numa node");
+			cpumask_copy(affinity, cpu_possible_mask);
+		} else if (class->level > 3)
+			cpumask_copy(affinity, cpu_possible_mask);
 		break;
 	case MPAM_CLASS_UNKNOWN:
 		return 0;
@@ -517,7 +544,7 @@ static int mpam_ris_get_affinity(struct mpam_msc *msc, cpumask_t *affinity,
 
 static int mpam_ris_create_locked(struct mpam_msc *msc, u8 ris_idx,
 				  enum mpam_class_types type, u8 class_id,
-				  int component_id)
+				  u32 component_id)
 {
 	int err;
 	struct mpam_vmsc *vmsc;
@@ -594,6 +621,8 @@ static void mpam_ris_destroy(struct mpam_msc_ris *ris)
 	cpumask_andnot(&class->affinity, &class->affinity, &ris->affinity);
 	cpumask_andnot(&comp->affinity, &comp->affinity, &ris->affinity);
 	clear_bit(ris->ris_idx, &msc->ris_idxs);
+	debugfs_remove_recursive(ris->debugfs);
+	ris->debugfs = NULL;
 	list_del_rcu(&ris->msc_list);
 	list_del_rcu(&ris->vmsc_list);
 	add_to_garbage(ris);
@@ -603,9 +632,12 @@ static void mpam_ris_destroy(struct mpam_msc_ris *ris)
 }
 
 int mpam_ris_create(struct mpam_msc *msc, u8 ris_idx,
-		    enum mpam_class_types type, u8 class_id, int component_id)
+		    enum mpam_class_types type, u8 class_id, u32 component_id)
 {
 	int err;
+
+	if (mpam_force_unknown_msc_test(msc))
+		type = MPAM_CLASS_UNKNOWN;
 
 	mutex_lock(&mpam_list_lock);
 	err = mpam_ris_create_locked(msc, ris_idx, type, class_id,
@@ -731,16 +763,16 @@ static void mpam_enable_quirks(struct mpam_msc *msc)
 static bool _mpam_ris_hw_probe_hw_nrdy(struct mpam_msc_ris *ris, u32 mon_reg)
 {
 	u32 now;
-	u64 mon_sel;
+	u32 mon_sel;
 	bool can_set, can_clear;
 	struct mpam_msc *msc = ris->vmsc->msc;
 
-	if (WARN_ON_ONCE(!mpam_mon_sel_lock(msc)))
+	if (WARN_ON_ONCE(!mpam_mon_sel_inner_lock(msc)))
 		return false;
 
 	mon_sel = FIELD_PREP(MSMON_CFG_MON_SEL_MON_SEL, 0) |
 		  FIELD_PREP(MSMON_CFG_MON_SEL_RIS, ris->ris_idx);
-	_mpam_write_monsel_reg(msc, mon_reg, mon_sel);
+	mpam_write_monsel_reg(msc, CFG_MON_SEL, mon_sel);
 
 	_mpam_write_monsel_reg(msc, mon_reg, MSMON___NRDY);
 	now = _mpam_read_monsel_reg(msc, mon_reg);
@@ -749,13 +781,26 @@ static bool _mpam_ris_hw_probe_hw_nrdy(struct mpam_msc_ris *ris, u32 mon_reg)
 	_mpam_write_monsel_reg(msc, mon_reg, 0);
 	now = _mpam_read_monsel_reg(msc, mon_reg);
 	can_clear = !(now & MSMON___NRDY);
-	mpam_mon_sel_unlock(msc);
+	mpam_mon_sel_inner_unlock(msc);
 
 	return (!can_set || !can_clear);
 }
 
 #define mpam_ris_hw_probe_hw_nrdy(_ris, _mon_reg)			\
 	_mpam_ris_hw_probe_hw_nrdy(_ris, MSMON_##_mon_reg)
+
+/* Align mpam_feat_mbw_max_hardlim_rw with MPAMF_MBW_IDR.MAX_LIM and mbw_max. */
+static void mpam_props_sync_mbw_max_hardlim_rw(struct mpam_props *props)
+{
+	if (!mpam_has_feature(mpam_feat_mbw_max, props)) {
+		mpam_clear_feature(mpam_feat_mbw_max_hardlim_rw, props);
+		return;
+	}
+	if (props->mbw_max_lim == 0)
+		mpam_set_feature(mpam_feat_mbw_max_hardlim_rw, props);
+	else
+		mpam_clear_feature(mpam_feat_mbw_max_hardlim_rw, props);
+}
 
 static void mpam_ris_hw_probe(struct mpam_msc_ris *ris)
 {
@@ -770,32 +815,32 @@ static void mpam_ris_hw_probe(struct mpam_msc_ris *ris)
 
 	/* Cache Capacity Partitioning */
 	if (FIELD_GET(MPAMF_IDR_HAS_CCAP_PART, ris->idr)) {
-		u32 ccap_features = mpam_read_partsel_reg(msc, CCAP_IDR);
+		ris->ccap_idr = mpam_read_partsel_reg(msc, CCAP_IDR);
 
-		props->cmax_wd = FIELD_GET(MPAMF_CCAP_IDR_CMAX_WD, ccap_features);
+		props->cmax_wd = FIELD_GET(MPAMF_CCAP_IDR_CMAX_WD, ris->ccap_idr);
 		if (props->cmax_wd &&
-		    FIELD_GET(MPAMF_CCAP_IDR_HAS_CMAX_SOFTLIM, ccap_features))
+		    FIELD_GET(MPAMF_CCAP_IDR_HAS_CMAX_SOFTLIM, ris->ccap_idr))
 			mpam_set_feature(mpam_feat_cmax_softlim, props);
 
 		if (props->cmax_wd &&
-		    !FIELD_GET(MPAMF_CCAP_IDR_NO_CMAX, ccap_features))
+		    !FIELD_GET(MPAMF_CCAP_IDR_NO_CMAX, ris->ccap_idr))
 			mpam_set_feature(mpam_feat_cmax_cmax, props);
 
 		if (props->cmax_wd &&
-		    FIELD_GET(MPAMF_CCAP_IDR_HAS_CMIN, ccap_features))
+		    FIELD_GET(MPAMF_CCAP_IDR_HAS_CMIN, ris->ccap_idr))
 			mpam_set_feature(mpam_feat_cmax_cmin, props);
 
-		props->cassoc_wd = FIELD_GET(MPAMF_CCAP_IDR_CASSOC_WD, ccap_features);
+		props->cassoc_wd = FIELD_GET(MPAMF_CCAP_IDR_CASSOC_WD, ris->ccap_idr);
 		if (props->cassoc_wd &&
-		    FIELD_GET(MPAMF_CCAP_IDR_HAS_CASSOC, ccap_features))
+		    FIELD_GET(MPAMF_CCAP_IDR_HAS_CASSOC, ris->ccap_idr))
 			mpam_set_feature(mpam_feat_cmax_cassoc, props);
 	}
 
 	/* Cache Portion partitioning */
 	if (FIELD_GET(MPAMF_IDR_HAS_CPOR_PART, ris->idr)) {
-		u32 cpor_features = mpam_read_partsel_reg(msc, CPOR_IDR);
+		ris->cpor_idr = mpam_read_partsel_reg(msc, CPOR_IDR);
 
-		props->cpbm_wd = FIELD_GET(MPAMF_CPOR_IDR_CPBM_WD, cpor_features);
+		props->cpbm_wd = FIELD_GET(MPAMF_CPOR_IDR_CPBM_WD, ris->cpor_idr);
 		if (props->cpbm_wd)
 			mpam_set_feature(mpam_feat_cpor_part, props);
 	}
@@ -803,6 +848,8 @@ static void mpam_ris_hw_probe(struct mpam_msc_ris *ris)
 	/* Memory bandwidth partitioning */
 	if (FIELD_GET(MPAMF_IDR_HAS_MBW_PART, ris->idr)) {
 		u32 mbw_features = mpam_read_partsel_reg(msc, MBW_IDR);
+
+		props->mbw_max_lim = 0;
 
 		/* portion bitmap resolution */
 		props->mbw_pbm_bits = FIELD_GET(MPAMF_MBW_IDR_BWPBM_WD, mbw_features);
@@ -818,14 +865,18 @@ static void mpam_ris_hw_probe(struct mpam_msc_ris *ris)
 		 */
 		props->bwa_wd = min(props->bwa_wd, 16);
 
-		if (props->bwa_wd && FIELD_GET(MPAMF_MBW_IDR_HAS_MAX, mbw_features))
+		if (props->bwa_wd && FIELD_GET(MPAMF_MBW_IDR_HAS_MAX, mbw_features)) {
 			mpam_set_feature(mpam_feat_mbw_max, props);
+			props->mbw_max_lim = FIELD_GET(MPAMF_MBW_IDR_MAX_LIM, mbw_features);
+		}
 
 		if (props->bwa_wd && FIELD_GET(MPAMF_MBW_IDR_HAS_MIN, mbw_features))
 			mpam_set_feature(mpam_feat_mbw_min, props);
 
 		if (props->bwa_wd && FIELD_GET(MPAMF_MBW_IDR_HAS_PROP, mbw_features))
 			mpam_set_feature(mpam_feat_mbw_prop, props);
+
+		mpam_props_sync_mbw_max_hardlim_rw(props);
 	}
 
 	/* Priority partitioning */
@@ -873,7 +924,9 @@ static void mpam_ris_hw_probe(struct mpam_msc_ris *ris)
 					mpam_set_feature(mpam_feat_msmon_csu_xcl, props);
 
 				/* Is NRDY hardware managed? */
+				mpam_mon_sel_outer_lock(msc);
 				hw_managed = mpam_ris_hw_probe_hw_nrdy(ris, CSU);
+				mpam_mon_sel_outer_unlock(msc);
 				if (hw_managed)
 					mpam_set_feature(mpam_feat_msmon_csu_hw_nrdy, props);
 			}
@@ -907,7 +960,9 @@ static void mpam_ris_hw_probe(struct mpam_msc_ris *ris)
 				}
 
 				/* Is NRDY hardware managed? */
+				mpam_mon_sel_outer_lock(msc);
 				hw_managed = mpam_ris_hw_probe_hw_nrdy(ris, MBWU);
+				mpam_mon_sel_outer_unlock(msc);
 				if (hw_managed)
 					mpam_set_feature(mpam_feat_msmon_mbwu_hw_nrdy, props);
 
@@ -1201,7 +1256,7 @@ static void __ris_msmon_read(void *arg)
 	struct mpam_msc *msc = m->ris->vmsc->msc;
 	u32 mon_sel, ctl_val, flt_val, cur_ctl, cur_flt;
 
-	if (!mpam_mon_sel_lock(msc)) {
+	if (!mpam_mon_sel_inner_lock(msc)) {
 		m->err = -EIO;
 		return;
 	}
@@ -1301,10 +1356,12 @@ static void __ris_msmon_read(void *arg)
 	default:
 		m->err = -EINVAL;
 	}
-	mpam_mon_sel_unlock(msc);
+	mpam_mon_sel_inner_unlock(msc);
 
-	if (nrdy)
+	if (nrdy) {
+		msc->nrdy_retry_count++;
 		m->err = -EBUSY;
+	}
 
 	if (m->err)
 		return;
@@ -1323,6 +1380,7 @@ static int _msmon_read(struct mpam_component *comp, struct mon_read *arg)
 		struct mpam_msc *msc = vmsc->msc;
 		struct mpam_msc_ris *ris;
 
+		mpam_mon_sel_outer_lock(msc);
 		list_for_each_entry_srcu(ris, &vmsc->ris, vmsc_list,
 					 srcu_read_lock_held(&mpam_srcu)) {
 			arg->ris = ris;
@@ -1341,6 +1399,7 @@ static int _msmon_read(struct mpam_component *comp, struct mon_read *arg)
 			if (err)
 				any_err = err;
 		}
+		mpam_mon_sel_outer_unlock(msc);
 	}
 
 	return any_err;
@@ -1423,18 +1482,20 @@ void mpam_msmon_reset_mbwu(struct mpam_component *comp, struct mon_cfg *ctx)
 			continue;
 
 		msc = vmsc->msc;
+		mpam_mon_sel_outer_lock(msc);
 		list_for_each_entry_srcu(ris, &vmsc->ris, vmsc_list,
 					 srcu_read_lock_held(&mpam_srcu)) {
 			if (!mpam_has_feature(mpam_feat_msmon_mbwu, &ris->props))
 				continue;
 
-			if (WARN_ON_ONCE(!mpam_mon_sel_lock(msc)))
+			if (WARN_ON_ONCE(!mpam_mon_sel_inner_lock(msc)))
 				continue;
 
 			ris->mbwu_state[ctx->mon].correction = 0;
 			ris->mbwu_state[ctx->mon].reset_on_next_read = true;
-			mpam_mon_sel_unlock(msc);
+			mpam_mon_sel_inner_unlock(msc);
 		}
+		mpam_mon_sel_outer_unlock(msc);
 	}
 }
 
@@ -1589,20 +1650,41 @@ static void mpam_reprogram_ris_partid(struct mpam_msc_ris *ris, u16 partid,
 	}
 
 	if (mpam_has_feature(mpam_feat_mbw_max, rprops)) {
-		if (mpam_has_feature(mpam_feat_mbw_max, cfg))
-			mpam_write_partsel_reg(msc, MBW_MAX, cfg->mbw_max);
-		else
+		if (mpam_has_feature(mpam_feat_mbw_max, cfg) ||
+		    mpam_has_feature(mpam_feat_mbw_max_hardlim_rw, cfg)) {
+			u32 mbw_val = cfg->mbw_max;
+
+			if (mpam_has_feature(mpam_feat_mbw_max_hardlim_rw, cfg) &&
+			    cfg->mbw_max_hardlim)
+				mbw_val |= MPAMCFG_MBW_MAX_HARDLIM;
+			mpam_write_partsel_reg(msc, MBW_MAX, mbw_val);
+		} else {
 			mpam_write_partsel_reg(msc, MBW_MAX, MPAMCFG_MBW_MAX_MAX);
+		}
 	}
 
 	if (mpam_has_feature(mpam_feat_mbw_prop, rprops))
 		mpam_write_partsel_reg(msc, MBW_PROP, 0);
 
-	if (mpam_has_feature(mpam_feat_cmax_cmax, rprops))
-		mpam_write_partsel_reg(msc, CMAX, cmax);
+	if (mpam_has_feature(mpam_feat_cmax_cmax, rprops)) {
+		if (mpam_has_feature(mpam_feat_cmax_cmax, cfg)) {
+			u32 cmax_val = cfg->cmax;
 
-	if (mpam_has_feature(mpam_feat_cmax_cmin, rprops))
-		mpam_write_partsel_reg(msc, CMIN, 0);
+			if (cfg->cmax_softlim)
+				cmax_val |= MPAMCFG_CMAX_SOFTLIM;
+			mpam_write_partsel_reg(msc, CMAX, cmax_val);
+		} else {
+			mpam_write_partsel_reg(msc, CMAX, cmax);
+		}
+	}
+
+	if (mpam_has_feature(mpam_feat_cmax_cmin, rprops)) {
+		if (mpam_has_feature(mpam_feat_cmax_cmin, cfg)) {
+			mpam_write_partsel_reg(msc, CMIN, cfg->cmin);
+		} else {
+			mpam_write_partsel_reg(msc, CMIN, 0);
+		}
+	}
 
 	if (mpam_has_feature(mpam_feat_cmax_cassoc, rprops))
 		mpam_write_partsel_reg(msc, CASSOC, MPAMCFG_CASSOC_CASSOC);
@@ -1635,7 +1717,10 @@ static int mpam_restore_mbwu_state(void *_ris)
 	u64 val;
 	struct mon_read mwbu_arg;
 	struct mpam_msc_ris *ris = _ris;
+	struct mpam_msc *msc = ris->vmsc->msc;
 	struct mpam_class *class = ris->vmsc->comp->class;
+
+	mpam_mon_sel_outer_lock(msc);
 
 	for (i = 0; i < ris->props.num_mbwu_mon; i++) {
 		if (ris->mbwu_state[i].enabled) {
@@ -1648,10 +1733,12 @@ static int mpam_restore_mbwu_state(void *_ris)
 		}
 	}
 
+	mpam_mon_sel_outer_unlock(msc);
+
 	return 0;
 }
 
-/* Call with MSC cfg_lock held */
+/* Call with MSC lock and outer mon_sel lock held */
 static int mpam_save_mbwu_state(void *arg)
 {
 	int i;
@@ -1666,7 +1753,7 @@ static int mpam_save_mbwu_state(void *arg)
 		mbwu_state = &ris->mbwu_state[i];
 		cfg = &mbwu_state->cfg;
 
-		if (WARN_ON_ONCE(!mpam_mon_sel_lock(msc)))
+		if (WARN_ON_ONCE(!mpam_mon_sel_inner_lock(msc)))
 			return -EIO;
 
 		mon_sel = FIELD_PREP(MSMON_CFG_MON_SEL_MON_SEL, i) |
@@ -1691,7 +1778,7 @@ static int mpam_save_mbwu_state(void *arg)
 		cfg->partid = FIELD_GET(MSMON_CFG_x_FLT_PARTID, cur_flt);
 		mbwu_state->correction += val;
 		mbwu_state->enabled = FIELD_GET(MSMON_CFG_x_CTL_EN, cur_ctl);
-		mpam_mon_sel_unlock(msc);
+		mpam_mon_sel_inner_unlock(msc);
 	}
 
 	return 0;
@@ -1886,6 +1973,7 @@ static int mpam_cpu_offline(unsigned int cpu)
 			struct mpam_msc_ris *ris;
 
 			mutex_lock(&msc->cfg_lock);
+			mpam_mon_sel_outer_lock(msc);
 			list_for_each_entry_srcu(ris, &msc->ris, msc_list,
 						 srcu_read_lock_held(&mpam_srcu)) {
 				mpam_touch_msc(msc, &mpam_reset_ris, ris);
@@ -1899,6 +1987,7 @@ static int mpam_cpu_offline(unsigned int cpu)
 				if (mpam_is_enabled())
 					mpam_touch_msc(msc, &mpam_save_mbwu_state, ris);
 			}
+			mpam_mon_sel_outer_unlock(msc);
 			mutex_unlock(&msc->cfg_lock);
 		}
 	}
@@ -1999,6 +2088,9 @@ static void mpam_msc_destroy(struct mpam_msc *msc)
 	list_del_rcu(&msc->all_msc_list);
 	platform_set_drvdata(pdev, NULL);
 
+	debugfs_remove_recursive(msc->debugfs);
+	msc->debugfs = NULL;
+
 	add_to_garbage(msc);
 }
 
@@ -2017,6 +2109,7 @@ static struct mpam_msc *do_mpam_msc_drv_probe(struct platform_device *pdev)
 {
 	int err;
 	u32 tmp;
+	char name[20];
 	struct mpam_msc *msc;
 	struct resource *msc_res;
 	struct device *dev = &pdev->dev;
@@ -2083,6 +2176,10 @@ static struct mpam_msc *do_mpam_msc_drv_probe(struct platform_device *pdev)
 
 	list_add_rcu(&msc->all_msc_list, &mpam_all_msc);
 	platform_set_drvdata(pdev, msc);
+
+	snprintf(name, sizeof(name), "msc.%u", msc->id);
+	msc->debugfs = debugfs_create_dir(name, mpam_debugfs);
+	debugfs_create_x32("max_nrdy_usec", 0400, msc->debugfs, &msc->nrdy_usec);
 
 	return msc;
 }
@@ -2196,10 +2293,29 @@ static void __props_mismatch(struct mpam_props *parent,
 	if (alias && !mpam_has_bwa_wd_feature(parent) &&
 	    mpam_has_bwa_wd_feature(child)) {
 		parent->bwa_wd = child->bwa_wd;
+		parent->mbw_max_lim = child->mbw_max_lim;
+		if (mpam_has_feature(mpam_feat_mbw_max_hardlim_rw, child))
+			mpam_set_feature(mpam_feat_mbw_max_hardlim_rw, parent);
+		else
+			mpam_clear_feature(mpam_feat_mbw_max_hardlim_rw, parent);
 	} else if (MISMATCHED_HELPER(parent, child, mpam_has_bwa_wd_feature,
 				     bwa_wd, alias)) {
 		pr_debug("took the min bwa_wd\n");
 		parent->bwa_wd = min(parent->bwa_wd, child->bwa_wd);
+	}
+
+	if (CAN_MERGE_FEAT(parent, child, mpam_feat_mbw_max, alias)) {
+		parent->mbw_max_lim = child->mbw_max_lim;
+		if (mpam_has_feature(mpam_feat_mbw_max_hardlim_rw, child))
+			mpam_set_feature(mpam_feat_mbw_max_hardlim_rw, parent);
+		else
+			mpam_clear_feature(mpam_feat_mbw_max_hardlim_rw, parent);
+	} else if (MISMATCHED_FEAT(parent, child, mpam_feat_mbw_max,
+				   mbw_max_lim, alias)) {
+		pr_debug("%s mbw_max_lim mismatch, clearing mbw_max\n", __func__);
+		mpam_clear_feature(mpam_feat_mbw_max, parent);
+		parent->mbw_max_lim = 0;
+		mpam_props_sync_mbw_max_hardlim_rw(parent);
 	}
 
 	if (alias && !mpam_has_cmax_wd_feature(parent) && mpam_has_cmax_wd_feature(child)) {
@@ -2469,6 +2585,12 @@ static irqreturn_t __mpam_irq_handler(int irq, struct mpam_msc *msc)
 			   msc->id, mpam_errcode_names[errcode], partid, pmg,
 			   ris);
 
+	/* No action is required for the MPAM programming errors */
+	if ((errcode != MPAM_ERRCODE_REQ_PARTID_RANGE) &&
+	    (errcode != MPAM_ERRCODE_REQ_PMG_RANGE)) {
+		return IRQ_HANDLED;
+	}
+
 	/* Disable this interrupt. */
 	mpam_disable_msc_ecr(msc);
 
@@ -2585,15 +2707,20 @@ static void __destroy_component_cfg(struct mpam_component *comp)
 
 	lockdep_assert_held(&mpam_list_lock);
 
+	if (!comp->cfg)
+		return;
+
 	add_to_garbage(comp->cfg);
 	list_for_each_entry(vmsc, &comp->vmsc, comp_list) {
 		msc = vmsc->msc;
 
-		if (mpam_mon_sel_lock(msc)) {
+		mpam_mon_sel_outer_lock(msc);
+		if (mpam_mon_sel_inner_lock(msc)) {
 			list_for_each_entry(ris, &vmsc->ris, vmsc_list)
 				add_to_garbage(ris->mbwu_state);
-			mpam_mon_sel_unlock(msc);
+			mpam_mon_sel_inner_unlock(msc);
 		}
+		mpam_mon_sel_outer_unlock(msc);
 	}
 }
 
@@ -2640,6 +2767,7 @@ static int __allocate_component_cfg(struct mpam_component *comp)
 	mpam_reset_component_cfg(comp);
 
 	list_for_each_entry(vmsc, &comp->vmsc, comp_list) {
+		int err = 0;
 		struct mpam_msc *msc;
 		struct mpam_msc_ris *ris;
 		struct msmon_mbwu_state *mbwu_state;
@@ -2648,6 +2776,7 @@ static int __allocate_component_cfg(struct mpam_component *comp)
 			continue;
 
 		msc = vmsc->msc;
+		mpam_mon_sel_outer_lock(msc);
 		list_for_each_entry(ris, &vmsc->ris, vmsc_list) {
 			if (!ris->props.num_mbwu_mon)
 				continue;
@@ -2655,16 +2784,21 @@ static int __allocate_component_cfg(struct mpam_component *comp)
 			mbwu_state = kzalloc_objs(*ris->mbwu_state,
 						  ris->props.num_mbwu_mon);
 			if (!mbwu_state) {
-				__destroy_component_cfg(comp);
-				return -ENOMEM;
+				err = -ENOMEM;
+				break;
 			}
 
 			init_garbage(&mbwu_state[0].garbage);
 
-			if (mpam_mon_sel_lock(msc)) {
+			if (mpam_mon_sel_inner_lock(msc)) {
 				ris->mbwu_state = mbwu_state;
-				mpam_mon_sel_unlock(msc);
+				mpam_mon_sel_inner_unlock(msc);
 			}
+		}
+		mpam_mon_sel_outer_unlock(msc);
+		if (err) {
+			__destroy_component_cfg(comp);
+			return err;
 		}
 	}
 
@@ -2688,6 +2822,130 @@ static int mpam_allocate_config(void)
 
 	return 0;
 }
+
+static void mpam_debugfs_setup_ris(struct mpam_msc_ris *ris)
+{
+	char name[40];
+	struct dentry *d;
+	struct mpam_props *rprops = &ris->props;
+
+	snprintf(name, sizeof(name), "ris.%u", ris->ris_idx);
+	d = debugfs_create_dir(name, ris->vmsc->msc->debugfs);
+	debugfs_create_x64("mpamf_idr", 0400, d, &ris->idr);
+	debugfs_create_x32("mpamf_cpor_idr", 0400, d, &ris->cpor_idr);
+	debugfs_create_x32("mpamf_ccap_idr", 0400, d, &ris->ccap_idr);
+	debugfs_create_ulong("features", 0400, d, &rprops->features[0]);
+	debugfs_create_x16("cpbm_wd", 0400, d, &rprops->cpbm_wd);
+	debugfs_create_x16("mbw_pbm_bits", 0400, d, &rprops->mbw_pbm_bits);
+	debugfs_create_x16("num_csu_mon", 0400, d, &rprops->num_csu_mon);
+	debugfs_create_x16("num_mbwu_mon", 0400, d, &rprops->num_mbwu_mon);
+	debugfs_create_cpumask("affinity", 0400, d, &ris->affinity);
+	ris->debugfs = d;
+}
+
+static void mpam_debugfs_setup_vmsc(struct mpam_component *comp,
+				    struct mpam_vmsc *vmsc)
+{
+	u8 ris_idx;
+	char name[40];
+	char path[40];
+	struct dentry *d;
+	struct mpam_msc_ris *ris;
+	int msc_id = vmsc->msc->id;
+
+	snprintf(name, sizeof(name), "vmsc.%u", msc_id);
+	d = debugfs_create_dir(name, comp->debugfs);
+	debugfs_create_ulong("features", 0400, d, &vmsc->props.features[0]);
+	vmsc->debugfs = d;
+
+	list_for_each_entry_rcu(ris, &vmsc->ris, vmsc_list) {
+		ris_idx = ris->ris_idx;
+
+		snprintf(name, sizeof(name), "msc.%u_ris.%u", msc_id,
+			 ris_idx);
+		snprintf(path, sizeof(path), "../../../msc.%u/ris.%u",
+			 msc_id, ris_idx);
+		debugfs_create_symlink(name, d, path);
+	}
+}
+
+static void mpam_debugfs_setup_comp(struct mpam_class *class,
+				    struct mpam_component *comp)
+{
+	char name[40];
+	struct dentry *d;
+	struct mpam_vmsc *vmsc;
+
+	snprintf(name, sizeof(name), "comp.%u", comp->comp_id);
+	d = debugfs_create_dir(name, class->debugfs);
+	comp->debugfs = d;
+
+	list_for_each_entry_rcu(vmsc, &comp->vmsc, comp_list)
+		mpam_debugfs_setup_vmsc(comp, vmsc);
+}
+
+static void mpam_debugfs_setup(void)
+{
+	char name[40];
+	struct dentry *d;
+	struct mpam_msc *msc;
+	struct mpam_class *class;
+	struct mpam_msc_ris *ris;
+	struct mpam_component *comp;
+
+	lockdep_assert_held(&mpam_list_lock);
+
+	list_for_each_entry(msc, &mpam_all_msc, all_msc_list) {
+		d = msc->debugfs;
+		debugfs_create_u32("fw_id", 0400, d, &msc->pdev->id);
+		debugfs_create_x32("iface", 0400, d, &msc->iface);
+		debugfs_create_x32("mpamf_iidr", 0400, d, &msc->iidr);
+		debugfs_create_x64("nrdy_retry_count", 0400, d, &msc->nrdy_retry_count);
+		list_for_each_entry(ris, &msc->ris, msc_list)
+			mpam_debugfs_setup_ris(ris);
+	}
+
+	list_for_each_entry_rcu(class, &mpam_classes, classes_list) {
+		snprintf(name, sizeof(name), "class.%u", class->level);
+		d = debugfs_create_dir(name, mpam_debugfs);
+		debugfs_create_ulong("features", 0400, d, &class->props.features[0]);
+		debugfs_create_x32("nrdy_usec", 0400, d, &class->nrdy_usec);
+		debugfs_create_x16("quirks", 0400, d, &class->quirks);
+		debugfs_create_x8("level", 0400, d, &class->level);
+		debugfs_create_cpumask("affinity", 0400, d, &class->affinity);
+		class->debugfs = d;
+
+		list_for_each_entry_rcu(comp, &class->components, class_list)
+			mpam_debugfs_setup_comp(class, comp);
+	}
+}
+
+static int mpam_force_disable_show(struct seq_file *s, void *data)
+{
+	seq_puts(s, "Write 1 to this file to trigger an MPAM error.\n");
+	return 0;
+}
+
+static ssize_t mpam_force_disable_write(struct file *file,
+					const char __user *userbuf, size_t count,
+					loff_t *ppos)
+{
+	u32 user_val;
+	int err;
+
+	err = kstrtou32_from_user(userbuf, count, 10, &user_val);
+	if (err)
+		return err;
+
+	if (user_val == 1) {
+		mpam_disable_reason = "debugfs trigger";
+		mpam_disable(NULL);
+	}
+
+	return count;
+}
+
+DEFINE_SHOW_STORE_ATTRIBUTE(mpam_force_disable);
 
 static void mpam_enable_once(void)
 {
@@ -2722,9 +2980,14 @@ static void mpam_enable_once(void)
 			pr_err("Failed to allocate configuration arrays.\n");
 			break;
 		}
+
+		mpam_debugfs_setup();
 	} while (0);
 	mutex_unlock(&mpam_list_lock);
 	cpus_read_unlock();
+
+	debugfs_create_file("force_disable", 0600, mpam_debugfs, NULL,
+			    &mpam_force_disable_fops);
 
 	if (!err) {
 		err = mpam_resctrl_setup();
@@ -2887,8 +3150,11 @@ static bool mpam_update_config(struct mpam_config *cfg,
 	bool has_changes = false;
 
 	maybe_update_config(cfg, mpam_feat_cpor_part, newcfg, cpbm, has_changes);
+	maybe_update_config(cfg, mpam_feat_cmax_cmax, newcfg, cmax, has_changes);
 	maybe_update_config(cfg, mpam_feat_mbw_part, newcfg, mbw_pbm, has_changes);
 	maybe_update_config(cfg, mpam_feat_mbw_max, newcfg, mbw_max, has_changes);
+	maybe_update_config(cfg, mpam_feat_mbw_max_hardlim_rw, newcfg,
+			    mbw_max_hardlim, has_changes);
 
 	return has_changes;
 }
@@ -2943,11 +3209,104 @@ static int __init mpam_msc_driver_init(void)
 		return -EINVAL;
 	}
 
+	mpam_debugfs = debugfs_create_dir("mpam", NULL);
+
 	return platform_driver_register(&mpam_msc_driver);
 }
 
 /* Must occur after arm64_mpam_register_cpus() from arch_initcall() */
 subsys_initcall(mpam_msc_driver_init);
+
+static int mpam_cmdline_partid_max_set(const char *arg,
+				       const struct kernel_param *kp)
+{
+	int ret;
+
+	spin_lock(&partid_max_lock);
+	ret = kstrtou16(arg, 10, &mpam_cmdline_partid_max);
+	if (!ret)
+		mpam_cmdline_partid_max_overridden = true;
+	spin_unlock(&partid_max_lock);
+
+	return 0;
+}
+static int mpam_cmdline_partid_max_get(char *buffer,
+				       const struct kernel_param *kp)
+{
+	u16 val = 0xffff;
+
+	spin_lock(&partid_max_lock);
+	if (mpam_cmdline_partid_max_overridden)
+		val = mpam_cmdline_partid_max;
+	spin_unlock(&partid_max_lock);
+
+	return sprintf(buffer, "%u\n", val);
+}
+static const struct kernel_param_ops mpam_cmdline_partid_max_ops = {
+	.set = mpam_cmdline_partid_max_set,
+	.get = mpam_cmdline_partid_max_get,
+};
+module_param_cb(partid_max, &mpam_cmdline_partid_max_ops, NULL, 0644);
+MODULE_PARM_DESC(partid_max, "Override for reducing the number of PARTID.");
+
+static DEFINE_XARRAY(mpam_force_unkown_msc);
+
+static void mpam_force_unknown_msc_add(u32 msc_id, gfp_t gfp)
+{
+	xa_store(&mpam_force_unkown_msc, msc_id, xa_mk_value(msc_id), gfp);
+}
+
+bool mpam_force_unknown_msc_test(struct mpam_msc *msc)
+{
+	return !!xa_load(&mpam_force_unkown_msc, msc->pdev->id);
+}
+
+static int mpam_force_unknown_msc_set(const char *_str,
+				       const struct kernel_param *kp)
+{
+	int err;
+	u32 val;
+	char *tok, *iter;
+	char *str __free(kfree) = kstrdup(_str, GFP_KERNEL);
+
+	iter = str;
+	do {
+		tok = strsep(&iter, ",");
+		err = kstrtou32(tok, 10, &val);
+		if (err) {
+			pr_err("Failed to parse commandline: %d\n", err);
+			break;
+		}
+		mpam_force_unknown_msc_add(val, GFP_KERNEL);
+	} while (iter);
+
+	return 0;
+}
+static int mpam_force_unknown_msc_get(char *buffer,
+				      const struct kernel_param *kp)
+{
+	unsigned long index, count = 0;
+	int result = 0;
+	void *entry;
+
+	xa_for_each(&mpam_force_unkown_msc, index, entry) {
+		if (count)
+			result += sprintf(buffer + result, ",");
+
+		result += sprintf(buffer + result, "%lu", index);
+		count += 1;
+	}
+
+	result += sprintf(buffer + result, "\n");
+
+	return result;
+}
+static const struct kernel_param_ops mpam_force_unknown_msc_ops = {
+	.set = mpam_force_unknown_msc_set,
+	.get = mpam_force_unknown_msc_get,
+};
+subsys_param_cb(force_unknown_msc, &mpam_force_unknown_msc_ops, NULL, 0644);
+MODULE_PARM_DESC(force_unknown_msc, "Disabling a set of probed MSC.");
 
 #ifdef CONFIG_MPAM_KUNIT_TEST
 #include "test_mpam_devices.c"

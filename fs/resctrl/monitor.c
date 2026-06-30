@@ -98,11 +98,16 @@ unsigned int resctrl_rmid_realloc_limit;
  *
  * The domain's rmid_busy_llc and rmid_ptrs[] are sized by index. The arch code
  * must accept an attempt to read every index.
+ *
+ * Returns NULL if the rmid_ptrs[] array is not allocated.
  */
 static inline struct rmid_entry *__rmid_entry(u32 idx)
 {
 	struct rmid_entry *entry;
 	u32 closid, rmid;
+
+	if (!rmid_ptrs)
+		return NULL;
 
 	entry = &rmid_ptrs[idx];
 	resctrl_arch_rmid_idx_decode(idx, &closid, &rmid);
@@ -113,6 +118,20 @@ static inline struct rmid_entry *__rmid_entry(u32 idx)
 	return entry;
 }
 
+static bool __has_closid_num_dirty_rmid_array(void)
+{
+	lockdep_assert_held(&rdtgroup_mutex);
+
+	if (!IS_ENABLED(CONFIG_RESCTRL_RMID_DEPENDS_ON_CLOSID))
+		return false;
+
+	/*
+	 * Avoid a race with dom_data_exit() freeing the array under
+	 * rdtgroup_mutex.
+	 */
+	return closid_num_dirty_rmid;
+}
+
 static void limbo_release_entry(struct rmid_entry *entry)
 {
 	lockdep_assert_held(&rdtgroup_mutex);
@@ -120,7 +139,7 @@ static void limbo_release_entry(struct rmid_entry *entry)
 	rmid_limbo_count--;
 	list_add_tail(&entry->list, &rmid_free_lru);
 
-	if (IS_ENABLED(CONFIG_RESCTRL_RMID_DEPENDS_ON_CLOSID))
+	if (__has_closid_num_dirty_rmid_array())
 		closid_num_dirty_rmid[entry->closid]--;
 }
 
@@ -161,6 +180,8 @@ void __check_limbo(struct rdt_l3_mon_domain *d, bool force_free)
 			break;
 
 		entry = __rmid_entry(idx);
+		if (!entry)
+			break;
 		if (resctrl_arch_rmid_read(r, &d->hdr, entry->closid, entry->rmid,
 					   QOS_L3_OCCUP_EVENT_ID, arch_priv, &val,
 					   arch_mon_ctx)) {
@@ -244,7 +265,7 @@ int resctrl_find_cleanest_closid(void)
 
 	lockdep_assert_held(&rdtgroup_mutex);
 
-	if (!IS_ENABLED(CONFIG_RESCTRL_RMID_DEPENDS_ON_CLOSID))
+	if (!__has_closid_num_dirty_rmid_array())
 		return -EIO;
 
 	for (i = 0; i < closids_supported(); i++) {
@@ -317,7 +338,7 @@ static void add_rmid_to_limbo(struct rmid_entry *entry)
 	}
 
 	rmid_limbo_count++;
-	if (IS_ENABLED(CONFIG_RESCTRL_RMID_DEPENDS_ON_CLOSID))
+	if (__has_closid_num_dirty_rmid_array())
 		closid_num_dirty_rmid[entry->closid]++;
 }
 
@@ -339,6 +360,8 @@ void free_rmid(u32 closid, u32 rmid)
 		return;
 
 	entry = __rmid_entry(idx);
+	if (!entry)
+		return;
 
 	if (resctrl_is_mon_event_enabled(QOS_L3_OCCUP_EVENT_ID))
 		add_rmid_to_limbo(entry);
@@ -427,7 +450,7 @@ static int __l3_mon_event_count(struct rdtgroup *rdtgrp, struct rmid_read *rr)
 	struct mbm_state *m;
 	u64 tval = 0;
 
-	if (!domain_header_is_valid(rr->hdr, RESCTRL_MON_DOMAIN, RDT_RESOURCE_L3)) {
+	if (!domain_header_is_valid(rr->hdr, RESCTRL_MON_DOMAIN, rr->r->rid)) {
 		rr->err = -EIO;
 		return -EINVAL;
 	}
@@ -524,6 +547,7 @@ static int __mon_event_count(struct rdtgroup *rdtgrp, struct rmid_read *rr)
 {
 	switch (rr->r->rid) {
 	case RDT_RESOURCE_L3:
+	case RDT_RESOURCE_MBA:
 		WARN_ON_ONCE(rr->evt->any_cpu);
 		if (rr->hdr)
 			return __l3_mon_event_count(rdtgrp, rr);
@@ -569,7 +593,7 @@ static void mbm_bw_count(struct rdtgroup *rdtgrp, struct rmid_read *rr)
 	struct rdt_l3_mon_domain *d;
 	struct mbm_state *m;
 
-	if (!domain_header_is_valid(rr->hdr, RESCTRL_MON_DOMAIN, RDT_RESOURCE_L3))
+	if (!domain_header_is_valid(rr->hdr, RESCTRL_MON_DOMAIN, rr->r->rid))
 		return;
 	d = container_of(rr->hdr, struct rdt_l3_mon_domain, hdr);
 	m = get_mbm_state(d, closid, rmid, rr->evt->evtid);
@@ -895,8 +919,10 @@ void mbm_setup_overflow_handler(struct rdt_l3_mon_domain *dom, unsigned long del
 	/*
 	 * When a domain comes online there is no guarantee the filesystem is
 	 * mounted. If not, there is no need to catch counter overflow.
+	 * Some architecture may have ~64bit counters, and can ignore overflow.
 	 */
-	if (!resctrl_mounted || !resctrl_arch_mon_capable())
+	if (!resctrl_mounted || !resctrl_arch_mon_capable() ||
+	    !resctrl_arch_mon_can_overflow())
 		return;
 	cpu = cpumask_any_housekeeping(&dom->hdr.cpu_mask, exclude_cpu);
 	dom->mbm_work_cpu = cpu;
@@ -945,6 +971,7 @@ int setup_rmid_lru_list(void)
 	idx = resctrl_arch_rmid_idx_encode(RESCTRL_RESERVED_CLOSID,
 					   RESCTRL_RESERVED_RMID);
 	entry = __rmid_entry(idx);
+	WARN_ON_ONCE(!entry);
 	list_del(&entry->list);
 
 	return 0;
@@ -976,7 +1003,7 @@ void free_rmid_lru_list(void)
  */
 struct mon_evt mon_event_all[QOS_NUM_EVENTS] = {
 	MON_EVENT(QOS_L3_OCCUP_EVENT_ID,		"llc_occupancy",	RDT_RESOURCE_L3,	false),
-	MON_EVENT(QOS_L3_MBM_TOTAL_EVENT_ID,		"mbm_total_bytes",	RDT_RESOURCE_L3,	false),
+	MON_EVENT(QOS_L3_MBM_TOTAL_EVENT_ID,		"mbm_total_bytes",	RDT_RESOURCE_MBA,	false),
 	MON_EVENT(QOS_L3_MBM_LOCAL_EVENT_ID,		"mbm_local_bytes",	RDT_RESOURCE_L3,	false),
 	MON_EVENT(PMT_EVENT_ENERGY,			"core_energy",		RDT_RESOURCE_PERF_PKG,	true),
 	MON_EVENT(PMT_EVENT_ACTIVITY,			"activity",		RDT_RESOURCE_PERF_PKG,	true),
@@ -1605,9 +1632,9 @@ out_unlock:
 	return ret;
 }
 
-int mbm_L3_assignments_show(struct kernfs_open_file *of, struct seq_file *s, void *v)
+static int mbm_assignments_show(struct kernfs_open_file *of, struct seq_file *s,
+				void *v, struct rdt_resource *r)
 {
-	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
 	struct rdt_l3_mon_domain *d;
 	struct rdtgroup *rdtgrp;
 	struct mon_evt *mevt;
@@ -1651,6 +1678,18 @@ out_unlock:
 	rdtgroup_kn_unlock(of->kn);
 
 	return ret;
+}
+
+int mbm_L3_assignments_show(struct kernfs_open_file *of, struct seq_file *s, void *v)
+{
+	return mbm_assignments_show(of, s, v,
+				    resctrl_arch_get_resource(RDT_RESOURCE_L3));
+}
+
+int mbm_MB_assignments_show(struct kernfs_open_file *of, struct seq_file *s, void *v)
+{
+	return mbm_assignments_show(of, s, v,
+				    resctrl_arch_get_resource(RDT_RESOURCE_MBA));
 }
 
 /*
@@ -1747,10 +1786,10 @@ next:
 	return -EINVAL;
 }
 
-ssize_t mbm_L3_assignments_write(struct kernfs_open_file *of, char *buf,
-				 size_t nbytes, loff_t off)
+static ssize_t mbm_assignments_write(struct kernfs_open_file *of, char *buf,
+				     size_t nbytes, loff_t off,
+				     struct rdt_resource *r)
 {
-	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
 	struct rdtgroup *rdtgrp;
 	char *token, *event;
 	int ret = 0;
@@ -1790,6 +1829,20 @@ ssize_t mbm_L3_assignments_write(struct kernfs_open_file *of, char *buf,
 	rdtgroup_kn_unlock(of->kn);
 
 	return ret ?: nbytes;
+}
+
+ssize_t mbm_L3_assignments_write(struct kernfs_open_file *of, char *buf,
+				 size_t nbytes, loff_t off)
+{
+	return mbm_assignments_write(of, buf, nbytes, off,
+			resctrl_arch_get_resource(RDT_RESOURCE_L3));
+}
+
+ssize_t mbm_MB_assignments_write(struct kernfs_open_file *of, char *buf,
+				 size_t nbytes, loff_t off)
+{
+	return mbm_assignments_write(of, buf, nbytes, off,
+			resctrl_arch_get_resource(RDT_RESOURCE_MBA));
 }
 
 static int closid_num_dirty_rmid_alloc(struct rdt_resource *r)
@@ -1832,7 +1885,7 @@ static void closid_num_dirty_rmid_free(void)
 }
 
 /**
- * resctrl_l3_mon_resource_init() - Initialise global monitoring structures.
+ * resctrl_mon_resource_init() - Initialise global monitoring structures.
  *
  * Allocate and initialise global monitor resources that do not belong to a
  * specific domain. i.e. the closid_num_dirty_rmid[] used to find the CLOSID
@@ -1844,27 +1897,21 @@ static void closid_num_dirty_rmid_free(void)
  *
  * Return: 0 for success, or -ENOMEM.
  */
-int resctrl_l3_mon_resource_init(void)
+static void resctrl_mon_resource_init(struct rdt_resource *r)
 {
-	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
-	int ret;
+	unsigned long fflags;
 
-	if (!r->mon_capable)
-		return 0;
-
-	ret = closid_num_dirty_rmid_alloc(r);
-	if (ret)
-		return ret;
+	fflags = (r->rid == RDT_RESOURCE_MBA) ? RFTYPE_RES_MB :RFTYPE_RES_CACHE;
 
 	if (resctrl_arch_is_evt_configurable(QOS_L3_MBM_TOTAL_EVENT_ID)) {
 		mon_event_all[QOS_L3_MBM_TOTAL_EVENT_ID].configurable = true;
 		resctrl_file_fflags_init("mbm_total_bytes_config",
-					 RFTYPE_MON_INFO | RFTYPE_RES_CACHE);
+					 RFTYPE_MON_INFO | fflags);
 	}
 	if (resctrl_arch_is_evt_configurable(QOS_L3_MBM_LOCAL_EVENT_ID)) {
 		mon_event_all[QOS_L3_MBM_LOCAL_EVENT_ID].configurable = true;
 		resctrl_file_fflags_init("mbm_local_bytes_config",
-					 RFTYPE_MON_INFO | RFTYPE_RES_CACHE);
+					 RFTYPE_MON_INFO | fflags);
 	}
 
 	if (resctrl_is_mon_event_enabled(QOS_L3_MBM_LOCAL_EVENT_ID))
@@ -1882,19 +1929,43 @@ int resctrl_l3_mon_resource_init(void)
 									    NON_TEMP_WRITE_TO_LOCAL_MEM);
 		r->mon.mbm_assign_on_mkdir = true;
 		resctrl_file_fflags_init("num_mbm_cntrs",
-					 RFTYPE_MON_INFO | RFTYPE_RES_CACHE);
+					 RFTYPE_MON_INFO | fflags);
 		resctrl_file_fflags_init("available_mbm_cntrs",
-					 RFTYPE_MON_INFO | RFTYPE_RES_CACHE);
+					 RFTYPE_MON_INFO | fflags);
 		resctrl_file_fflags_init("event_filter", RFTYPE_ASSIGN_CONFIG);
 		resctrl_file_fflags_init("mbm_assign_on_mkdir", RFTYPE_MON_INFO |
-					 RFTYPE_RES_CACHE);
-		resctrl_file_fflags_init("mbm_L3_assignments", RFTYPE_MON_BASE);
+					 fflags);
+		if (r->rid == RDT_RESOURCE_MBA)
+			resctrl_file_fflags_init("mbm_MB_assignments", RFTYPE_MON_BASE);
+		else
+			resctrl_file_fflags_init("mbm_L3_assignments", RFTYPE_MON_BASE);
+		resctrl_file_fflags_init("mbm_assign_mode", RFTYPE_MON_INFO |
+					 fflags);
 	}
+}
+
+int resctrl_mon_init(void)
+{
+	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
+	int ret;
+
+	if (!r->mon_capable)
+		return 0;
+
+	ret = closid_num_dirty_rmid_alloc(r);
+	if (ret)
+		return ret;
+
+	resctrl_mon_resource_init(r);
+
+	r = resctrl_arch_get_resource(RDT_RESOURCE_MBA);
+	if (r)
+		resctrl_mon_resource_init(r);
 
 	return 0;
 }
 
-void resctrl_l3_mon_resource_exit(void)
+void resctrl_mon_exit(void)
 {
 	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
 

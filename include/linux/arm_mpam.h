@@ -5,6 +5,7 @@
 #define __LINUX_ARM_MPAM_H
 
 #include <linux/acpi.h>
+#include <linux/compiler_attributes.h>
 #include <linux/resctrl_types.h>
 #include <linux/types.h>
 
@@ -40,11 +41,11 @@ static inline int acpi_mpam_count_msc(void) { return -EINVAL; }
 
 #ifdef CONFIG_ARM64_MPAM_DRIVER
 int mpam_ris_create(struct mpam_msc *msc, u8 ris_idx,
-		    enum mpam_class_types type, u8 class_id, int component_id);
+		    enum mpam_class_types type, u8 class_id, u32 component_id);
 #else
 static inline int mpam_ris_create(struct mpam_msc *msc, u8 ris_idx,
 				  enum mpam_class_types type, u8 class_id,
-				  int component_id)
+				  u32 component_id)
 {
 	return -EINVAL;
 }
@@ -52,6 +53,7 @@ static inline int mpam_ris_create(struct mpam_msc *msc, u8 ris_idx,
 
 bool resctrl_arch_alloc_capable(void);
 bool resctrl_arch_mon_capable(void);
+bool resctrl_arch_mon_can_overflow(void);
 
 void resctrl_arch_set_cpu_default_closid(int cpu, u32 closid);
 void resctrl_arch_set_closid_rmid(struct task_struct *tsk, u32 closid, u32 rmid);
@@ -75,6 +77,17 @@ static inline void resctrl_arch_enable_mon(void) { }
 static inline void resctrl_arch_disable_mon(void) { }
 static inline void resctrl_arch_enable_alloc(void) { }
 static inline void resctrl_arch_disable_alloc(void) { }
+
+struct resctrl_schema;
+static inline u32 resctrl_arch_round_bw(u32 val,
+					const struct resctrl_schema *s __always_unused)
+{
+	/*
+	 * Do nothing: for MPAM, resctrl_arch_update_one() has the necessary
+	 * context to round the incoming value correctly.
+	 */
+	return val;
+}
 
 static inline unsigned int resctrl_arch_round_mon_val(unsigned int val)
 {
