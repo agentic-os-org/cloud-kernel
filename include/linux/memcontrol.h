@@ -535,19 +535,35 @@ enum page_memcg_data_flags {
 	__NR_MEMCG_DATA_FLAGS  = (1UL << 3),
 };
 
+#define __OBJEXTS_ALLOC_FAIL	MEMCG_DATA_OBJEXTS
 #define __FIRST_OBJEXT_FLAG	__NR_MEMCG_DATA_FLAGS
 
 #else /* CONFIG_MEMCG */
 
+#define __OBJEXTS_ALLOC_FAIL	(1UL << 0)
 #define __FIRST_OBJEXT_FLAG	(1UL << 0)
 
 #endif /* CONFIG_MEMCG */
 
 enum objext_flags {
-	/* slabobj_ext vector failed to allocate */
-	OBJEXTS_ALLOC_FAIL = __FIRST_OBJEXT_FLAG,
+	/*
+	 * Use bit 0 with zero other bits to signal that slabobj_ext vector
+	 * failed to allocate. The same bit 0 with valid upper bits means
+	 * MEMCG_DATA_OBJEXTS.
+	 */
+	OBJEXTS_ALLOC_FAIL = __OBJEXTS_ALLOC_FAIL,
+	/*
+	 * OBJEXTS_ALLOC_FAIL has been changed to reuse __OBJEXTS_ALLOC_FAIL
+	 * rather than __FIRST_OBJEXT_FLAG, so no extra bit has been used
+	 * here, meanwhile we don't have to reserve any bit for further usage
+	 * (see upstream kmalloc_nolock changes). The real last actual flag
+	 * should be __FIRST_OBJEXT_FLAG but not __FIRST_OBJEXT_FLAG << 1.
+	 * XXX: however if you are backporting kmalloc_nolock, please be
+	 * aware of the conflict between bits usage and lsb of obj_exts
+	 * address. You must fix it then.
+	 */
 	/* the next bit after the last actual flag */
-	__NR_OBJEXTS_FLAGS  = (__FIRST_OBJEXT_FLAG << 1),
+	__NR_OBJEXTS_FLAGS  = __FIRST_OBJEXT_FLAG,
 };
 
 #define OBJEXTS_FLAGS_MASK (__NR_OBJEXTS_FLAGS - 1)
