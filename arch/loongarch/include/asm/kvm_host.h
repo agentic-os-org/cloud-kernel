@@ -52,12 +52,6 @@ struct kvm_vm_stat {
 	struct kvm_vm_stat_generic generic;
 	u64 pages;
 	u64 hugepages;
-	u64 ipi_read_exits;
-	u64 ipi_write_exits;
-	u64 eiointc_read_exits;
-	u64 eiointc_write_exits;
-	u64 pch_pic_read_exits;
-	u64 pch_pic_write_exits;
 };
 
 struct kvm_vcpu_stat {
@@ -67,6 +61,12 @@ struct kvm_vcpu_stat {
 	u64 cpucfg_exits;
 	u64 signal_exits;
 	u64 hypercall_exits;
+	u64 ipi_read_exits;
+	u64 ipi_write_exits;
+	u64 eiointc_read_exits;
+	u64 eiointc_write_exits;
+	u64 pch_pic_read_exits;
+	u64 pch_pic_write_exits;
 };
 
 #define KVM_MEM_HUGEPAGE_CAPABLE	(1UL << 0)
@@ -178,6 +178,9 @@ struct kvm_vcpu_arch {
 
 	/* Pointers stored here for easy accessing from assembly code */
 	int (*handle_exit)(struct kvm_run *run, struct kvm_vcpu *vcpu);
+
+	/* GPA (=HVA) of PGD for secondary mmu */
+	unsigned long kvm_pgd;
 
 	/* Host registers preserved across guest mode execution */
 	unsigned long host_sp;
