@@ -32,7 +32,8 @@ static int erofs_fill_dentries(struct inode *dir, struct dir_context *ctx,
 			goto err_bogus;
 
 		if (!dir_emit(ctx, de_name, de_namelen,
-			      le64_to_cpu(de->nid), d_type))
+			      erofs_nid_to_ino64(EROFS_SB(dir->i_sb),
+						 le64_to_cpu(de->nid)), d_type))
 			return 1;
 		++de;
 		ctx->pos += sizeof(struct erofs_dirent);
@@ -124,4 +125,8 @@ const struct file_operations erofs_dir_fops = {
 	.llseek		= generic_file_llseek,
 	.read		= generic_read_dir,
 	.iterate_shared	= erofs_readdir,
+	.unlocked_ioctl = erofs_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl   = erofs_compat_ioctl,
+#endif
 };
