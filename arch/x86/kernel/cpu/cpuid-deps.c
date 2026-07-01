@@ -86,6 +86,7 @@ static const struct cpuid_dep cpuid_deps[] = {
 	{ X86_FEATURE_SGX2,			X86_FEATURE_SGX1      },
 	{ X86_FEATURE_SGX_EDECCSSA,		X86_FEATURE_SGX1      },
 	{ X86_FEATURE_CRC32C_LOW_PERF,		X86_FEATURE_XMM4_2    },
+	{ X86_FEATURE_INVLPGB,			X86_FEATURE_PCID      },
 	{}
 };
 

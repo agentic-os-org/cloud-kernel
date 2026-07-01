@@ -508,3 +508,7 @@ config CPU_SUP_ZHAOXIN
 	  CPU might render the kernel unbootable.
 
 	  If unsure, say N.
+
+config BROADCAST_TLB_FLUSH
+	def_bool y
+	depends on CPU_SUP_AMD && 64BIT
