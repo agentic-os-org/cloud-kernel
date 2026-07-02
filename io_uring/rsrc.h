@@ -49,12 +49,32 @@ struct io_rsrc_node {
 	struct io_rsrc_put		item;
 };
 
+enum {
+	IO_IMU_DEST	= 1 << ITER_DEST,
+	IO_IMU_SOURCE	= 1 << ITER_SOURCE,
+};
+
 struct io_mapped_ubuf {
 	u64		ubuf;
-	u64		ubuf_end;
+	unsigned int	len;
 	unsigned int	nr_bvecs;
+	unsigned int    folio_shift;
 	unsigned long	acct_pages;
+	refcount_t	refs;
+	void		(*release)(void *);
+	void		*priv;
+	bool		is_kbuf;
+	u8		dir;
 	struct bio_vec	bvec[] __counted_by(nr_bvecs);
+};
+
+struct io_imu_folio_data {
+	/* Head folio can be partially included in the fixed buf */
+	unsigned int	nr_pages_head;
+	/* For non-head/tail folios, has to be fully included */
+	unsigned int	nr_pages_mid;
+	unsigned int	folio_shift;
+	unsigned long	first_folio_page_idx;
 };
 
 void io_rsrc_node_ref_zero(struct io_rsrc_node *node);
