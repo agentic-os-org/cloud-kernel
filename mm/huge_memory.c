@@ -2782,7 +2782,7 @@ static void __split_huge_page_tail(struct page *head, int tail,
 }
 
 static void __split_huge_page(struct page *page, struct list_head *list,
-		pgoff_t end)
+		pgoff_t end, struct address_space *mapping)
 {
 	struct page *head = compound_head(page);
 	struct lruvec *lruvec;
@@ -2848,6 +2848,16 @@ static void __split_huge_page(struct page *page, struct list_head *list,
 	local_irq_enable();
 
 	remap_page(head, nr);
+
+	/*
+	 * Drop the mapping while the inode is still pinned. @head stays
+	 * locked and present in the page cache until the loop below, so
+	 * eviction cannot free the inode yet; @page is not enough, it may
+	 * be a tail beyond EOF that the split already dropped from the page
+	 * cache. Nothing past this point may touch the inode or the mapping.
+	 */
+	if (mapping)
+		i_mmap_unlock_read(mapping);
 
 	if (PageSwapCache(head)) {
 		swp_entry_t entry = { .val = page_private(head) };
@@ -3106,7 +3116,8 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 			}
 		}
 
-		__split_huge_page(page, list, end);
+		__split_huge_page(page, list, end, mapping);
+		mapping = NULL;
 		ret = 0;
 	} else {
 		spin_unlock(&ds_queue->split_queue_lock);
