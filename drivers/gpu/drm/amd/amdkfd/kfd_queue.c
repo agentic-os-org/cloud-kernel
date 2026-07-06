@@ -22,6 +22,7 @@
  */
 
 #include <linux/slab.h>
+#include <linux/overflow.h>
 #include "kfd_priv.h"
 
 void print_queue_properties(struct queue_properties *q)
