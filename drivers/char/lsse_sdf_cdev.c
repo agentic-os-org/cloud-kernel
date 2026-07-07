@@ -290,6 +290,9 @@ static int sdf_probe(struct platform_device *pdev)
 	struct sdf_dev *sdf;
 	int msg_size, ret, ch;
 
+	if (!dev_get_drvdata(pdev->dev.parent))
+		return -EPROBE_DEFER;
+
 	sdf = devm_kzalloc(&pdev->dev, sizeof(*sdf), GFP_KERNEL);
 	if (!sdf)
 		return -ENOMEM;
@@ -300,6 +303,8 @@ static int sdf_probe(struct platform_device *pdev)
 		return -ENODEV;
 	msg_size = 2 * sizeof(struct se_sdf_msg);
 	sdf->se_ch = loongson_se_init_engine(pdev->dev.parent, ch);
+	if (!sdf->se_ch)
+		return -ENODEV;
 
 	sdf->miscdev.minor = MISC_DYNAMIC_MINOR;
 	sdf->miscdev.name = "lsse_sdf";
