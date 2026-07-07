@@ -117,7 +117,7 @@ config SATA_AHCI
 
 config AHCI_ZHAOXIN_SGPIO
 	tristate "zhaoxin AHCI SGPIO support"
-	depends on SATA_AHCI
+	depends on SATA_AHCI && X86_64
 	default y
 	help
 	  This option enables support for Zhaoxin AHCI SGPIO.
