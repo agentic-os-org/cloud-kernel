@@ -193,9 +193,12 @@ int radeon_bo_create(struct radeon_device *rdev,
 	bo->flags &= ~(RADEON_GEM_GTT_WC | RADEON_GEM_GTT_UC);
 #else
 	/* For architectures that don't support WC memory,
-	 * mask out the WC flag from the BO
+	 * mask out the WC flag from the BO. On LoongArch, also mask
+	 * WC out for non-VRAM BOs since WC mapping of GTT/system
+	 * memory is invalid on this architecture.
 	 */
-	if (!drm_arch_can_wc_memory())
+	if (!drm_arch_can_wc_memory() ||
+	    (IS_ENABLED(CONFIG_LOONGARCH) && !(bo->initial_domain & RADEON_GEM_DOMAIN_VRAM)))
 		bo->flags &= ~RADEON_GEM_GTT_WC;
 #endif
 
