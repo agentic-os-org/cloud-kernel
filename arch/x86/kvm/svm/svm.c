@@ -1040,9 +1040,23 @@ static __init int svm_hardware_setup(void)
 		} else {
 			pr_info("AVIC enabled\n");
 
+			/*
+			 * Disable IPI virtualization for AMD Family 17h (Zen1
+			 * and Zen2) and Hygon Family 18h (derived from AMD
+			 * Zen1) CPUs due to erratum 1235, which results in
+			 * missed VM-Exits on the sender and thus missed wake
+			 * events for blocking vCPUs due to the CPU failing to
+			 * see a software update to clear IsRunning.
+			 */
+			if (boot_cpu_data.x86 == 0x17 || boot_cpu_data.x86 == 0x18)
+				enable_ipiv = false;
+
 			amd_iommu_register_ga_log_notifier(&avic_ga_log_notifier);
 		}
 	}
+
+	if (!avic)
+		enable_ipiv = false;
 
 	if (vls) {
 		if (!npt_enabled ||
@@ -3533,6 +3547,29 @@ static void svm_set_irq(struct kvm_vcpu *vcpu)
 
 	svm->vmcb->control.event_inj = vcpu->arch.interrupt.nr |
 		SVM_EVTINJ_VALID | SVM_EVTINJ_TYPE_INTR;
+}
+
+void svm_complete_interrupt_delivery(struct kvm_vcpu *vcpu, int delivery_mode,
+				     int trig_mode, int vector)
+{
+	/*
+	 * vcpu->arch.apicv_active must be read after vcpu->mode.
+	 * Pairs with the smp_mb_*() after setting vcpu->mode in
+	 * vcpu_enter_guest().
+	 */
+	bool in_guest_mode = (smp_load_acquire(&vcpu->mode) == IN_GUEST_MODE);
+
+	if (!READ_ONCE(vcpu->arch.apicv_active)) {
+		kvm_make_request(KVM_REQ_EVENT, vcpu);
+		kvm_vcpu_kick(vcpu);
+		return;
+	}
+
+	trace_kvm_apic_accept_irq(vcpu->vcpu_id, delivery_mode, trig_mode, vector);
+	if (in_guest_mode)
+		avic_ring_doorbell(vcpu);
+	else
+		kvm_vcpu_wake_up(vcpu);
 }
 
 static void svm_update_cr8_intercept(struct kvm_vcpu *vcpu, int tpr, int irr)
