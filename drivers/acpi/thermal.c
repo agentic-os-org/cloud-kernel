@@ -45,6 +45,8 @@
 
 #define ACPI_THERMAL_TRIP_PASSIVE	(-1)
 
+#define ACPI_THERMAL_MAX_NR_TRIPS	(ACPI_THERMAL_MAX_ACTIVE + 3)
+
 /*
  * This exception is thrown out in two cases:
  * 1.An invalid trip point becomes invalid or a valid trip point becomes invalid
@@ -110,8 +112,6 @@ struct acpi_thermal {
 	unsigned long polling_frequency;
 	volatile u8 zombie;
 	struct acpi_thermal_trips trips;
-	struct thermal_trip *trip_table;
-	struct acpi_handle_list devices;
 	struct thermal_zone_device *thermal_zone;
 	int kelvin_offset;	/* in millidegrees */
 	struct work_struct thermal_check_work;
@@ -166,16 +166,31 @@ static int acpi_thermal_get_polling_frequency(struct acpi_thermal *tz)
 
 static int acpi_thermal_temp(struct acpi_thermal *tz, int temp_deci_k)
 {
+	int temp;
+
 	if (temp_deci_k == THERMAL_TEMP_INVALID)
 		return THERMAL_TEMP_INVALID;
 
-	return deci_kelvin_to_millicelsius_with_offset(temp_deci_k,
+	temp = deci_kelvin_to_millicelsius_with_offset(temp_deci_k,
 						       tz->kelvin_offset);
+	if (temp <= 0)
+		return THERMAL_TEMP_INVALID;
+
+	return temp;
 }
 
 static bool acpi_thermal_trip_valid(struct acpi_thermal_trip *acpi_trip)
 {
 	return acpi_trip->temp_dk != THERMAL_TEMP_INVALID;
+}
+
+static int active_trip_index(struct acpi_thermal *tz,
+			     struct acpi_thermal_trip *acpi_trip)
+{
+	struct acpi_thermal_active *active;
+
+	active = container_of(acpi_trip, struct acpi_thermal_active, trip);
+	return active - tz->trips.active;
 }
 
 static long get_passive_temp(struct acpi_thermal *tz)
@@ -188,64 +203,6 @@ static long get_passive_temp(struct acpi_thermal *tz)
 		return THERMAL_TEMP_INVALID;
 
 	return tmp;
-}
-
-static void acpi_thermal_update_passive_trip(struct acpi_thermal *tz)
-{
-	struct acpi_thermal_trip *acpi_trip = &tz->trips.passive.trip;
-
-	if (!acpi_thermal_trip_valid(acpi_trip) || psv > 0)
-		return;
-
-	acpi_trip->temp_dk = get_passive_temp(tz);
-	if (!acpi_thermal_trip_valid(acpi_trip))
-		ACPI_THERMAL_TRIPS_EXCEPTION(tz, "state");
-}
-
-static bool update_trip_devices(struct acpi_thermal *tz,
-				struct acpi_thermal_trip *acpi_trip,
-				int index, bool compare)
-{
-	struct acpi_handle_list devices;
-	char method[] = "_PSL";
-	acpi_status status;
-
-	if (index != ACPI_THERMAL_TRIP_PASSIVE) {
-		method[1] = 'A';
-		method[2] = 'L';
-		method[3] = '0' + index;
-	}
-
-	memset(&devices, 0, sizeof(devices));
-
-	status = acpi_evaluate_reference(tz->device->handle, method, NULL, &devices);
-	if (ACPI_FAILURE(status)) {
-		acpi_handle_info(tz->device->handle, "%s evaluation failure\n", method);
-		return false;
-	}
-
-	if (compare && memcmp(&acpi_trip->devices, &devices, sizeof(devices)))
-		ACPI_THERMAL_TRIPS_EXCEPTION(tz, "device");
-
-	memcpy(&acpi_trip->devices, &devices, sizeof(devices));
-	return true;
-}
-
-static void acpi_thermal_update_trip_devices(struct acpi_thermal *tz, int index)
-{
-	struct acpi_thermal_trip *acpi_trip;
-
-	acpi_trip = index == ACPI_THERMAL_TRIP_PASSIVE ?
-			&tz->trips.passive.trip : &tz->trips.active[index].trip;
-	if (!acpi_thermal_trip_valid(acpi_trip))
-		return;
-
-	if (update_trip_devices(tz, acpi_trip, index, true)) {
-		return;
-	}
-
-	acpi_trip->temp_dk = THERMAL_TEMP_INVALID;
-	ACPI_THERMAL_TRIPS_EXCEPTION(tz, "state");
 }
 
 static long get_active_temp(struct acpi_thermal *tz, int index)
@@ -271,25 +228,90 @@ static long get_active_temp(struct acpi_thermal *tz, int index)
 	return tmp;
 }
 
-static void acpi_thermal_update_active_trip(struct acpi_thermal *tz, int index)
+static void acpi_thermal_update_trip(struct acpi_thermal *tz,
+				     const struct thermal_trip *trip)
 {
-	struct acpi_thermal_trip *acpi_trip = &tz->trips.active[index].trip;
+	struct acpi_thermal_trip *acpi_trip = trip->priv;
 
-	if (!acpi_thermal_trip_valid(acpi_trip))
-		return;
+	if (trip->type == THERMAL_TRIP_PASSIVE) {
+		if (psv > 0)
+			return;
 
-	acpi_trip->temp_dk = get_active_temp(tz, index);
+		acpi_trip->temp_dk = get_passive_temp(tz);
+	} else {
+		int index = active_trip_index(tz, acpi_trip);
+
+		acpi_trip->temp_dk = get_active_temp(tz, index);
+	}
+
 	if (!acpi_thermal_trip_valid(acpi_trip))
 		ACPI_THERMAL_TRIPS_EXCEPTION(tz, "state");
 }
 
+static bool update_trip_devices(struct acpi_thermal *tz,
+				struct acpi_thermal_trip *acpi_trip,
+				int index, bool compare)
+{
+	struct acpi_handle_list devices = { 0 };
+	char method[] = "_PSL";
+	acpi_status status;
+
+	if (index != ACPI_THERMAL_TRIP_PASSIVE) {
+		method[1] = 'A';
+		method[2] = 'L';
+		method[3] = '0' + index;
+	}
+
+	status = acpi_evaluate_reference(tz->device->handle, method, NULL, &devices);
+	if (ACPI_FAILURE(status)) {
+		acpi_handle_info(tz->device->handle, "%s evaluation failure\n", method);
+		return false;
+	}
+
+	if (acpi_handle_list_equal(&acpi_trip->devices, &devices)) {
+		acpi_handle_list_free(&devices);
+		return true;
+	}
+
+	if (compare)
+		ACPI_THERMAL_TRIPS_EXCEPTION(tz, "device");
+
+	acpi_handle_list_replace(&acpi_trip->devices, &devices);
+	return true;
+}
+
+static void acpi_thermal_update_trip_devices(struct acpi_thermal *tz,
+					     const struct thermal_trip *trip)
+{
+	struct acpi_thermal_trip *acpi_trip = trip->priv;
+	int index = trip->type == THERMAL_TRIP_PASSIVE ?
+			ACPI_THERMAL_TRIP_PASSIVE : active_trip_index(tz, acpi_trip);
+
+	if (update_trip_devices(tz, acpi_trip, index, true))
+		return;
+
+	acpi_trip->temp_dk = THERMAL_TEMP_INVALID;
+	ACPI_THERMAL_TRIPS_EXCEPTION(tz, "state");
+}
+
+struct adjust_trip_data {
+	struct acpi_thermal *tz;
+	u32 event;
+};
+
 static int acpi_thermal_adjust_trip(struct thermal_trip *trip, void *data)
 {
 	struct acpi_thermal_trip *acpi_trip = trip->priv;
-	struct acpi_thermal *tz = data;
+	struct adjust_trip_data *atd = data;
+	struct acpi_thermal *tz = atd->tz;
 
-	if (!acpi_trip)
+	if (!acpi_trip || !acpi_thermal_trip_valid(acpi_trip))
 		return 0;
+
+	if (atd->event == ACPI_THERMAL_NOTIFY_THRESHOLDS)
+		acpi_thermal_update_trip(tz, trip);
+	else
+		acpi_thermal_update_trip_devices(tz, trip);
 
 	if (acpi_thermal_trip_valid(acpi_trip))
 		trip->temperature = acpi_thermal_temp(tz, acpi_trip->temp_dk);
@@ -297,25 +319,6 @@ static int acpi_thermal_adjust_trip(struct thermal_trip *trip, void *data)
 		trip->temperature = THERMAL_TEMP_INVALID;
 
 	return 0;
-}
-
-static void acpi_thermal_adjust_thermal_zone(struct thermal_zone_device *thermal,
-					     unsigned long data)
-{
-	struct acpi_thermal *tz = thermal_zone_device_priv(thermal);
-	int i;
-
-	if (data == ACPI_THERMAL_NOTIFY_THRESHOLDS) {
-		acpi_thermal_update_passive_trip(tz);
-		for (i = 0; i < ACPI_THERMAL_MAX_ACTIVE; i++)
-			acpi_thermal_update_active_trip(tz, i);
-	} else {
-		acpi_thermal_update_trip_devices(tz, ACPI_THERMAL_TRIP_PASSIVE);
-		for (i = 0; i < ACPI_THERMAL_MAX_ACTIVE; i++)
-			acpi_thermal_update_trip_devices(tz, i);
-	}
-
-	for_each_thermal_trip(tz->thermal_zone, acpi_thermal_adjust_trip, tz);
 }
 
 static void acpi_queue_thermal_check(struct acpi_thermal *tz)
@@ -326,17 +329,18 @@ static void acpi_queue_thermal_check(struct acpi_thermal *tz)
 
 static void acpi_thermal_trips_update(struct acpi_thermal *tz, u32 event)
 {
+	struct adjust_trip_data atd = { .tz = tz, .event = event };
 	struct acpi_device *adev = tz->device;
 
 	/*
-	 * Use thermal_zone_device_exec() to carry out the trip points
+	 * Use thermal_zone_for_each_trip() to carry out the trip points
 	 * update, so as to protect thermal_get_trend() from getting stale
 	 * trip point temperatures and to prevent thermal_zone_device_update()
 	 * invoked from acpi_thermal_check_fn() from producing inconsistent
 	 * results.
 	 */
-	thermal_zone_device_exec(tz->thermal_zone,
-				 acpi_thermal_adjust_thermal_zone, event);
+	thermal_zone_for_each_trip(tz->thermal_zone,
+				   acpi_thermal_adjust_trip, &atd);
 	acpi_queue_thermal_check(tz);
 	acpi_bus_generate_netlink_event(adev->pnp.device_class,
 					dev_name(&adev->dev), event, 0);
@@ -461,26 +465,19 @@ fail:
 	return false;
 }
 
-static int acpi_thermal_get_trip_points(struct acpi_thermal *tz)
+static void acpi_thermal_get_trip_points(struct acpi_thermal *tz)
 {
-	unsigned int count = 0;
 	int i;
 
-	if (acpi_thermal_init_trip(tz, ACPI_THERMAL_TRIP_PASSIVE))
-		count++;
+	acpi_thermal_init_trip(tz, ACPI_THERMAL_TRIP_PASSIVE);
 
 	for (i = 0; i < ACPI_THERMAL_MAX_ACTIVE; i++) {
-		if (acpi_thermal_init_trip(tz, i))
-			count++;
-		else
+		if (!acpi_thermal_init_trip(tz, i))
 			break;
-
 	}
 
 	while (++i < ACPI_THERMAL_MAX_ACTIVE)
 		tz->trips.active[i].trip.temp_dk = THERMAL_TEMP_INVALID;
-
-	return count;
 }
 
 /* sys I/F for generic thermal sysfs support */
@@ -672,13 +669,14 @@ static void acpi_thermal_zone_sysfs_remove(struct acpi_thermal *tz)
 }
 
 static int acpi_thermal_register_thermal_zone(struct acpi_thermal *tz,
+					      const struct thermal_trip *trip_table,
 					      unsigned int trip_count,
 					      int passive_delay)
 {
 	int result;
 
 	tz->thermal_zone = thermal_zone_device_register_with_trips("acpitz",
-								   tz->trip_table,
+								   trip_table,
 								   trip_count,
 								   0, tz,
 								   &acpi_thermal_zone_ops,
@@ -820,12 +818,23 @@ static void acpi_thermal_check_fn(struct work_struct *work)
 	mutex_unlock(&tz->thermal_check_lock);
 }
 
+static void acpi_thermal_free_thermal_zone(struct acpi_thermal *tz)
+{
+	int i;
+
+	acpi_handle_list_free(&tz->trips.passive.trip.devices);
+	for (i = 0; i < ACPI_THERMAL_MAX_ACTIVE; i++)
+		acpi_handle_list_free(&tz->trips.active[i].trip.devices);
+
+	kfree(tz);
+}
+
 static int acpi_thermal_add(struct acpi_device *device)
 {
+	struct thermal_trip trip_table[ACPI_THERMAL_MAX_NR_TRIPS] = { 0 };
 	struct acpi_thermal_trip *acpi_trip;
 	struct thermal_trip *trip;
 	struct acpi_thermal *tz;
-	unsigned int trip_count;
 	int crit_temp, hot_temp;
 	int passive_delay = 0;
 	int result;
@@ -847,21 +856,10 @@ static int acpi_thermal_add(struct acpi_device *device)
 	acpi_thermal_aml_dependency_fix(tz);
 
 	/* Get trip points [_CRT, _PSV, etc.] (required). */
-	trip_count = acpi_thermal_get_trip_points(tz);
+	acpi_thermal_get_trip_points(tz);
 
 	crit_temp = acpi_thermal_get_critical_trip(tz);
-	if (crit_temp != THERMAL_TEMP_INVALID)
-		trip_count++;
-
 	hot_temp = acpi_thermal_get_hot_trip(tz);
-	if (hot_temp != THERMAL_TEMP_INVALID)
-		trip_count++;
-
-	if (!trip_count) {
-		pr_warn(FW_BUG "No valid trip points!\n");
-		result = -ENODEV;
-		goto free_memory;
-	}
 
 	/* Get temperature [_TMP] (required). */
 	result = acpi_thermal_get_temperature(tz);
@@ -880,13 +878,7 @@ static int acpi_thermal_add(struct acpi_device *device)
 
 	acpi_thermal_guess_offset(tz, crit_temp);
 
-	trip = kcalloc(trip_count, sizeof(*trip), GFP_KERNEL);
-	if (!trip) {
-		result = -ENOMEM;
-		goto free_memory;
-	}
-
-	tz->trip_table = trip;
+	trip = trip_table;
 
 	if (crit_temp != THERMAL_TEMP_INVALID) {
 		trip->type = THERMAL_TRIP_CRITICAL;
@@ -922,9 +914,17 @@ static int acpi_thermal_add(struct acpi_device *device)
 		trip++;
 	}
 
-	result = acpi_thermal_register_thermal_zone(tz, trip_count, passive_delay);
+	if (trip == trip_table) {
+		pr_warn(FW_BUG "No valid trip points!\n");
+		result = -ENODEV;
+		goto free_memory;
+	}
+
+	result = acpi_thermal_register_thermal_zone(tz, trip_table,
+						    trip - trip_table,
+						    passive_delay);
 	if (result)
-		goto free_trips;
+		goto free_memory;
 
 	refcount_set(&tz->thermal_check_count, 3);
 	mutex_init(&tz->thermal_check_lock);
@@ -943,10 +943,8 @@ static int acpi_thermal_add(struct acpi_device *device)
 flush_wq:
 	flush_workqueue(acpi_thermal_pm_queue);
 	acpi_thermal_unregister_thermal_zone(tz);
-free_trips:
-	kfree(tz->trip_table);
 free_memory:
-	kfree(tz);
+	acpi_thermal_free_thermal_zone(tz);
 
 	return result;
 }
@@ -965,8 +963,7 @@ static void acpi_thermal_remove(struct acpi_device *device)
 
 	flush_workqueue(acpi_thermal_pm_queue);
 	acpi_thermal_unregister_thermal_zone(tz);
-	kfree(tz->trip_table);
-	kfree(tz);
+	acpi_thermal_free_thermal_zone(tz);
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -1028,7 +1025,8 @@ static struct acpi_driver acpi_thermal_driver = {
 	.drv.pm = &acpi_thermal_pm,
 };
 
-static int thermal_act(const struct dmi_system_id *d) {
+static int thermal_act(const struct dmi_system_id *d)
+{
 	if (act == 0) {
 		pr_notice("%s detected: disabling all active thermal trip points\n",
 			  d->ident);
@@ -1036,13 +1034,17 @@ static int thermal_act(const struct dmi_system_id *d) {
 	}
 	return 0;
 }
-static int thermal_nocrt(const struct dmi_system_id *d) {
+
+static int thermal_nocrt(const struct dmi_system_id *d)
+{
 	pr_notice("%s detected: disabling all critical thermal trip point actions.\n",
 		  d->ident);
 	crt = -1;
 	return 0;
 }
-static int thermal_tzp(const struct dmi_system_id *d) {
+
+static int thermal_tzp(const struct dmi_system_id *d)
+{
 	if (tzp == 0) {
 		pr_notice("%s detected: enabling thermal zone polling\n",
 			  d->ident);
@@ -1050,7 +1052,9 @@ static int thermal_tzp(const struct dmi_system_id *d) {
 	}
 	return 0;
 }
-static int thermal_psv(const struct dmi_system_id *d) {
+
+static int thermal_psv(const struct dmi_system_id *d)
+{
 	if (psv == 0) {
 		pr_notice("%s detected: disabling all passive thermal trip points\n",
 			  d->ident);

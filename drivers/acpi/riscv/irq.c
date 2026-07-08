@@ -342,12 +342,22 @@ static u32 riscv_acpi_add_prt_dep(acpi_handle handle)
 		if (entry->source[0]) {
 			acpi_get_handle(handle, entry->source, &link_handle);
 			dep_devices.count = 1;
+			dep_devices.handles = kcalloc(1, sizeof(*dep_devices.handles), GFP_KERNEL);
+			if (!dep_devices.handles) {
+				acpi_handle_err(handle, "failed to allocate memory\n");
+				continue;
+			}
 
 			dep_devices.handles[0] = link_handle;
 			count += acpi_scan_add_dep(handle, &dep_devices);
 		} else {
 			gsi_handle = riscv_acpi_get_gsi_handle(entry->source_index);
 			dep_devices.count = 1;
+			dep_devices.handles = kcalloc(1, sizeof(*dep_devices.handles), GFP_KERNEL);
+			if (!dep_devices.handles) {
+				acpi_handle_err(handle, "failed to allocate memory\n");
+				continue;
+			}
 
 			dep_devices.handles[0] = gsi_handle;
 			count += acpi_scan_add_dep(handle, &dep_devices);
@@ -372,6 +382,11 @@ static u32 riscv_acpi_add_irq_dep(acpi_handle handle)
 	     riscv_acpi_irq_get_dep(handle, i, &gsi_handle);
 	     i++) {
 		dep_devices.count = 1;
+		dep_devices.handles = kcalloc(1, sizeof(*dep_devices.handles), GFP_KERNEL);
+		if (!dep_devices.handles) {
+			acpi_handle_err(handle, "failed to allocate memory\n");
+			continue;
+		}
 
 		dep_devices.handles[0] = gsi_handle;
 		count += acpi_scan_add_dep(handle, &dep_devices);
