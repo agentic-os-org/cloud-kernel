@@ -185,7 +185,7 @@ static void handle_link_state_change(struct bdc *bdc, u32 uspc)
 	switch (link_state) {
 	case BDC_LINK_STATE_U3:
 		if ((bdc->gadget.speed != USB_SPEED_UNKNOWN) &&
-						bdc->gadget_driver->suspend) {
+					bdc->gadget_driver->suspend) {
 			dev_dbg(bdc->dev, "Entered Suspend mode\n");
 			spin_unlock(&bdc->lock);
 			bdc->devstatus |= DEVICE_SUSPENDED;
@@ -529,8 +529,8 @@ int bdc_udc_init(struct bdc *bdc)
 
 
 	bdc->gadget.name = BRCM_BDC_NAME;
-	ret = devm_request_irq(bdc->dev, bdc->irq, bdc_udc_interrupt,
-				IRQF_SHARED , BRCM_BDC_NAME, bdc);
+	ret = request_irq(bdc->irq, bdc_udc_interrupt, IRQF_SHARED,
+			  BRCM_BDC_NAME, bdc);
 	if (ret) {
 		dev_err(bdc->dev,
 			"failed to request irq #%d %d\n",
@@ -541,7 +541,7 @@ int bdc_udc_init(struct bdc *bdc)
 	ret = bdc_init_ep(bdc);
 	if (ret) {
 		dev_err(bdc->dev, "bdc init ep fail: %d\n", ret);
-		return ret;
+		goto err0;
 	}
 
 	ret = usb_add_gadget_udc(bdc->dev, &bdc->gadget);
@@ -570,6 +570,7 @@ int bdc_udc_init(struct bdc *bdc)
 err1:
 	usb_del_gadget_udc(&bdc->gadget);
 err0:
+	free_irq(bdc->irq, bdc);
 	bdc_free_ep(bdc);
 
 	return ret;
