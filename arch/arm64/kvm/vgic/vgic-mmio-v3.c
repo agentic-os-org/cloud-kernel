@@ -198,7 +198,7 @@ static unsigned long vgic_mmio_read_irouter(struct kvm_vcpu *vcpu,
 					    gpa_t addr, unsigned int len)
 {
 	int intid = VGIC_ADDR_TO_INTID(addr, 64);
-	struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, NULL, intid);
+	struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, intid);
 	unsigned long ret = 0;
 
 	if (!irq)
@@ -224,7 +224,7 @@ static void vgic_mmio_write_irouter(struct kvm_vcpu *vcpu,
 	if (addr & 4)
 		return;
 
-	irq = vgic_get_irq(vcpu->kvm, NULL, intid);
+	irq = vgic_get_irq(vcpu->kvm, intid);
 
 	if (!irq)
 		return;
@@ -281,7 +281,7 @@ static void vgic_mmio_write_v3r_ctlr(struct kvm_vcpu *vcpu,
 			return;
 
 		vgic_flush_pending_lpis(vcpu);
-		vgic_its_invalidate_cache(vcpu->kvm);
+		vgic_its_invalidate_all_caches(vcpu->kvm);
 		atomic_set_release(&vgic_cpu->ctlr, 0);
 	} else {
 		ctlr = atomic_cmpxchg_acquire(&vgic_cpu->ctlr, 0,
@@ -361,38 +361,13 @@ static int vgic_v3_uaccess_write_pending(struct kvm_vcpu *vcpu,
 					 gpa_t addr, unsigned int len,
 					 unsigned long val)
 {
-	u32 intid = VGIC_ADDR_TO_INTID(addr, 1);
-	int i;
-	unsigned long flags;
+	int ret;
 
-	for (i = 0; i < len * 8; i++) {
-		struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, vcpu, intid + i);
+	ret = vgic_uaccess_write_spending(vcpu, addr, len, val);
+	if (ret)
+		return ret;
 
-		raw_spin_lock_irqsave(&irq->irq_lock, flags);
-
-		/*
-		 * pending_latch is set irrespective of irq type
-		 * (level or edge) to avoid dependency that VM should
-		 * restore irq config before pending info.
-		 */
-		irq->pending_latch = test_bit(i, &val);
-
-		if (irq->hw && vgic_irq_is_sgi(irq->intid)) {
-			irq_set_irqchip_state(irq->host_irq,
-					      IRQCHIP_STATE_PENDING,
-					      irq->pending_latch);
-			irq->pending_latch = false;
-		}
-
-		if (irq->pending_latch)
-			vgic_queue_irq_unlock(vcpu->kvm, irq, flags);
-		else
-			raw_spin_unlock_irqrestore(&irq->irq_lock, flags);
-
-		vgic_put_irq(vcpu->kvm, irq);
-	}
-
-	return 0;
+	return vgic_uaccess_write_cpending(vcpu, addr, len, ~val);
 }
 
 /* We want to avoid outer shareable. */
@@ -577,7 +552,7 @@ static void vgic_mmio_write_invlpi(struct kvm_vcpu *vcpu,
 
 	vgic_set_rdist_busy(vcpu, true);
 
-	irq = vgic_get_irq(vcpu->kvm, NULL, intid);
+	irq = vgic_get_irq(vcpu->kvm, intid);
 	if (irq) {
 		vgic_its_inv_lpi(vcpu->kvm, irq);
 		vgic_put_irq(vcpu->kvm, irq);
@@ -1052,7 +1027,7 @@ int vgic_v3_has_attr_regs(struct kvm_device *dev, struct kvm_device_attr *attr)
 
 static void vgic_v3_queue_sgi(struct kvm_vcpu *vcpu, u32 sgi, bool allow_group1)
 {
-	struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, vcpu, sgi);
+	struct vgic_irq *irq = vgic_get_vcpu_irq(vcpu, sgi);
 	unsigned long flags;
 
 	raw_spin_lock_irqsave(&irq->irq_lock, flags);
