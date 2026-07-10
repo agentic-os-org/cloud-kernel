@@ -3358,9 +3358,13 @@ static bool ecc_enabled(struct pci_dev *F3, u16 nid)
 
 	if (boot_cpu_data.x86 >= 0x17) {
 		u8 umc_en_mask = 0, ecc_en_mask = 0;
+		u32 base;
 
 		for_each_umc(i) {
-			u32 base = get_umc_base(i);
+			if (hygon_f18h_m4h())
+				base = get_umc_base_f18h_m4h(nid, i);
+			else
+				base = get_umc_base(i);
 
 			/* Only check enabled UMCs. */
 			if (amd_smn_read(nid, base + UMCCH_SDP_CTRL, &value))
