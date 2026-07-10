@@ -337,6 +337,8 @@ source "drivers/gpu/drm/xen/Kconfig"
 
 source "drivers/gpu/drm/yhgch/Kconfig"
 
+source "drivers/gpu/drm/phytium/Kconfig"
+
 # Keep legacy drivers last
 
 menuconfig DRM_LEGACY
