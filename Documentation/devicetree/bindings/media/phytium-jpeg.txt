@@ -1,0 +1,11 @@
+Phytium JPEG Encoder driver
+
+Required properties:
+- compatible : Should be "phytium,jpeg"
+- reg : Offset and length of the register set of this block
+
+Example:
+        jpeg@32b32000 {
+		compatible = "phytium,e2000-jpeg";
+		reg = <0x0 0x32b32000 0 0x1000>;
+	};
