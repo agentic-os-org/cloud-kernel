@@ -35,7 +35,7 @@
 #include <asm/cpufeature.h>
 #include <asm/fpu/api.h>
 
-
+static struct x86_cpu_id via_rng_cpu_id[];
 
 
 enum {
@@ -135,7 +135,7 @@ static int via_rng_init(struct hwrng *rng)
 	 * is always enabled if CPUID rng_en is set.  There is no
 	 * RNG configuration like it used to be the case in this
 	 * register */
-	if (((c->x86 == 6) && (c->x86_model >= 0x0f))  || (c->x86 > 6)){
+	if ((c->x86 == 6) && (c->x86_model >= 0x0f)) {
 		if (!boot_cpu_has(X86_FEATURE_XSTORE_EN)) {
 			pr_err(PFX "can't enable hardware RNG "
 				"if XSTORE is not enabled\n");
@@ -196,7 +196,7 @@ static int __init mod_init(void)
 {
 	int err;
 
-	if (!boot_cpu_has(X86_FEATURE_XSTORE))
+	if (!x86_match_cpu(via_rng_cpu_id))
 		return -ENODEV;
 
 	pr_info("VIA RNG detected\n");
@@ -218,8 +218,8 @@ static void __exit mod_exit(void)
 module_init(mod_init);
 module_exit(mod_exit);
 
-static struct x86_cpu_id __maybe_unused via_rng_cpu_id[] = {
-	X86_FEATURE_MATCH(X86_FEATURE_XSTORE),
+static struct x86_cpu_id via_rng_cpu_id[] = {
+	X86_MATCH_VENDOR_FAM_FEATURE(CENTAUR, 6, X86_FEATURE_XSTORE, NULL),
 	{}
 };
 
