@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+examples:
+  - |
+    usb2_0: usb2@31800000 {
+        compatible = "phytium,usb2";
+        reg = <0x0 0x31800000 0x0 0x80000>,
+              <0x0 0x31990000 0x0 0x10000>;
+        interrupts = <GIC_SPI 32 IRQ_TYPE_LEVEL_HIGH>;
+        status = "disabled";
+    };
