@@ -851,12 +851,29 @@ static void debug_display_dimm_sizes_df(struct amd64_pvt *pvt, u8 ctrl)
 	}
 }
 
+static bool hygon_umc_channel_enabled(u16 nid, int channel)
+{
+	u32 enable;
+
+	if (hygon_f18h_m10h()) {
+		amd_df_indirect_read(nid, 1, 0x32c, 0xc, &enable);
+		if ((enable & BIT(channel)))
+			return true;
+		return false;
+	}
+
+	return true;
+}
+
 static void __dump_misc_regs_df(struct amd64_pvt *pvt)
 {
 	struct amd64_umc *umc;
 	u32 i, tmp, umc_base;
 
 	for_each_umc(i) {
+		if (!hygon_umc_channel_enabled(pvt->mc_node_id, i))
+			continue;
+
 		if (hygon_f18h_m4h())
 			umc_base = get_umc_base_f18h_m4h(pvt->mc_node_id, i);
 		else
@@ -984,6 +1001,9 @@ static void read_umc_base_mask(struct amd64_pvt *pvt)
 	int cs, umc;
 
 	for_each_umc(umc) {
+		if (!hygon_umc_channel_enabled(pvt->mc_node_id, umc))
+			continue;
+
 		if (hygon_f18h_m4h())
 			umc_base = get_umc_base_f18h_m4h(pvt->mc_node_id, umc);
 		else
@@ -1097,7 +1117,9 @@ static void determine_memory_type_df(struct amd64_pvt *pvt)
 		 * Check if the system supports the "DDR Type" field in UMC Config
 		 * and has DDR5 DIMMs in use.
 		 */
-		if ((fam_type->flags.zn_regs_v2 || hygon_f18h_m4h()) &&
+		if ((fam_type->flags.zn_regs_v2 ||
+		     hygon_f18h_m4h() ||
+		     hygon_f18h_m10h()) &&
 		    ((umc->umc_cfg & GENMASK(2, 0)) == 0x1)) {
 			if (umc->dimm_cfg & BIT(5))
 				umc->dram_type = MEM_LRDDR5;
@@ -2901,6 +2923,9 @@ static void __read_mc_regs_df(struct amd64_pvt *pvt)
 
 	/* Read registers from each UMC */
 	for_each_umc(i) {
+		if (!hygon_umc_channel_enabled(pvt->mc_node_id, i))
+			continue;
+
 		if (hygon_f18h_m4h())
 			umc_base = get_umc_base_f18h_m4h(pvt->mc_node_id, i);
 		else
@@ -3361,6 +3386,9 @@ static bool ecc_enabled(struct pci_dev *F3, u16 nid)
 
 		for_each_umc(i) {
 			u32 base = get_umc_base(i);
+
+			if (!hygon_umc_channel_enabled(nid, i))
+				continue;
 
 			/* Only check enabled UMCs. */
 			if (amd_smn_read(nid, base + UMCCH_SDP_CTRL, &value))
