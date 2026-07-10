@@ -1144,12 +1144,16 @@ static int perf_evsel__alloc_fd(struct perf_evsel *evsel, int ncpus, int nthread
 static int perf_evsel__run_ioctl(struct perf_evsel *evsel,
 			  int ioc,  void *arg)
 {
-	int cpu, thread;
+	int cpu, thread, err;
 
 	for (cpu = 0; cpu < xyarray__max_x(evsel->fd); cpu++) {
 		for (thread = 0; thread < xyarray__max_y(evsel->fd); thread++) {
-			int fd = FD(evsel, cpu, thread),
-			    err = ioctl(fd, ioc, arg);
+			int fd = FD(evsel, cpu, thread);
+
+			if (fd < 0)
+				return -1;
+
+			err = ioctl(fd, ioc, arg);
 
 			if (err)
 				return err;
@@ -1271,7 +1275,8 @@ void perf_evsel__close_fd(struct perf_evsel *evsel)
 
 	for (cpu = 0; cpu < xyarray__max_x(evsel->fd); cpu++)
 		for (thread = 0; thread < xyarray__max_y(evsel->fd); ++thread) {
-			close(FD(evsel, cpu, thread));
+			if (FD(evsel, cpu, thread) >= 0)
+				close(FD(evsel, cpu, thread));
 			FD(evsel, cpu, thread) = -1;
 		}
 }
@@ -1670,9 +1675,11 @@ static void perf_evsel__remove_fd(struct perf_evsel *pos,
 				  int nr_cpus, int nr_threads,
 				  int thread_idx)
 {
-	for (int cpu = 0; cpu < nr_cpus; cpu++)
+	for (int cpu = 0; cpu < nr_cpus; cpu++) {
 		for (int thread = thread_idx; thread < nr_threads - 1; thread++)
 			FD(pos, cpu, thread) = FD(pos, cpu, thread + 1);
+		FD(pos, cpu, nr_threads - 1) = -1;
+	}
 }
 
 static int update_fds(struct perf_evsel *evsel,

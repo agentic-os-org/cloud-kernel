@@ -517,6 +517,8 @@ static int __store_counter_ids(struct perf_evsel *counter)
 		for (thread = 0; thread < xyarray__max_y(counter->fd);
 		     thread++) {
 			int fd = FD(counter, cpu, thread);
+			if (fd < 0)
+				continue;
 
 			if (perf_evlist__id_add_fd(evsel_list, counter,
 						   cpu, thread, fd) < 0)
@@ -2839,6 +2841,7 @@ int cmd_stat(int argc, const char **argv)
 	FILE *output = stderr;
 	unsigned int interval, timeout;
 	const char * const stat_subcommands[] = { "record", "report" };
+	struct perf_evsel *counter;
 
 	setlocale(LC_ALL, "");
 
@@ -3083,6 +3086,11 @@ int cmd_stat(int argc, const char **argv)
 	signal(SIGCHLD, skip_signal);
 	signal(SIGALRM, skip_signal);
 	signal(SIGABRT, skip_signal);
+
+	/* Enable ignoring missing threads when -p option is defined. */
+	evlist__for_each_entry(evsel_list, counter) {
+		counter->ignore_missing_thread = target.pid;
+	}
 
 	status = 0;
 	for (run_idx = 0; forever || run_idx < run_count; run_idx++) {
