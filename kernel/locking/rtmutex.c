@@ -1047,11 +1047,17 @@ static void mark_wakeup_next_waiter(struct wake_q_head *wake_q,
 static void remove_waiter(struct rt_mutex *lock,
 			  struct rt_mutex_waiter *waiter)
 {
-	bool is_top_waiter = (waiter == rt_mutex_top_waiter(lock));
-	struct task_struct *owner = rt_mutex_owner(lock);
+	bool is_top_waiter;
+	struct task_struct *owner;
 	struct rt_mutex *next_lock;
 
 	lockdep_assert_held(&lock->wait_lock);
+
+	if (!waiter->task)
+		return;
+
+	is_top_waiter = (waiter == rt_mutex_top_waiter(lock));
+	owner = rt_mutex_owner(lock);
 
 	raw_spin_lock(&current->pi_lock);
 	rt_mutex_dequeue(lock, waiter);
