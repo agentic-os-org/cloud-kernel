@@ -441,7 +441,6 @@ struct address_space {
 	atomic_t		nr_thps;
 #endif
 	struct rb_root_cached	i_mmap;		/* tree of private and shared mappings */
-	struct rw_semaphore	i_mmap_rwsem;	/* protect tree, count, list */
 	/* Protected by the i_pages lock */
 	unsigned long		nrpages;	/* number of total pages */
 	/* number of shadow or DAX exceptional entries */
@@ -452,6 +451,7 @@ struct address_space {
 	spinlock_t		private_lock;	/* for use by the address_space */
 	gfp_t			gfp_mask;	/* implicit gfp mask for allocations */
 	struct list_head	private_list;	/* for use by the address_space */
+	struct rw_semaphore	i_mmap_rwsem;	/* protect tree, count, list */
 	void			*private_data;	/* ditto */
 	errseq_t		wb_err;
 
