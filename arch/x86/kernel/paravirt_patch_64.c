@@ -38,6 +38,8 @@ unsigned paravirt_patch_ident_64(void *insnbuf, unsigned len)
 extern bool pv_is_native_spin_unlock(void);
 extern bool pv_is_native_vcpu_is_preempted(void);
 
+DECLARE_STATIC_KEY_TRUE(vcpu_has_preemption);
+
 unsigned native_patch(u8 type, u16 clobbers, void *ibuf,
 		      unsigned long addr, unsigned len)
 {
@@ -73,6 +75,7 @@ unsigned native_patch(u8 type, u16 clobbers, void *ibuf,
 			if (pv_is_native_vcpu_is_preempted()) {
 				start = start_pv_lock_ops_vcpu_is_preempted;
 				end   = end_pv_lock_ops_vcpu_is_preempted;
+				static_branch_disable(&vcpu_has_preemption);
 				goto patch_site;
 			}
 			goto patch_default;

@@ -513,6 +513,23 @@ bool ww_mutex_spin_on_owner(struct mutex *lock, struct ww_acquire_ctx *ww_ctx,
 	return true;
 }
 
+#ifdef vcpu_is_preempted
+DECLARE_STATIC_KEY_TRUE(vcpu_has_preemption);
+
+static inline bool vcpu_is_preempted_node(struct task_struct *owner)
+{
+	if (static_branch_likely(&vcpu_has_preemption))
+		return vcpu_is_preempted(task_cpu(owner));
+
+	return false;
+}
+#else
+static inline bool vcpu_is_preempted_node(struct task_struct *owner)
+{
+	return false;
+}
+#endif
+
 /*
  * Look out! "owner" is an entirely speculative pointer access and not
  * reliable.
@@ -539,7 +556,7 @@ bool mutex_spin_on_owner(struct mutex *lock, struct task_struct *owner,
 		 * Use vcpu_is_preempted to detect lock holder preemption issue.
 		 */
 		if (!owner->on_cpu || need_resched() ||
-				vcpu_is_preempted(task_cpu(owner))) {
+				vcpu_is_preempted_node(owner)) {
 			ret = false;
 			break;
 		}
