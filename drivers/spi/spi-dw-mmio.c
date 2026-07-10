@@ -198,6 +198,7 @@ MODULE_DEVICE_TABLE(of, dw_spi_mmio_of_match);
 
 static const struct acpi_device_id dw_spi_mmio_acpi_match[] = {
 	{"HISI0173", 0},
+	{"HYGO0062", 0},
 	{},
 };
 MODULE_DEVICE_TABLE(acpi, dw_spi_mmio_acpi_match);
