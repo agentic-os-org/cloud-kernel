@@ -32,7 +32,7 @@
  *
  * In the FULL state of a given resource, all non-idle tasks are
  * delayed on that resource such that nobody is advancing and the CPU
- * goes idle. This leaves both workload and CPU unproductive.
+ * goes idle. This leaves us workload and CPU unproductive.
  *
  *	SOME = nr_delayed_tasks != 0
  *	FULL = nr_delayed_tasks != 0 && nr_productive_tasks == 0
@@ -536,7 +536,7 @@ static u64 update_triggers(struct psi_group *group, u64 now)
 		/*
 		 * Multiple triggers might be looking at the same state,
 		 * remember to update group->polling_total[] once we've
-		 * been through all of them. Also remember to extend the
+		 * been through all of them. Also remember to extend
 		 * polling time if we see new stall activity.
 		 */
 		new_stall = true;
@@ -974,6 +974,12 @@ void psi_cgroup_free(struct cgroup *cgroup)
 		return;
 
 	cancel_delayed_work_sync(&cgroup->psi.avgs_work);
+	/*
+	 * A psi_schedule_poll_work() call racing the last trigger's
+	 * destruction may have re-armed the timer after psi_trigger_destroy()
+	 * deleted it. Spurious firing while the group is alive is harmless.
+	 */
+	del_timer_sync(&cgroup->psi.poll_timer);
 	free_percpu(cgroup->psi.pcpu);
 	/* All triggers must be removed by now */
 	WARN_ONCE(cgroup->psi.poll_states, "psi: trigger leak\n");
@@ -1139,7 +1145,7 @@ struct psi_trigger *psi_trigger_create(struct psi_group *group,
 		return ERR_PTR(-EINVAL);
 
 	if (window_us < WINDOW_MIN_US ||
-		window_us > WINDOW_MAX_US)
+	    window_us > WINDOW_MAX_US)
 		return ERR_PTR(-EINVAL);
 
 	/* Check threshold */
