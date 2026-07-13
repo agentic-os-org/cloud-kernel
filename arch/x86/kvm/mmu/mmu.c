@@ -2089,6 +2089,9 @@ trace_get_page:
 
 	sp = kvm_mmu_alloc_page(vcpu, direct);
 
+	WARN_ON_ONCE(role.invalid);
+	role.invalid = 0;
+
 	sp->gfn = gfn;
 	sp->role = role;
 	hlist_add_head(&sp->hash_link, sp_list);
