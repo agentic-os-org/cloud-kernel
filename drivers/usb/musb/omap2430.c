@@ -457,7 +457,6 @@ static int omap2430_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "failed to register musb device\n");
 		goto err3;
 	}
-	of_node_put(np);
 
 	return 0;
 
@@ -467,7 +466,6 @@ err_put_control_otghs:
 	if (!IS_ERR(glue->control_otghs))
 		put_device(glue->control_otghs);
 err2:
-	of_node_put(np);
 	platform_device_put(musb);
 
 err0:
