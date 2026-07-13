@@ -599,7 +599,7 @@ void kvm_set_cpu_caps(void)
 		0 /* SME */ | F(SEV) | 0 /* VM_PAGE_FLUSH */ | F(SEV_ES) |
 		F(SME_COHERENT));
 
-	kvm_cpu_cap_mask(CPUID_8000_0021_EAX, F(PREFETCHI));
+	kvm_cpu_cap_mask(CPUID_8000_0021_EAX, F(PREFETCHI) | F(AVX512_BMM));
 
 	kvm_cpu_cap_mask(CPUID_8C86_0000_EDX,
 		0 | F(HYGON_SM3) | F(HYGON_SM4));
