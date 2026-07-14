@@ -7,6 +7,7 @@
 #include <linux/bitfield.h>
 #include <linux/kvm.h>
 #include <linux/kvm_host.h>
+#include <linux/maple_tree.h>
 
 #include <asm/fixmap.h>
 #include <asm/kvm_arm.h>
@@ -42,6 +43,32 @@ struct vncr_tlb {
  * will invalidate them more often).
  */
 #define S2_MMU_PER_VCPU		2
+
+/*
+ * Per shadow S2 reverse map (canonical IPA -> nested IPA range) maple tree
+ * payload layout:
+ *
+ * bit  62:     valid, prevents the case where the nested IPA is 0 and turning
+ *              the whole value to 0 (NULL for maple tree)
+ * bits 55-12:  nested IPA bits 55-12
+ * bit  0:      UNKNOWN_IPA bit, 1 indicates we give up on tracking what nested
+ *              IPA maps to this canonical IPA in the shadow stage-2
+ */
+#define VALID_ENTRY		BIT(62)
+#define ADDR_MASK		GENMASK_ULL(55, 12)
+#define UNKNOWN_IPA		BIT(0)
+
+static bool valid_entry(unsigned long entry)
+{
+	WARN_ON(entry & VALID_ENTRY && entry & UNKNOWN_IPA);
+	return entry & VALID_ENTRY;
+}
+
+static bool unknown_ipa_entry(unsigned long entry)
+{
+	WARN_ON(entry & VALID_ENTRY && entry & UNKNOWN_IPA);
+	return entry & UNKNOWN_IPA;
+}
 
 void kvm_init_nested(struct kvm *kvm)
 {
@@ -725,12 +752,66 @@ out:
 	return s2_mmu;
 }
 
+void kvm_record_nested_revmap(gpa_t canonical_ipa, struct kvm_s2_mmu *mmu,
+			      gpa_t nested_ipa, size_t map_size)
+{
+	struct maple_tree *revmap_mt = &mmu->nested_revmap_mt;
+	gpa_t canonical_ipa_end;
+	u64 entry, new_entry = 0;
+
+	lockdep_assert_held_read(&kvm_s2_mmu_to_kvm(mmu)->mmu_lock);
+
+	if (mmu->nested_revmap_broken)
+		return;
+
+	if (WARN_ON(!IS_ALIGNED(canonical_ipa, map_size)))
+		canonical_ipa = ALIGN_DOWN(canonical_ipa, map_size);
+
+	canonical_ipa_end = canonical_ipa + map_size - 1;
+	MA_STATE(mas_rmap, revmap_mt, canonical_ipa, canonical_ipa_end);
+
+	mtree_lock(revmap_mt);
+	entry = xa_to_value(mas_find(&mas_rmap, canonical_ipa_end));
+
+	if (entry) {
+		/* parallel faults can be adding the same mapping */
+		if (valid_entry(entry) &&
+		    mas_rmap.index == canonical_ipa &&
+		    mas_rmap.last == canonical_ipa_end &&
+		    nested_ipa == (entry & ADDR_MASK))
+			goto unlock;
+
+		/*
+		 * Create a UNKNOWN_IPA range that spans all overlapping ranges
+		 * and store it.
+		 */
+		while (entry && mas_rmap.index <= canonical_ipa_end) {
+			canonical_ipa = min(mas_rmap.index, canonical_ipa);
+			canonical_ipa_end = max(mas_rmap.last, canonical_ipa_end);
+			entry = xa_to_value(mas_find(&mas_rmap, canonical_ipa_end));
+		}
+		new_entry |= UNKNOWN_IPA;
+	} else {
+		new_entry |= nested_ipa;
+		new_entry |= VALID_ENTRY;
+	}
+
+	mas_set_range(&mas_rmap, canonical_ipa, canonical_ipa_end);
+	if (mas_store_gfp(&mas_rmap, xa_mk_value(new_entry),
+			  GFP_NOWAIT | __GFP_ACCOUNT))
+		mmu->nested_revmap_broken = true;
+unlock:
+	mtree_unlock(revmap_mt);
+}
+
 void kvm_init_nested_s2_mmu(struct kvm_s2_mmu *mmu)
 {
 	/* CnP being set denotes an invalid entry */
 	mmu->tlb_vttbr = VTTBR_CNP_BIT;
 	mmu->nested_stage2_enabled = false;
 	atomic_set(&mmu->refcnt, 0);
+	mt_init(&mmu->nested_revmap_mt);
+	mmu->nested_revmap_broken = false;
 }
 
 void kvm_vcpu_load_hw_mmu(struct kvm_vcpu *vcpu)
@@ -1076,6 +1157,88 @@ void kvm_nested_s2_wp(struct kvm *kvm)
 	kvm_invalidate_vncr_ipa(kvm, 0, BIT(kvm->arch.mmu.pgt->ia_bits));
 }
 
+static void reset_revmap_and_unmap(struct kvm_s2_mmu *mmu, bool may_block)
+{
+	mtree_destroy(&mmu->nested_revmap_mt);
+	mmu->nested_revmap_broken = false;
+	kvm_stage2_unmap_range(mmu, 0, kvm_phys_size(mmu), may_block);
+}
+
+static void unmap_mmu_cipa_range(struct kvm_s2_mmu *mmu, gpa_t canonical_ipa,
+				 size_t unmap_size, bool may_block)
+{
+	struct maple_tree *revmap_mt = &mmu->nested_revmap_mt;
+	gpa_t canonical_ipa_end = canonical_ipa + unmap_size - 1;
+	size_t entry_size;
+	gpa_t next_addr;
+	u64 entry;
+	MA_STATE(mas_rmap, revmap_mt, canonical_ipa, canonical_ipa_end);
+
+	lockdep_assert_held_write(&kvm_s2_mmu_to_kvm(mmu)->mmu_lock);
+
+	if (mmu->nested_revmap_broken) {
+		reset_revmap_and_unmap(mmu, may_block);
+		return;
+	}
+
+	if (!mmu->nested_stage2_enabled) {
+		kvm_stage2_unmap_range(mmu, canonical_ipa, unmap_size, may_block);
+		return;
+	}
+
+	mtree_lock(revmap_mt);
+	entry = xa_to_value(mas_find(&mas_rmap, canonical_ipa_end));
+
+	while (entry && mas_rmap.index <= canonical_ipa_end) {
+		entry_size = mas_rmap.last - mas_rmap.index + 1;
+		next_addr = mas_rmap.index + entry_size;
+
+		/*
+		 * Give up and invalidate this s2 mmu if the unmap range
+		 * touches any UNKNOWN_IPA range.
+		 */
+		if (unknown_ipa_entry(entry)) {
+			mtree_unlock(revmap_mt);
+			reset_revmap_and_unmap(mmu, may_block);
+			return;
+		}
+
+		/* Ignore the result, failed reverse-map erase is acceptable. */
+		mas_store_gfp(&mas_rmap, NULL, GFP_NOWAIT | __GFP_ACCOUNT);
+
+		mtree_unlock(revmap_mt);
+		kvm_stage2_unmap_range(mmu, entry & ADDR_MASK, entry_size,
+				       may_block);
+		mtree_lock(revmap_mt);
+
+		/*
+		 * Other maple tree operations during preemption could render
+		 * this ma_state invalid, so reset it.
+		 */
+		mas_set_range(&mas_rmap, next_addr, canonical_ipa_end);
+		entry = xa_to_value(mas_find(&mas_rmap, canonical_ipa_end));
+	}
+	mtree_unlock(revmap_mt);
+}
+
+void kvm_unmap_cipa_range_nested(struct kvm *kvm, gpa_t canonical_ipa,
+				 size_t size, bool may_block)
+{
+	int i;
+
+	if (!kvm->arch.nested_mmus_size)
+		return;
+
+	for (i = 0; i < kvm->arch.nested_mmus_size; i++) {
+		struct kvm_s2_mmu *mmu = &kvm->arch.nested_mmus[i];
+
+		if (kvm_s2_mmu_valid(mmu))
+			unmap_mmu_cipa_range(mmu, canonical_ipa, size, may_block);
+	}
+
+	kvm_invalidate_vncr_ipa(kvm, canonical_ipa, canonical_ipa + size);
+}
+
 void kvm_nested_s2_unmap(struct kvm *kvm, bool may_block)
 {
 	int i;
@@ -1089,7 +1252,7 @@ void kvm_nested_s2_unmap(struct kvm *kvm, bool may_block)
 		struct kvm_s2_mmu *mmu = &kvm->arch.nested_mmus[i];
 
 		if (kvm_s2_mmu_valid(mmu))
-			kvm_stage2_unmap_range(mmu, 0, kvm_phys_size(mmu), may_block);
+			reset_revmap_and_unmap(mmu, may_block);
 	}
 
 	kvm_invalidate_vncr_ipa(kvm, 0, BIT(kvm->arch.mmu.pgt->ia_bits));
@@ -1968,7 +2131,7 @@ void check_nested_vcpu_requests(struct kvm_vcpu *vcpu)
 
 		write_lock(&vcpu->kvm->mmu_lock);
 		if (mmu->pending_unmap) {
-			kvm_stage2_unmap_range(mmu, 0, kvm_phys_size(mmu), true);
+			reset_revmap_and_unmap(mmu, true);
 			mmu->pending_unmap = false;
 		}
 		write_unlock(&vcpu->kvm->mmu_lock);
