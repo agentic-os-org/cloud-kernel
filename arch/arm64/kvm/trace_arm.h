@@ -390,6 +390,33 @@ TRACE_EVENT(kvm_forward_sysreg_trap,
 		      sys_reg_Op2(__entry->sysreg))
 );
 
+TRACE_EVENT(kvm_nested_revmap_broken,
+	    TP_PROTO(int mmu_idx, unsigned long canonical_ipa,
+		     unsigned long canonical_ipa_end, unsigned long nested_ipa,
+		     unsigned long revmap_entry),
+	    TP_ARGS(mmu_idx, canonical_ipa, canonical_ipa_end, nested_ipa, revmap_entry),
+
+	    TP_STRUCT__entry(
+		__field(int,			mmu_idx)
+		__field(unsigned long,		canonical_ipa)
+		__field(unsigned long,		nested_ipa)
+		__field(size_t,			size)
+		__field(unsigned long,		revmap_entry)
+	    ),
+
+	    TP_fast_assign(
+		__entry->mmu_idx = mmu_idx;
+		__entry->canonical_ipa = canonical_ipa;
+		__entry->nested_ipa = nested_ipa;
+		__entry->size = canonical_ipa_end - canonical_ipa + 1;
+		__entry->revmap_entry = revmap_entry;
+	    ),
+
+	    TP_printk("mmu idx: %d, cipa: 0x%016lx, nipa: 0x%016lx, size: 0x%016lx, entry: %016lx",
+		      __entry->mmu_idx, __entry->canonical_ipa, __entry->nested_ipa,
+		      __entry->size, __entry->revmap_entry)
+);
+
 #endif /* _TRACE_ARM_ARM64_KVM_H */
 
 #undef TRACE_INCLUDE_PATH

@@ -17,6 +17,7 @@
 #include <asm/sysreg.h>
 
 #include "sys_regs.h"
+#include "trace.h"
 
 struct vncr_tlb {
 	/* The guest's VNCR_EL2 */
@@ -798,8 +799,12 @@ void kvm_record_nested_revmap(gpa_t canonical_ipa, struct kvm_s2_mmu *mmu,
 
 	mas_set_range(&mas_rmap, canonical_ipa, canonical_ipa_end);
 	if (mas_store_gfp(&mas_rmap, xa_mk_value(new_entry),
-			  GFP_NOWAIT | __GFP_ACCOUNT))
+			  GFP_NOWAIT | __GFP_ACCOUNT)) {
+		trace_kvm_nested_revmap_broken(mmu - mmu->arch->nested_mmus,
+					       canonical_ipa, canonical_ipa_end,
+					       nested_ipa, new_entry);
 		mmu->nested_revmap_broken = true;
+	}
 unlock:
 	mtree_unlock(revmap_mt);
 }
