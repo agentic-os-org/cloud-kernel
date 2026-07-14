@@ -46,14 +46,14 @@ struct vncr_tlb {
 #define S2_MMU_PER_VCPU		2
 
 /*
- * Per shadow S2 reverse map (canonical IPA -> nested IPA range) maple tree
- * payload layout:
+ * Per shadow S2 reverse & direct map maple tree payload layout:
  *
- * bit  62:     valid, prevents the case where the nested IPA is 0 and turning
+ * bit  62:     valid, prevents the case where the address is 0 and turning
  *              the whole value to 0 (NULL for maple tree)
- * bits 55-12:  nested IPA bits 55-12
+ * bits 55-12:  {nested, canonical} IPA bits 55-12
  * bit  0:      UNKNOWN_IPA bit, 1 indicates we give up on tracking what nested
- *              IPA maps to this canonical IPA in the shadow stage-2
+ *              IPA maps to this canonical IPA in the shadow stage-2, only used
+ *              in reverse map
  */
 #define VALID_ENTRY		BIT(62)
 #define ADDR_MASK		GENMASK_ULL(55, 12)
@@ -127,12 +127,18 @@ int kvm_vcpu_init_nested(struct kvm_vcpu *vcpu)
 	swap(kvm->arch.nested_mmus, tmp);
 
 	/*
-	 * If we went through a realocation, adjust the MMU back-pointers in
-	 * the previously initialised kvm_pgtable structures.
+	 * If we went through a reallocation, adjust pointers in the
+	 * previously initialised MMUs.
 	 */
-	if (kvm->arch.nested_mmus != tmp)
-		for (int i = 0; i < kvm->arch.nested_mmus_size; i++)
-			kvm->arch.nested_mmus[i].pgt->mmu = &kvm->arch.nested_mmus[i];
+	if (kvm->arch.nested_mmus != tmp) {
+		for (int i = 0; i < kvm->arch.nested_mmus_size; i++) {
+			struct kvm_s2_mmu *mmu = &kvm->arch.nested_mmus[i];
+
+			mmu->pgt->mmu = &kvm->arch.nested_mmus[i];
+			mt_set_external_lock(&mmu->nested_direct_mt,
+					     &mmu->nested_revmap_mt.ma_lock);
+		}
+	}
 
 	for (int i = kvm->arch.nested_mmus_size; !ret && i < num_mmus; i++)
 		ret = init_nested_s2_mmu(kvm, &kvm->arch.nested_mmus[i]);
@@ -756,35 +762,60 @@ out:
 void kvm_remove_nested_revmap(struct kvm_s2_mmu *mmu, u64 nested_ipa, size_t size)
 {
 	/*
-	 * Iterate through the reverse map of this MMU and remove all
-	 * !UNKNOWN_IPA entries that fall strictly within [nested_ipa, nested_ipa
-	 * + size).
+	 * Remove the reverse map and its corresponding direct map together,
+	 * when these conditions are met:
+	 *
+	 * 1. The reverse map is valid (not UNKNOWN_IPA).
+	 * 2. The reverse map is completely covered by the TLBI range.
+	 * 3. The reverse map and the direct map are symmetric, i.e. they map to
+	 *    each other, with the same size.
+	 *
+	 * The symmetry check ensures we don't remove the wrong reverse mappings.
 	 */
 	struct maple_tree *revmap_mt = &mmu->nested_revmap_mt;
-	u64 entry_val, nested_ipa_end = nested_ipa + size;
-	u64 this_nested_ipa, this_nested_ipa_end;
-	size_t revmap_size;
-	void *entry;
-	MA_STATE(mas_rmap, revmap_mt, 0, ULONG_MAX);
+	struct maple_tree *direct_mt = &mmu->nested_direct_mt;
+	gpa_t nested_ipa_end = nested_ipa + size - 1;
+	u64 entry_dmap;
+	struct mapping {
+		u64 from;
+		u64 to;
+		size_t size;
+	};
+	MA_STATE(mas_dmap, direct_mt, nested_ipa, nested_ipa_end);
 
 	mtree_lock(revmap_mt);
-	mas_for_each(&mas_rmap, entry, ULONG_MAX) {
-		entry_val = xa_to_value(entry);
-		if (unknown_ipa_entry(entry_val))
-			continue;
+	entry_dmap = xa_to_value(mas_find(&mas_dmap, nested_ipa_end));
 
-		revmap_size = mas_rmap.last - mas_rmap.index + 1;
-		this_nested_ipa = entry_val & ADDR_MASK;
-		this_nested_ipa_end = this_nested_ipa + revmap_size;
+	while (entry_dmap && mas_dmap.index <= nested_ipa_end) {
+		struct mapping dmap, rmap;
+		u64 entry_rmap;
 
-		if (this_nested_ipa >= nested_ipa &&
-		    this_nested_ipa_end <= nested_ipa_end) {
-			/*
-			 * Ignore result, failure to remove a reverse mapping
-			 * only causes extra unmaps later.
-			 */
+		dmap.from = mas_dmap.index;
+		dmap.to = entry_dmap & ADDR_MASK;
+		dmap.size = mas_dmap.last - mas_dmap.index + 1;
+
+		/*
+		 * Use the canonical IPA range to find the corresponding entry
+		 * in the reverse map.
+		 */
+		MA_STATE(mas_rmap, revmap_mt, dmap.to, dmap.to + dmap.size - 1);
+		entry_rmap = xa_to_value(mas_find(&mas_rmap,
+						  dmap.to + dmap.size - 1));
+
+		rmap.from = mas_rmap.index;
+		rmap.to = entry_rmap & ADDR_MASK;
+		rmap.size = mas_rmap.last - mas_rmap.index + 1;
+
+		if (entry_rmap && valid_entry(entry_rmap) &&
+		    dmap.from >= nested_ipa &&
+		    dmap.from + dmap.size - 1 <= nested_ipa_end &&
+		    dmap.from == rmap.to &&
+		    rmap.from == dmap.to &&
+		    dmap.size == rmap.size) {
+			mas_store_gfp(&mas_dmap, NULL, GFP_NOWAIT | __GFP_ACCOUNT);
 			mas_store_gfp(&mas_rmap, NULL, GFP_NOWAIT | __GFP_ACCOUNT);
 		}
+		entry_dmap = xa_to_value(mas_find(&mas_dmap, nested_ipa_end));
 	}
 	mtree_unlock(revmap_mt);
 }
@@ -793,7 +824,8 @@ void kvm_record_nested_revmap(gpa_t canonical_ipa, struct kvm_s2_mmu *mmu,
 			      gpa_t nested_ipa, size_t map_size)
 {
 	struct maple_tree *revmap_mt = &mmu->nested_revmap_mt;
-	gpa_t canonical_ipa_end;
+	struct maple_tree *direct_mt = &mmu->nested_direct_mt;
+	gpa_t canonical_ipa_end, nested_ipa_end;
 	u64 entry, new_entry = 0;
 
 	lockdep_assert_held_read(&kvm_s2_mmu_to_kvm(mmu)->mmu_lock);
@@ -805,7 +837,9 @@ void kvm_record_nested_revmap(gpa_t canonical_ipa, struct kvm_s2_mmu *mmu,
 		canonical_ipa = ALIGN_DOWN(canonical_ipa, map_size);
 
 	canonical_ipa_end = canonical_ipa + map_size - 1;
+	nested_ipa_end = nested_ipa + map_size - 1;
 	MA_STATE(mas_rmap, revmap_mt, canonical_ipa, canonical_ipa_end);
+	MA_STATE(mas_dmap, direct_mt, nested_ipa, nested_ipa_end);
 
 	mtree_lock(revmap_mt);
 	entry = xa_to_value(mas_find(&mas_rmap, canonical_ipa_end));
@@ -841,6 +875,14 @@ void kvm_record_nested_revmap(gpa_t canonical_ipa, struct kvm_s2_mmu *mmu,
 					       nested_ipa, new_entry);
 		mmu->nested_revmap_broken = true;
 	}
+
+	/*
+	 * Add direct map but ignore the result, missing a direct map does not
+	 * affect correctness.
+	 */
+	if (valid_entry(new_entry) && !mmu->nested_revmap_broken)
+		mas_store_gfp(&mas_dmap, xa_mk_value(canonical_ipa | VALID_ENTRY),
+			      GFP_NOWAIT | __GFP_ACCOUNT);
 unlock:
 	mtree_unlock(revmap_mt);
 }
@@ -852,6 +894,9 @@ void kvm_init_nested_s2_mmu(struct kvm_s2_mmu *mmu)
 	mmu->nested_stage2_enabled = false;
 	atomic_set(&mmu->refcnt, 0);
 	mt_init(&mmu->nested_revmap_mt);
+	mt_init_flags(&mmu->nested_direct_mt, MT_FLAGS_LOCK_EXTERN);
+	mt_set_external_lock(&mmu->nested_direct_mt,
+			     &mmu->nested_revmap_mt.ma_lock);
 	mmu->nested_revmap_broken = false;
 }
 
@@ -1200,7 +1245,10 @@ void kvm_nested_s2_wp(struct kvm *kvm)
 
 static void reset_revmap_and_unmap(struct kvm_s2_mmu *mmu, bool may_block)
 {
-	mtree_destroy(&mmu->nested_revmap_mt);
+	mtree_lock(&mmu->nested_revmap_mt);
+	__mt_destroy(&mmu->nested_revmap_mt);
+	__mt_destroy(&mmu->nested_direct_mt);
+	mtree_unlock(&mmu->nested_revmap_mt);
 	mmu->nested_revmap_broken = false;
 	kvm_stage2_unmap_range(mmu, 0, kvm_phys_size(mmu), may_block);
 }
@@ -1208,12 +1256,15 @@ static void reset_revmap_and_unmap(struct kvm_s2_mmu *mmu, bool may_block)
 static void unmap_mmu_cipa_range(struct kvm_s2_mmu *mmu, gpa_t canonical_ipa,
 				 size_t unmap_size, bool may_block)
 {
+	struct maple_tree *direct_mt = &mmu->nested_direct_mt;
 	struct maple_tree *revmap_mt = &mmu->nested_revmap_mt;
 	gpa_t canonical_ipa_end = canonical_ipa + unmap_size - 1;
+	gpa_t nested_ipa, nested_ipa_end;
 	size_t entry_size;
 	gpa_t next_addr;
 	u64 entry;
 	MA_STATE(mas_rmap, revmap_mt, canonical_ipa, canonical_ipa_end);
+	MA_STATE(mas_dmap, direct_mt, 0, ULONG_MAX);
 
 	lockdep_assert_held_write(&kvm_s2_mmu_to_kvm(mmu)->mmu_lock);
 
@@ -1246,6 +1297,15 @@ static void unmap_mmu_cipa_range(struct kvm_s2_mmu *mmu, gpa_t canonical_ipa,
 
 		/* Ignore the result, failed reverse-map erase is acceptable. */
 		mas_store_gfp(&mas_rmap, NULL, GFP_NOWAIT | __GFP_ACCOUNT);
+
+		/*
+		 * Try to also remove the direct map; it is okay if this fails,
+		 * as we check direct-map consistency in kvm_remove_nested_revmap().
+		 */
+		nested_ipa = entry & ADDR_MASK;
+		nested_ipa_end = nested_ipa + entry_size - 1;
+		mas_set_range(&mas_dmap, nested_ipa, nested_ipa_end);
+		mas_store_gfp(&mas_dmap, NULL, GFP_NOWAIT | __GFP_ACCOUNT);
 
 		mtree_unlock(revmap_mt);
 		kvm_stage2_unmap_range(mmu, entry & ADDR_MASK, entry_size,
