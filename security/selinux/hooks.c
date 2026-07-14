@@ -3715,7 +3715,8 @@ static int default_noexec __ro_after_init;
 
 static int __file_map_prot_check(const struct cred *cred,
 				 struct file *file, unsigned long prot,
-				 bool shared, bool ovl_user_file)
+				 bool shared, bool ovl_user_file,
+				 bool mounter_check)
 {
 	struct inode *inode = NULL;
 	u32 sid = cred_sid(cred);
@@ -3725,7 +3726,13 @@ static int __file_map_prot_check(const struct cred *cred,
 		inode = ovl_user_file ?
 			d_backing_inode(file->f_path.dentry) : file_inode(file);
 
-	if (default_noexec &&
+	/*
+	 * The execmem check gates the ability of the calling task to get
+	 * an executable mapping in general; it does not pertain to the
+	 * file itself and must only be done against the credentials of
+	 * the task that is calling mmap()/mprotect(), not the mounter's.
+	 */
+	if (!mounter_check && default_noexec &&
 	    (prot & PROT_EXEC) && (!file || IS_PRIVATE(inode) ||
 				   (!shared && (prot & PROT_WRITE)))) {
 		/*
@@ -3758,12 +3765,6 @@ error:
 	return rc;
 }
 
-static int file_map_prot_check(struct file *file, unsigned long prot, int shared)
-{
-	return __file_map_prot_check(current_cred(), file, prot,
-				     shared, false);
-}
-
 static int selinux_mmap_addr(unsigned long addr)
 {
 	int rc = 0;
@@ -3784,6 +3785,15 @@ static int selinux_mmap_file(struct file *file, unsigned long reqprot,
 	struct common_audit_data ad;
 	int rc;
 
+	/*
+	 * When overlayfs mmap()s the real file on behalf of the caller,
+	 * this hook runs under the mounter's credentials with the real
+	 * file; the execmem check must then be skipped, since it gates
+	 * the calling task, not the mounter.
+	 */
+	bool ovl_mounter_check = is_overlayfs_real_file(file) &&
+				 current_cred() == file->f_cred;
+
 	if (file) {
 		ad.type = LSM_AUDIT_DATA_FILE;
 		ad.u.file = file;
@@ -3796,8 +3806,9 @@ static int selinux_mmap_file(struct file *file, unsigned long reqprot,
 	if (checkreqprot_get(&selinux_state))
 		prot = reqprot;
 
-	return file_map_prot_check(file, prot,
-				   (flags & MAP_TYPE) == MAP_SHARED);
+	return __file_map_prot_check(current_cred(), file, prot,
+				     (flags & MAP_TYPE) == MAP_SHARED,
+				     false, ovl_mounter_check);
 }
 
 static int selinux_file_mprotect(struct vm_area_struct *vma,
@@ -3856,17 +3867,19 @@ static int selinux_file_mprotect(struct vm_area_struct *vma,
 	/* user-file check with the caller's creds; for an overlayfs real
 	 * file the user (overlay) inode is the check target
 	 */
-	rc = __file_map_prot_check(cred, file, prot, shared, ovl_file);
+	rc = __file_map_prot_check(cred, file, prot, shared, ovl_file,
+				   false);
 	if (rc)
 		return rc;
 
 	if (ovl_file) {
 		/* mounter check against the real file, mirroring the
 		 * mmap() path where ovl_mmap() calls the real file's
-		 * mmap under the mounter's credentials
+		 * mmap under the mounter's credentials; the execmem
+		 * check is skipped for the mounter's credentials
 		 */
 		rc = __file_map_prot_check(file->f_cred, file, prot, shared,
-					   false);
+					   false, true);
 		if (rc)
 			return rc;
 	}
