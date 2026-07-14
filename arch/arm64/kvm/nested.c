@@ -753,6 +753,42 @@ out:
 	return s2_mmu;
 }
 
+void kvm_remove_nested_revmap(struct kvm_s2_mmu *mmu, u64 nested_ipa, size_t size)
+{
+	/*
+	 * Iterate through the reverse map of this MMU and remove all
+	 * !UNKNOWN_IPA entries that fall strictly within [nested_ipa, nested_ipa
+	 * + size).
+	 */
+	struct maple_tree *revmap_mt = &mmu->nested_revmap_mt;
+	u64 entry_val, nested_ipa_end = nested_ipa + size;
+	u64 this_nested_ipa, this_nested_ipa_end;
+	size_t revmap_size;
+	void *entry;
+	MA_STATE(mas_rmap, revmap_mt, 0, ULONG_MAX);
+
+	mtree_lock(revmap_mt);
+	mas_for_each(&mas_rmap, entry, ULONG_MAX) {
+		entry_val = xa_to_value(entry);
+		if (unknown_ipa_entry(entry_val))
+			continue;
+
+		revmap_size = mas_rmap.last - mas_rmap.index + 1;
+		this_nested_ipa = entry_val & ADDR_MASK;
+		this_nested_ipa_end = this_nested_ipa + revmap_size;
+
+		if (this_nested_ipa >= nested_ipa &&
+		    this_nested_ipa_end <= nested_ipa_end) {
+			/*
+			 * Ignore result, failure to remove a reverse mapping
+			 * only causes extra unmaps later.
+			 */
+			mas_store_gfp(&mas_rmap, NULL, GFP_NOWAIT | __GFP_ACCOUNT);
+		}
+	}
+	mtree_unlock(revmap_mt);
+}
+
 void kvm_record_nested_revmap(gpa_t canonical_ipa, struct kvm_s2_mmu *mmu,
 			      gpa_t nested_ipa, size_t map_size)
 {
