@@ -8531,6 +8531,7 @@ static ssize_t memory_max_write(struct kernfs_open_file *of,
 	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
 	unsigned int nr_reclaims = MAX_RECLAIM_RETRIES;
 	bool drained = false;
+	unsigned long old_max;
 	unsigned long max;
 	int err;
 
@@ -8539,7 +8540,7 @@ static ssize_t memory_max_write(struct kernfs_open_file *of,
 	if (err)
 		return err;
 
-	xchg(&memcg->memory.max, max);
+	old_max = xchg(&memcg->memory.max, max);
 
 	for (;;) {
 		unsigned long nr_pages = page_counter_read(&memcg->memory);
@@ -8575,6 +8576,10 @@ static ssize_t memory_max_write(struct kernfs_open_file *of,
 		queue_work(memcg_wmark_wq, &memcg->wmark_work);
 
 	memcg_wb_domain_size_changed(memcg);
+
+	if (max > old_max)
+		memcg_oom_recover(memcg);
+
 	return nbytes;
 }
 
