@@ -599,6 +599,8 @@ void kvm_set_cpu_caps(void)
 		0 /* SME */ | F(SEV) | 0 /* VM_PAGE_FLUSH */ | F(SEV_ES) |
 		F(SME_COHERENT));
 
+	kvm_cpu_cap_mask(CPUID_8000_0021_EAX, F(PREFETCHI) | F(AVX512_BMM));
+
 	kvm_cpu_cap_mask(CPUID_8C86_0000_EDX,
 		0 | F(HYGON_SM3) | F(HYGON_SM4));
 
@@ -972,7 +974,7 @@ static inline int __do_cpuid_func(struct kvm_cpuid_array *array, u32 function)
 		entry->edx = 0;
 		break;
 	case 0x80000000:
-		entry->eax = min(entry->eax, 0x8000001f);
+		entry->eax = min(entry->eax, 0x80000021);
 		break;
 	case 0x80000001:
 		cpuid_entry_override(entry, CPUID_8000_0001_EDX);
@@ -1029,6 +1031,10 @@ static inline int __do_cpuid_func(struct kvm_cpuid_array *array, u32 function)
 			entry->eax = entry->ebx = entry->ecx = entry->edx = 0;
 		else
 			cpuid_entry_override(entry, CPUID_8000_001F_EAX);
+		break;
+	case 0x80000021:
+		entry->ebx = entry->ecx = entry->edx = 0;
+		cpuid_entry_override(entry, CPUID_8000_0021_EAX);
 		break;
 	case 0x8C860000:
 		entry->eax = 0x8C860000;
