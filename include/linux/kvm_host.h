@@ -742,7 +742,11 @@ static inline bool kvm_arch_has_private_mem(struct kvm *kvm)
 #ifndef kvm_arch_has_readonly_mem
 static inline bool kvm_arch_has_readonly_mem(struct kvm *kvm)
 {
-	return IS_ENABLED(CONFIG_HAVE_KVM_READONLY_MEM);
+#if defined(__KVM_HAVE_READONLY_MEM)
+	return true;
+#else
+	return false;
+#endif
 }
 #endif
 
