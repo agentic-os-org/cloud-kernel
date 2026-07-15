@@ -315,7 +315,7 @@ static void copy_compressed_segment(struct compressed_bio *cb,
 	while (*cur_in < orig_in + len) {
 		struct page *cur_page;
 		u32 copy_len = min_t(u32, PAGE_SIZE - offset_in_page(*cur_in),
-					  orig_in + len - *cur_in);
+				          orig_in + len - *cur_in);
 
 		ASSERT(copy_len);
 		cur_page = cb->compressed_pages[*cur_in / PAGE_SIZE];
@@ -436,7 +436,8 @@ int lzo_decompress(struct list_head *ws, const u8 *data_in,
 	char *kaddr;
 	unsigned long bytes;
 
-	if (srclen < LZO_LEN || srclen > max_segment_len + LZO_LEN * 2)
+	if (unlikely(srclen <= LZO_LEN * 2 ||
+		     srclen > max_segment_len + LZO_LEN * 2))
 		return -EUCLEAN;
 
 	in_len = read_compress_length(data_in);
