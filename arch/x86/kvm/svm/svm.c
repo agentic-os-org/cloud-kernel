@@ -515,7 +515,7 @@ static int svm_hardware_enable(void)
 		return -EINVAL;
 	}
 
-	sd->asid_generation = 1;
+	sd->asid_generation++;
 	sd->max_asid = cpuid_ebx(SVM_CPUID_FUNC) - 1;
 	sd->next_asid = sd->max_asid + 1;
 	sd->min_asid = max_sev_asid + 1;
