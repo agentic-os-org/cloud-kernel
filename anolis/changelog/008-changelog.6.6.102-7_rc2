@@ -1,0 +1,39 @@
+* Thu Jul 16 2026 Tianchen Ding <dtcccc@linux.alibaba.com> [6.6.102-7_rc2%%DIST%%]
+- anolis: changelog: sync and consolidate historical changelogs (Tianchen Ding)
+- io_uring: fix retry handling off iowq (Pavel Begunkov)
+- io_uring/rw: ensure reissue path is correctly handled for IOPOLL (Jens Axboe)
+- io_uring/rw: don't gate retry on completion context (Jens Axboe)
+- io_uring/rw: handle -EAGAIN retry at IO completion time (Jens Axboe)
+- anolis: io_uring/rw: fix imu union misuse in is_kbuf check (Ferry Meng)
+- io_uring/rsrc: don't use blk_rq_nr_phys_segments() as number of bvecs (Caleb Sander Mateos)
+- io_uring/rsrc: don't rely on user vaddr alignment (Pavel Begunkov)
+- io_uring/rsrc: fix folio unpinning (Pavel Begunkov)
+- io_uring: fix potential page leak in io_sqe_buffer_register() (Penglei Jiang)
+- io_uring/ublk: report error when unregister operation fails (Caleb Sander Mateos)
+- io_uring: add support for kernel registered bvecs (Keith Busch)
+- io_uring/rsrc: change ubuf->ubuf_end to length tracking (Jens Axboe)
+- io_uring/rsrc: get rid of io_mapped_ubuf->folio_mask (Jens Axboe)
+- io_uring/rsrc: add reference count to struct io_mapped_ubuf (Jens Axboe)
+- io_uring/rsrc: clear 'slot' entry upfront (Jens Axboe)
+- io_uring/rsrc: enable multi-hugepage buffer coalescing (Chenliang Li)
+- io_uring/rsrc: store folio shift and mask into imu (Chenliang Li)
+- anolis: mm: pagecache_limit: use rate-limited stats flush to reduce lock contention (Weilin Tong)
+- KVM: x86: Fix shadow paging use-after-free due to unexpected role (Paolo Bonzini)
+- eventpoll: fix ep_remove struct eventpoll / struct file UAF (Christian Brauner) {CVE-2026-46242}
+- eventpoll: move epi_fget() up (Christian Brauner) {CVE-2026-46242}
+- eventpoll: rename ep_remove_safe() back to ep_remove() (Christian Brauner) {CVE-2026-46242}
+- eventpoll: drop vestigial __ prefix from ep_remove_{file,epi}() (Christian Brauner) {CVE-2026-46242}
+- eventpoll: kill __ep_remove() (Christian Brauner) {CVE-2026-46242}
+- eventpoll: split __ep_remove() (Christian Brauner) {CVE-2026-46242}
+- eventpoll: use hlist_is_singular_node() in __ep_remove() (Christian Brauner) {CVE-2026-46242}
+- file: add fput() cleanup helper (Christian Brauner) {CVE-2026-46242}
+- locking/rtmutex: Skip remove_waiter() when waiter is not enqueued (Davidlohr Bueso) {CVE-2026-53166}
+- anolis: virtio_net: align virtnet_rq_dma to cache line for DMA address alignment (Wen Gu)
+- anolis: x86/stacktrace: Mark arch_stack_walk() and unwinder functions notrace (Yuanhe Shu)
+- anolis: selftest/cgroup: fix spurious test_cpuset_prs.sh failure due to timing (Tianchen Ding)
+- anolis: selftests: iommu: fix macro redefinition warnings (Tianchen Ding)
+- vfio: selftests: Drop <uapi/linux/types.h> includes (David Matlack)
+- tools include: Add definitions for __aligned_{l,b}e64 (David Matlack)
+- selftests/hid: ensure we can compile the tests on kernels pre-6.3 (Benjamin Tissoires)
+- dt: dt-extract-compatibles: Add flag for driver matching compatibles (Nícolas F. R. A. Prado)
+
