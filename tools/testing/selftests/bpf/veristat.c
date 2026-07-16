@@ -142,6 +142,7 @@ static struct env {
 	bool debug;
 	bool quiet;
 	bool force_checkpoints;
+	bool force_reg_invariants;
 	enum resfmt out_fmt;
 	bool show_version;
 	bool comparison_mode;
@@ -210,8 +211,6 @@ static const struct argp_option opts[] = {
 	{ "log-level", 'l', "LEVEL", 0, "Verifier log level (default 0 for normal mode, 1 for verbose mode)" },
 	{ "log-fixed", OPT_LOG_FIXED, NULL, 0, "Disable verifier log rotation" },
 	{ "log-size", OPT_LOG_SIZE, "BYTES", 0, "Customize verifier log size (default to 16MB)" },
-	{ "test-states", 't', NULL, 0,
-	  "Force frequent BPF verifier state checkpointing (set BPF_F_TEST_STATE_FREQ program flag)" },
 	{ "quiet", 'q', NULL, 0, "Quiet mode" },
 	{ "emit", 'e', "SPEC", 0, "Specify stats to be emitted" },
 	{ "sort", 's', "SPEC", 0, "Specify sort order" },
@@ -219,6 +218,10 @@ static const struct argp_option opts[] = {
 	{ "compare", 'C', NULL, 0, "Comparison mode" },
 	{ "replay", 'R', NULL, 0, "Replay mode" },
 	{ "filter", 'f', "FILTER", 0, "Filter expressions (or @filename for file with expressions)." },
+	{ "test-states", 't', NULL, 0,
+	  "Force frequent BPF verifier state checkpointing (set BPF_F_TEST_STATE_FREQ program flag)" },
+	{ "test-reg-invariants", 'r', NULL, 0,
+	  "Force BPF verifier failure on register invariant violation (BPF_F_TEST_REG_INVARIANTS program flag)" },
 	{},
 };
 
@@ -289,6 +292,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 't':
 		env.force_checkpoints = true;
+		break;
+	case 'r':
+		env.force_reg_invariants = true;
 		break;
 	case 'C':
 		env.comparison_mode = true;
@@ -997,6 +1003,8 @@ static int process_prog(const char *filename, struct bpf_object *obj, struct bpf
 
 	if (env.force_checkpoints)
 		bpf_program__set_flags(prog, bpf_program__flags(prog) | BPF_F_TEST_STATE_FREQ);
+	if (env.force_reg_invariants)
+		bpf_program__set_flags(prog, bpf_program__flags(prog) | BPF_F_TEST_REG_INVARIANTS);
 
 	err = bpf_object__load(obj);
 	env.progs_processed++;
