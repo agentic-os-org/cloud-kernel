@@ -4770,8 +4770,8 @@ static inline struct page *
 __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 						struct alloc_context *ac)
 {
-	bool can_direct_reclaim = gfp_mask & __GFP_DIRECT_RECLAIM;
-	bool can_compact = can_direct_reclaim && gfp_compaction_allowed(gfp_mask);
+	bool can_direct_reclaim;
+	bool can_compact;
 	bool nofail = gfp_mask & __GFP_NOFAIL;
 	const bool costly_order = order > PAGE_ALLOC_COSTLY_ORDER;
 	struct page *page = NULL;
@@ -4787,6 +4787,24 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 	bool compact_first = false;
 	bool can_retry_reserves = true;
 	bool can_pre_oom = false;
+
+	/*
+	 * Costly __GFP_NORETRY allocations are opportunistic: the caller
+	 * can fall back to smaller orders.  Don't stall on direct reclaim
+	 * or compaction; clearing __GFP_DIRECT_RECLAIM makes the entire
+	 * slowpath treat this as a non-blocking request.  kswapd will wake
+	 * kcompactd as needed for background defragmentation.
+	 *
+	 * Require __GFP_KSWAPD_RECLAIM so kswapd can coordinate background
+	 * defragmentation; THP (GFP_TRANSHUGE) lacks it and relies on
+	 * direct compaction, so must be excluded.
+	 */
+	if (costly_order && (gfp_mask & __GFP_NORETRY) &&
+	    (gfp_mask & __GFP_KSWAPD_RECLAIM))
+		gfp_mask &= ~__GFP_DIRECT_RECLAIM;
+
+	can_direct_reclaim = gfp_mask & __GFP_DIRECT_RECLAIM;
+	can_compact = can_direct_reclaim && gfp_compaction_allowed(gfp_mask);
 
 	if (unlikely(nofail)) {
 		/*
