@@ -48,13 +48,13 @@ static int find_available_queue_slot(struct process_queue_manager *pqm,
 	unsigned long found;
 
 	found = find_first_zero_bit(pqm->queue_slot_bitmap,
-			KFD_MAX_NUM_OF_QUEUES_PER_PROCESS);
+		KFD_MAX_NUM_OF_QUEUES_PER_PROCESS);
 
 	pr_debug("The new slot id %lu\n", found);
 
 	if (found >= KFD_MAX_NUM_OF_QUEUES_PER_PROCESS) {
 		pr_info("Cannot open more queues for process with pasid 0x%x\n",
-				pqm->process->pasid);
+			pqm->process->pasid);
 		return -ENOMEM;
 	}
 
@@ -190,11 +190,11 @@ static int init_user_queue(struct process_queue_manager *pqm,
 }
 
 int pqm_create_queue(struct process_queue_manager *pqm,
-			    struct kfd_dev *dev,
-			    struct file *f,
-			    struct queue_properties *properties,
-			    unsigned int *qid,
-			    uint32_t *p_doorbell_offset_in_process)
+		    struct kfd_dev *dev,
+		    struct file *f,
+		    struct queue_properties *properties,
+		    unsigned int *qid,
+		    uint32_t *p_doorbell_offset_in_process)
 {
 	int retval;
 	struct kfd_process_device *pdd;
@@ -390,7 +390,7 @@ int pqm_destroy_queue(struct process_queue_manager *pqm, unsigned int qid)
 
 		if (pqn->q->gws) {
 			amdgpu_amdkfd_remove_gws_from_process(pqm->process->kgd_process_info,
-				pqn->q->gws);
+			pqn->q->gws);
 			pdd->qpd.num_gws = 0;
 		}
 
@@ -429,7 +429,7 @@ int pqm_update_queue(struct process_queue_manager *pqm, unsigned int qid,
 	pqn->q->properties.priority = p->priority;
 
 	retval = pqn->q->device->dqm->ops.update_queue(pqn->q->device->dqm,
-							pqn->q);
+						pqn->q);
 	if (retval != 0)
 		return retval;
 
@@ -457,7 +457,7 @@ int pqm_set_cu_mask(struct process_queue_manager *pqm, unsigned int qid,
 	pqn->q->properties.cu_mask = p->cu_mask;
 
 	retval = pqn->q->device->dqm->ops.update_queue(pqn->q->device->dqm,
-							pqn->q);
+						pqn->q);
 	if (retval != 0)
 		return retval;
 
@@ -465,8 +465,8 @@ int pqm_set_cu_mask(struct process_queue_manager *pqm, unsigned int qid,
 }
 
 struct kernel_queue *pqm_get_kernel_queue(
-					struct process_queue_manager *pqm,
-					unsigned int qid)
+				struct process_queue_manager *pqm,
+				unsigned int qid)
 {
 	struct process_queue_node *pqn;
 
@@ -478,7 +478,7 @@ struct kernel_queue *pqm_get_kernel_queue(
 }
 
 struct queue *pqm_get_user_queue(struct process_queue_manager *pqm,
-					unsigned int qid)
+				unsigned int qid)
 {
 	struct process_queue_node *pqn;
 
@@ -487,10 +487,10 @@ struct queue *pqm_get_user_queue(struct process_queue_manager *pqm,
 }
 
 int pqm_get_wave_state(struct process_queue_manager *pqm,
-		       unsigned int qid,
-		       void __user *ctl_stack,
-		       u32 *ctl_stack_used_size,
-		       u32 *save_area_used_size)
+	       unsigned int qid,
+	       void __user *ctl_stack,
+	       u32 *ctl_stack_used_size,
+	       u32 *save_area_used_size)
 {
 	struct process_queue_node *pqn;
 
@@ -502,10 +502,10 @@ int pqm_get_wave_state(struct process_queue_manager *pqm,
 	}
 
 	return pqn->q->device->dqm->ops.get_wave_state(pqn->q->device->dqm,
-						       pqn->q,
-						       ctl_stack,
-						       ctl_stack_used_size,
-						       save_area_used_size);
+			       pqn->q,
+			       ctl_stack,
+			       ctl_stack_used_size,
+			       save_area_used_size);
 }
 
 #if defined(CONFIG_DEBUG_FS)
@@ -536,7 +536,7 @@ int pqm_debugfs_mqds(struct seq_file *m, void *data)
 				break;
 			default:
 				seq_printf(m,
-				"  Bad user queue type %d on device %x\n",
+			"  Bad user queue type %d on device %x\n",
 					   q->properties.type, q->device->id);
 				continue;
 			}
@@ -551,7 +551,7 @@ int pqm_debugfs_mqds(struct seq_file *m, void *data)
 				break;
 			default:
 				seq_printf(m,
-				"  Bad kernel queue type %d on device %x\n",
+			"  Bad kernel queue type %d on device %x\n",
 					   q->properties.type,
 					   pqn->kq->dev->id);
 				continue;
