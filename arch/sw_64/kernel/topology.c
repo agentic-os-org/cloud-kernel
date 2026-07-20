@@ -302,6 +302,11 @@ out:
 	return ret;
 }
 
+__weak int __init parse_acpi_topology(void)
+{
+	return 0;
+}
+
 void __init init_cpu_topology(void)
 {
 	struct cpu_topology *boot_cpu_topo = &cpu_topology[0];

@@ -128,6 +128,17 @@ void sw64_elf_core_copy_regs(elf_greg_t *dest, struct pt_regs *regs)
 }
 EXPORT_SYMBOL(sw64_elf_core_copy_regs);
 
+asmlinkage void ret_from_fork_kernel(struct pt_regs *regs, void (*fn)(void *args), void *fn_args)
+{
+	fn(fn_args);
+	local_irq_disable();
+}
+
+asmlinkage void ret_from_fork_user(struct pt_regs *regs)
+{
+	local_irq_disable();
+}
+
 unsigned long arch_randomize_brk(struct mm_struct *mm)
 {
 	return randomize_page(mm->brk, 0x02000000);

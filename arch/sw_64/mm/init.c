@@ -37,8 +37,6 @@ struct numa_node_desc_t numa_nodes_desc[1];
  */
 unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)] __page_aligned_bss;
 EXPORT_SYMBOL(empty_zero_page);
-pg_data_t *node_data[MAX_NUMNODES] __read_mostly;
-EXPORT_SYMBOL(node_data);
 
 pgd_t swapper_pg_dir[1024]	__aligned(PAGE_SIZE);
 static pud_t vmalloc_pud[1024]	__aligned(PAGE_SIZE);
@@ -427,12 +425,13 @@ static void __init fixmap_init(pgd_t *pgdir)
  */
 extern unsigned long legacy_io_base;
 extern unsigned long legacy_io_shift;
+extern unsigned long legacy_io_size;
 static void __init map_legacy_io(pgd_t *pgdir)
 {
 	unsigned long pci_io_start;
 	unsigned long lpc_legacy_io_start = LPC_LEGACY_IO;
 	unsigned long legacy_io_start = legacy_io_base;
-	unsigned long size = 0x10000;
+	unsigned long size = legacy_io_size;
 	unsigned long i, j;
 	pgprot_t prot_none;
 

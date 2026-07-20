@@ -47,61 +47,64 @@ static inline unsigned long ftrace_call_adjust(unsigned long addr)
 }
 
 #ifdef CONFIG_HAVE_DYNAMIC_FTRACE_WITH_ARGS
+#define HAVE_ARCH_FTRACE_REGS
 struct ftrace_ops;
+struct ftrace_regs;
+#define arch_ftrace_regs(fregs)	((struct __arch_ftrace_regs *)(fregs))
 
-struct ftrace_regs {
+struct __arch_ftrace_regs {
 	struct pt_regs regs;
 };
 
 static __always_inline struct pt_regs *arch_ftrace_get_regs(struct ftrace_regs *fregs)
 {
-	return &fregs->regs;
+	return &arch_ftrace_regs(fregs)->regs;
 }
 
 static __always_inline unsigned long
 ftrace_regs_get_instruction_pointer(const struct ftrace_regs *fregs)
 {
-	return fregs->regs.regs[28];
+	return arch_ftrace_regs(fregs)->regs.regs[28];
 }
 
 	static __always_inline void
 ftrace_regs_set_instruction_pointer(struct ftrace_regs *fregs, unsigned long ip)
 {
-	fregs->regs.regs[27] = ip;
-	fregs->regs.regs[28] = ip;
+	arch_ftrace_regs(fregs)->regs.regs[27] = ip;
+	arch_ftrace_regs(fregs)->regs.regs[28] = ip;
 }
 
 static __always_inline unsigned long
 ftrace_regs_get_stack_pointer(const struct ftrace_regs *fregs)
 {
-	return fregs->regs.regs[30];
+	return arch_ftrace_regs(fregs)->regs.regs[30];
 }
 
 static __always_inline unsigned long
 ftrace_regs_get_argument(struct ftrace_regs *fregs, unsigned int n)
 {
 	if (n < 6)
-		return fregs->regs.regs[16+n];
+		return arch_ftrace_regs(fregs)->regs.regs[16+n];
 	return 0;
 }
 
 static __always_inline unsigned long
 ftrace_regs_get_return_value(const struct ftrace_regs *fregs)
 {
-	return fregs->regs.regs[0];
+	return arch_ftrace_regs(fregs)->regs.regs[0];
 }
 
 static __always_inline void
 ftrace_regs_set_return_value(struct ftrace_regs *fregs, unsigned long ret)
 {
-	fregs->regs.regs[0] = ret;
+	arch_ftrace_regs(fregs)->regs.regs[0] = ret;
 }
 
 static __always_inline void
 ftrace_override_function_with_return(struct ftrace_regs *fregs)
 {
-	fregs->regs.regs[27] = fregs->regs.regs[26];
-	fregs->regs.regs[28] = fregs->regs.regs[26];
+	arch_ftrace_regs(fregs)->regs.regs[27] = arch_ftrace_regs(fregs)->regs.regs[26];
+	arch_ftrace_regs(fregs)->regs.regs[28] = arch_ftrace_regs(fregs)->regs.regs[26];
 }
 
 int ftrace_regs_query_register_offset(const char *name);
@@ -118,7 +121,7 @@ __arch_ftrace_set_direct_caller(struct pt_regs *regs, unsigned long addr)
 }
 
 #define arch_ftrace_set_direct_caller(fregs, addr) \
-	__arch_ftrace_set_direct_caller(&(fregs)->regs, addr)
+	__arch_ftrace_set_direct_caller(&arch_ftrace_regs(fregs)->regs, addr)
 #endif /* CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS */
 
 #endif
