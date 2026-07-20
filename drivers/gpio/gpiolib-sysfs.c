@@ -402,7 +402,7 @@ static ssize_t base_show(struct device *dev,
 {
 	const struct gpio_chip	*chip = dev_get_drvdata(dev);
 
-	return sysfs_emit(buf, "%d\n", chip->base);
+	return sysfs_emit(buf, "%u\n", chip->base);
 }
 static DEVICE_ATTR_RO(base);
 
