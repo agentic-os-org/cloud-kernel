@@ -486,6 +486,9 @@
 
 #define X86_FEATURE_ABMC		(21*32+ 6) /* "" Assignable Bandwidth Monitoring Counters */
 
+/* Backport: word 21 instead of 22 â€” NCAPINTS=22 makes word 22 a BUG word */
+#define X86_FEATURE_IBPB_EXIT_TO_USER  (21*32+14) /* Use IBPB on exit-to-userspace, see VMSCAPE bug */
+
 /*
  * BUG word(s)
  */
