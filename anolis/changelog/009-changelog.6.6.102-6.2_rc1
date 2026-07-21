@@ -1,0 +1,4 @@
+* Tue Jul 21 2026 Ferry Meng <mengferry@linux.alibaba.com> [6.6.102-6.2_rc1%%DIST%%]
+- KVM: x86: Fix shadow paging use-after-free due to unexpected role (Paolo Bonzini)
+- KVM: x86: Fix shadow paging use-after-free due to unexpected GFN (Sean Christopherson)
+
