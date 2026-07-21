@@ -2,75 +2,58 @@ pipeline {
     agent any
 
     environment {
-        // 从 Gitee 插件生成的环境变量中读取 PR 信息
-        // 注意：这些变量仅在 Webhook 触发时才有值，手动构建时为空
+        // 从 Gitee Webhook 插件获取的环境变量
         REPO_URL = "${env.giteeRepositoryUrl ?: 'https://gitee.com/guoxuan-hu/cloud-kernel.git'}"
         PR_ID = "${env.giteePullRequestIid ?: ''}"
-        SOURCE_BRANCH = "${env.giteePullRequestSourceBranch ?: 'master'}"
+        SOURCE_BRANCH = "${env.giteePullRequestSourceBranch ?: 'devel-6.6'}"
         TARGET_BRANCH = "${env.giteePullRequestTargetBranch ?: 'devel-6.6'}"
-        ACTION = "${env.giteeAction ?: ''}"
-        
-        // 编译配置
         KERNEL_CONFIG = "defconfig"
-        MAKE_JOBS = "-j\$(nproc)"
+        // 不再定义 MAKE_JOBS，直接在 sh 中使用
     }
 
     stages {
-        // 阶段1: 拉取 PR 代码
         stage('Checkout PR Code') {
             steps {
                 script {
+                    // 清空工作空间，避免旧文件干扰（但首次建议手动清理，后文会提）
                     cleanWs()
                     
+                    // 用 git clone --depth 1 实现浅克隆，只拉取目标分支的最新一次提交
+                    sh """
+                        echo "浅克隆 ${REPO_URL} 的 ${TARGET_BRANCH} 分支（深度1）..."
+                        git clone --depth 1 --single-branch --branch ${TARGET_BRANCH} ${REPO_URL} .
+                    """
+                    
+                    // 如果是 PR 触发的，拉取源分支并合并（也使用浅克隆）
                     if (PR_ID && PR_ID.trim()) {
-                        echo "检测到 PR #${PR_ID}，源分支: ${SOURCE_BRANCH}，目标分支: ${TARGET_BRANCH}"
-                        
-                        // 先克隆目标分支
-                        checkout([
-                            $class: 'GitSCM',
-                            branches: [[name: "origin/${TARGET_BRANCH}"]],
-                            userRemoteConfigs: [[url: REPO_URL]]
-                        ])
-                        
-                        // 拉取源分支并 rebase 到目标分支（模拟 PR 合并后的状态）
                         sh """
-                            git fetch origin ${SOURCE_BRANCH}:pr_${PR_ID}_source
+                            echo "拉取 PR #${PR_ID} 的源分支 ${SOURCE_BRANCH}（深度1）..."
+                            git fetch origin ${SOURCE_BRANCH}:pr_${PR_ID}_source --depth=1
                             git checkout pr_${PR_ID}_source
-                            git rebase origin/${TARGET_BRANCH}
+                            git merge origin/${TARGET_BRANCH} --no-edit || true
                         """
-                    } else {
-                        echo "未检测到 PR 信息，执行普通克隆 (分支: ${TARGET_BRANCH})"
-                        checkout([
-                            $class: 'GitSCM',
-                            branches: [[name: "*/${TARGET_BRANCH}"]],
-                            userRemoteConfigs: [[url: REPO_URL]]
-                        ])
                     }
                 }
             }
         }
 
-        // 阶段2: 内核配置
         stage('Configure Kernel') {
             steps {
-                sh """
-                    make ${KERNEL_CONFIG}
-                """
+                sh 'make ${KERNEL_CONFIG}'
             }
         }
 
-        // 阶段3: Patch 规范检测
-        stage('Patch规范检测 (checkpatch.pl)') {
+        stage('Patch规范检测') {
             steps {
                 script {
                     if (PR_ID && PR_ID.trim()) {
+                        // 在浅克隆下，需要先 fetch 目标分支的最新提交（用于 diff）
                         sh """
-                            git diff origin/${TARGET_BRANCH}..HEAD > ${WORKSPACE}/pr_${PR_ID}.patch
-                            perl scripts/checkpatch.pl \
-                                --no-tree \
-                                --ignore EMAIL_SUBJECT,BRACES,FILE_PATH_CHANGES \
-                                ${WORKSPACE}/pr_${PR_ID}.patch \
-                                || true
+                            echo "获取目标分支最新快照以生成补丁..."
+                            git fetch origin ${TARGET_BRANCH} --depth=1
+                            # 比较 FETCH_HEAD（目标分支最新）和当前 HEAD（PR 代码）
+                            git diff FETCH_HEAD..HEAD > ${WORKSPACE}/pr_${PR_ID}.patch
+                            perl scripts/checkpatch.pl --no-tree --ignore EMAIL_SUBJECT,BRACES ${WORKSPACE}/pr_${PR_ID}.patch || true
                         """
                     } else {
                         echo "未检测到 PR，跳过 Patch 检测"
@@ -79,27 +62,22 @@ pipeline {
             }
         }
 
-        // 阶段4: 内核编译
         stage('Kernel Compilation') {
             steps {
-                sh """
-                    echo "开始编译内核 (使用 ${MAKE_JOBS})"
-                    make ${MAKE_JOBS}
-                """
+                // 使用 nproc 动态获取 CPU 核心数，无需在 environment 中定义
+                sh 'make -j$(nproc)'
             }
         }
 
-        // 阶段5: 构建摘要
         stage('Build Summary') {
             steps {
                 sh """
                     echo "=========================================="
-                    echo "构建信息摘要:"
+                    echo "构建信息:"
                     echo "  仓库: ${REPO_URL}"
-                    echo "  分支: ${SOURCE_BRANCH} -> ${TARGET_BRANCH}"
                     echo "  PR #: ${PR_ID}"
-                    echo "  事件: ${ACTION}"
-                    echo "  架构: \$(uname -m)"
+                    echo "  分支: ${SOURCE_BRANCH} -> ${TARGET_BRANCH}"
+                    echo "  源码大小: \$(du -sh . | cut -f1)"
                     echo "=========================================="
                 """
             }
@@ -107,6 +85,7 @@ pipeline {
     }
 
     post {
+        // 总是清理工作空间（但编译产物可能很大，也可以保留，根据需求调整）
         always {
             cleanWs()
         }
