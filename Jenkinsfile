@@ -12,7 +12,7 @@ pipeline {
         
         // 编译配置
         KERNEL_CONFIG = "defconfig"
-        MAKE_JOBS = "-j$(nproc)"
+        MAKE_JOBS = "-j\$(nproc)"
     }
 
     stages {
