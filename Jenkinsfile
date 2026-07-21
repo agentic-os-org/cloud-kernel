@@ -41,7 +41,11 @@ pipeline {
 
         stage('Configure Kernel') {
             steps {
-                sh "make ${KERNEL_CONFIG}"
+                sh """
+                    make ${KERNEL_CONFIG}
+                    scripts/config --enable PSTORE
+                    make olddefconfig
+                """
             }
         }
 
