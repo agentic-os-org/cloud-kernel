@@ -6755,8 +6755,10 @@ dasd_eckd_init(void)
 		return -ENOMEM;
 	dasd_vol_info_req = kmalloc(sizeof(*dasd_vol_info_req),
 				    GFP_KERNEL | GFP_DMA);
-	if (!dasd_vol_info_req)
+	if (!dasd_vol_info_req) {
+		kfree(dasd_reserve_req);
 		return -ENOMEM;
+	}
 	path_verification_worker = kmalloc(sizeof(*path_verification_worker),
 				   GFP_KERNEL | GFP_DMA);
 	if (!path_verification_worker) {
