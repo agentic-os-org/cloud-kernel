@@ -470,6 +470,8 @@ rcu_scale_print_module_parms(struct rcu_scale_ops *cur_ops, const char *tag)
 		 scale_type, tag, nrealreaders, nrealwriters, verbose, shutdown);
 }
 
+static void kfree_scale_cleanup(void);
+
 static void
 rcu_scale_cleanup(void)
 {
@@ -489,6 +491,11 @@ rcu_scale_cleanup(void)
 		VERBOSE_SCALEOUT_ERRSTRING("All grace periods normal, no expedited ones to measure!");
 	if (gp_exp && gp_async)
 		VERBOSE_SCALEOUT_ERRSTRING("No expedited async GPs, so went with async!");
+
+	if (kfree_rcu_test) {
+		kfree_scale_cleanup();
+		return;
+	}
 
 	if (torture_cleanup_begin())
 		return;
