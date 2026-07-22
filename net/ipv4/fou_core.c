@@ -636,9 +636,9 @@ static int fou_create(struct net *net, struct fou_cfg *cfg,
 	return 0;
 
 error:
-	kfree(fou);
 	if (sock)
 		udp_tunnel_sock_release(sock);
+	kfree_rcu(fou, rcu);
 
 	return err;
 }
@@ -809,7 +809,8 @@ static int fou_fill_info(struct fou *fou, struct sk_buff *msg)
 				     &sk->sk_v6_rcv_saddr))
 			return -1;
 
-		if (nla_put_in6_addr(msg, FOU_ATTR_PEER_V6, &sk->sk_v6_daddr))
+		if (nla_put_in6_addr(msg, FOU_ATTR_PEER_V6,
+				     &sk->sk_v6_daddr))
 			return -1;
 #endif
 	}
