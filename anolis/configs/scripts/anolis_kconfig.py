@@ -670,7 +670,7 @@ class GenerateTranslater():
 
         # refresh configs
         # cmd += f"echo \"* generated file: {final_path}\"\n"
-        cmd += f"make KCONFIG_CONFIG={final_path} ARCH={e.arch} CROSS_COMPILE=scripts/dummy-tools/ "
+        cmd += f'env -u sub_make_done make O="${{DIST_KBUILD_OUTPUT}}" KCONFIG_CONFIG={final_path} ARCH={e.arch} '
         cmd += f"PAHOLE=scripts/dummy-tools/pahole "
         cmd += f"-C {self.src_root} olddefconfig > /dev/null 2>&1\n"
         cmd += f"rm -f {final_path}.old \n"
@@ -680,7 +680,7 @@ class GenerateTranslater():
 
     @staticmethod
     def do_translate(args):
-        cmd = ""
+        cmd = "set -e\n"
         t = GenerateTranslater(args)
         l = KconfigLayout.from_path(args.layout)
 
