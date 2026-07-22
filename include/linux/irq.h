@@ -1154,6 +1154,11 @@ void irq_setup_generic_chip(struct irq_chip_generic *gc, u32 msk,
 int irq_setup_alt_chip(struct irq_data *d, unsigned int type);
 void irq_remove_generic_chip(struct irq_chip_generic *gc, u32 msk,
 			     unsigned int clr, unsigned int set);
+#ifdef CONFIG_GENERIC_IRQ_CHIP
+void irq_domain_remove_generic_chips(struct irq_domain *d);
+#else
+static inline void irq_domain_remove_generic_chips(struct irq_domain *d) { }
+#endif /* CONFIG_GENERIC_IRQ_CHIP */
 
 struct irq_chip_generic *
 devm_irq_alloc_generic_chip(struct device *dev, const char *name, int num_ct,
