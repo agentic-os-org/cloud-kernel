@@ -775,7 +775,7 @@ EXPORT_SYMBOL(drm_gem_object_lookup);
  * greater than 0 on success.
  */
 long drm_gem_dma_resv_wait(struct drm_file *filep, u32 handle,
-				    bool wait_all, unsigned long timeout)
+			    bool wait_all, unsigned long timeout)
 {
 	long ret;
 	struct drm_gem_object *obj;
