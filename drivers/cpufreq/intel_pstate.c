@@ -596,9 +596,6 @@ static bool turbo_is_disabled(void)
 {
 	u64 misc_en;
 
-	if (!cpu_feature_enabled(X86_FEATURE_IDA))
-		return true;
-
 	rdmsrl(MSR_IA32_MISC_ENABLE, misc_en);
 
 	return !!(misc_en & MSR_IA32_MISC_ENABLE_TURBO_DISABLE);
@@ -963,12 +960,14 @@ static void hybrid_clear_cpu_capacity(unsigned int cpunum)
 
 static void hybrid_get_capacity_perf(struct cpudata *cpu)
 {
+	u64 hwp_cap = READ_ONCE(cpu->hwp_cap_cached);
+
 	if (READ_ONCE(global.no_turbo)) {
-		cpu->capacity_perf = cpu->pstate.max_pstate_physical;
+		cpu->capacity_perf = HWP_GUARANTEED_PERF(hwp_cap);
 		return;
 	}
 
-	cpu->capacity_perf = HWP_HIGHEST_PERF(READ_ONCE(cpu->hwp_cap_cached));
+	cpu->capacity_perf = HWP_HIGHEST_PERF(hwp_cap);
 }
 
 static void hybrid_set_capacity_of_cpus(void)
@@ -1027,26 +1026,29 @@ static void hybrid_update_cpu_capacity_scaling(void)
 	}
 }
 
-static void __hybrid_init_cpu_capacity_scaling(void)
+static void __hybrid_refresh_cpu_capacity_scaling(void)
 {
 	hybrid_max_perf_cpu = NULL;
 	hybrid_update_cpu_capacity_scaling();
 }
 
-static void hybrid_init_cpu_capacity_scaling(void)
+static void hybrid_refresh_cpu_capacity_scaling(void)
 {
-	bool disable_itmt = false;
+	guard(mutex)(&hybrid_capacity_lock);
 
-	mutex_lock(&hybrid_capacity_lock);
+	__hybrid_refresh_cpu_capacity_scaling();
+}
 
+static void hybrid_init_cpu_capacity_scaling(bool refresh)
+{
 	/*
 	 * If hybrid_max_perf_cpu is set at this point, the hybrid CPU capacity
 	 * scaling has been enabled already and the driver is just changing the
 	 * operation mode.
 	 */
-	if (hybrid_max_perf_cpu) {
-		__hybrid_init_cpu_capacity_scaling();
-		goto unlock;
+	if (refresh) {
+		hybrid_refresh_cpu_capacity_scaling();
+		return;
 	}
 
 	/*
@@ -1054,20 +1056,26 @@ static void hybrid_init_cpu_capacity_scaling(void)
 	 * the capacity of SMT threads is not deterministic even approximately,
 	 * do not do that when SMT is in use.
 	 */
-	if (hwp_is_hybrid && !sched_smt_active() && arch_enable_hybrid_capacity_scale()) {
-		__hybrid_init_cpu_capacity_scaling();
-		disable_itmt = true;
-	}
-
-unlock:
-	mutex_unlock(&hybrid_capacity_lock);
-
-	/*
-	 * Disabling ITMT causes sched domains to be rebuilt to disable asym
-	 * packing and enable asym capacity.
-	 */
-	if (disable_itmt)
+	if (hwp_is_hybrid && !cpu_smt_possible() && arch_enable_hybrid_capacity_scale()) {
+		hybrid_refresh_cpu_capacity_scaling();
+		/*
+		 * Disabling ITMT causes sched domains to be rebuilt to disable asym
+		 * packing and enable asym capacity.
+		 */
 		sched_clear_itmt_support();
+	}
+}
+
+static bool hybrid_clear_max_perf_cpu(void)
+{
+	bool ret;
+
+	guard(mutex)(&hybrid_capacity_lock);
+
+	ret = !!hybrid_max_perf_cpu;
+	hybrid_max_perf_cpu = NULL;
+
+	return ret;
 }
 
 static void __intel_pstate_get_hwp_cap(struct cpudata *cpu)
@@ -1353,15 +1361,13 @@ static void __intel_pstate_update_max_freq(struct cpufreq_policy *policy,
 	refresh_frequency_limits(policy);
 }
 
-static bool intel_pstate_update_max_freq(struct cpudata *cpudata)
+static bool intel_pstate_update_max_freq(int cpu)
 {
-	struct cpufreq_policy *policy __free(put_cpufreq_policy);
-
-	policy = cpufreq_cpu_get(cpudata->cpu);
+	struct cpufreq_policy *policy __free(put_cpufreq_policy) = cpufreq_cpu_get(cpu);
 	if (!policy)
 		return false;
 
-	__intel_pstate_update_max_freq(policy, cpudata);
+	__intel_pstate_update_max_freq(policy, all_cpu_data[cpu]);
 
 	return true;
 }
@@ -1380,12 +1386,12 @@ static void intel_pstate_update_limits_for_all(void)
 	int cpu;
 
 	for_each_possible_cpu(cpu)
-		intel_pstate_update_max_freq(all_cpu_data[cpu]);
+		intel_pstate_update_max_freq(cpu);
 
 	mutex_lock(&hybrid_capacity_lock);
 
 	if (hybrid_max_perf_cpu)
-		__hybrid_init_cpu_capacity_scaling();
+		__hybrid_refresh_cpu_capacity_scaling();
 
 	mutex_unlock(&hybrid_capacity_lock);
 }
@@ -1823,7 +1829,7 @@ static void intel_pstate_notify_work(struct work_struct *work)
 	struct cpudata *cpudata =
 		container_of(to_delayed_work(work), struct cpudata, hwp_notify_work);
 
-	if (intel_pstate_update_max_freq(cpudata)) {
+	if (intel_pstate_update_max_freq(cpudata->cpu)) {
 		/*
 		 * The driver will not be unregistered while this function is
 		 * running, so update the capacity without acquiring the driver
@@ -1994,7 +2000,8 @@ static u64 atom_get_val(struct cpudata *cpudata, int pstate)
 	u32 vid;
 
 	val = (u64)pstate << 8;
-	if (READ_ONCE(global.no_turbo) && !READ_ONCE(global.turbo_disabled))
+	if (READ_ONCE(global.no_turbo) && !READ_ONCE(global.turbo_disabled) &&
+	    cpu_feature_enabled(X86_FEATURE_IDA))
 		val |= (u64)1 << 32;
 
 	vid_fp = cpudata->vid.min + mul_fp(
@@ -2159,7 +2166,8 @@ static u64 core_get_val(struct cpudata *cpudata, int pstate)
 	u64 val;
 
 	val = (u64)pstate << 8;
-	if (READ_ONCE(global.no_turbo) && !READ_ONCE(global.turbo_disabled))
+	if (READ_ONCE(global.no_turbo) && !READ_ONCE(global.turbo_disabled) &&
+	    cpu_feature_enabled(X86_FEATURE_IDA))
 		val |= (u64)1 << 32;
 
 	return val;
@@ -2253,6 +2261,11 @@ static void intel_pstate_get_cpu_pstates(struct cpudata *cpu)
 		} else {
 			cpu->pstate.scaling = perf_ctl_scaling;
 		}
+		/*
+		 * If the CPU is going online for the first time and it was
+		 * offline initially, asym capacity scaling needs to be updated.
+		 */
+		hybrid_update_capacity(cpu);
 	} else {
 		cpu->pstate.scaling = perf_ctl_scaling;
 		cpu->pstate.max_pstate = pstate_funcs.get_max(cpu->cpu);
@@ -3348,6 +3361,7 @@ static void intel_pstate_driver_cleanup(void)
 
 static int intel_pstate_register_driver(struct cpufreq_driver *driver)
 {
+	bool refresh_cpu_cap_scaling;
 	int ret;
 
 	if (driver == &intel_pstate)
@@ -3360,6 +3374,8 @@ static int intel_pstate_register_driver(struct cpufreq_driver *driver)
 
 	arch_set_max_freq_ratio(global.turbo_disabled);
 
+	refresh_cpu_cap_scaling = hybrid_clear_max_perf_cpu();
+
 	intel_pstate_driver = driver;
 	ret = cpufreq_register_driver(intel_pstate_driver);
 	if (ret) {
@@ -3369,7 +3385,7 @@ static int intel_pstate_register_driver(struct cpufreq_driver *driver)
 
 	global.min_perf_pct = min_perf_pct_min();
 
-	hybrid_init_cpu_capacity_scaling();
+	hybrid_init_cpu_capacity_scaling(refresh_cpu_cap_scaling);
 
 	return 0;
 }
