@@ -282,7 +282,7 @@ static int walk_hugetlb_range(unsigned long addr, unsigned long end,
 /*
  * Decide whether we really walk over the current vma on [@start, @end)
  * or skip it via the returned value. Return 0 if we do walk over the
- * current vma, and return 1 if we skip the vma. Negative values means
+ * current vma, and return 1 if we skip it. Negative values means
  * error, where we abort the current walk.
  */
 static int walk_page_test(unsigned long start, unsigned long end,
@@ -437,8 +437,11 @@ int walk_page_range(struct mm_struct *mm, unsigned long start,
 /*
  * Similar to walk_page_range() but can walk any page tables even if they are
  * not backed by VMAs. Because 'unusual' entries may be walked this function
- * will also not lock the PTEs for the pte_entry() callback. This is useful for
- * walking the kernel pages tables or page tables for firmware.
+ * will also not lock the PTEs for the pte_entry() callback.
+ *
+ * This is for debugging purposes ONLY.
+ *
+ * The mmap write lock must be held.
  */
 int walk_page_range_novma(struct mm_struct *mm, unsigned long start,
 			  unsigned long end, const struct mm_walk_ops *ops,
@@ -453,10 +456,18 @@ int walk_page_range_novma(struct mm_struct *mm, unsigned long start,
 		.no_vma		= true
 	};
 
+	/*
+	 * When walking userland page tables, an mmap write lock must be held to
+	 * account for munmap() downgrading to an mmap read lock when tearing
+	 * down page tables.
+	 *
+	 * When walking kernel page tables, an mmap write lock must also be held
+	 * to account for page table freeing on vmap huge page mapping.
+	 */
+	mmap_assert_write_locked(mm);
+
 	if (start >= end || !walk.mm)
 		return -EINVAL;
-
-	mmap_assert_write_locked(walk.mm);
 
 	return walk_pgd_range(start, end, &walk);
 }
