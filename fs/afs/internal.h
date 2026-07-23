@@ -34,23 +34,23 @@ struct afs_call;
 
 /*
  * Partial file-locking emulation mode.  (The problem being that AFS3 only
- * allows whole-file locks and no upgrading/downgrading).
+ * allows whole-file locks and no upgrading or downgrading).
  */
 enum afs_flock_mode {
 	afs_flock_mode_unset,
 	afs_flock_mode_local,	/* Local locking only */
 	afs_flock_mode_openafs,	/* Don't get server lock for a partial lock */
 	afs_flock_mode_strict,	/* Always get a server lock for a partial lock */
-	afs_flock_mode_write,	/* Get an exclusive server lock for a partial lock */
+	afs_flock_mode_write,	/* Get an exclusive server lock for partial write */
 };
 
 struct afs_fs_context {
 	bool			force;		/* T to force cell type */
-	bool			autocell;	/* T if set auto mount operation */
+	bool			autocell;	/* T if set auto mount */
 	bool			dyn_root;	/* T if dynamic root */
 	bool			no_cell;	/* T if the source is "none" (for dynroot) */
 	enum afs_flock_mode	flock_mode;	/* Partial file-locking emulation mode */
-	afs_voltype_t		type;		/* type of volume requested */
+	afs_voltype_t		type;		/* type of volume */
 	unsigned int		volnamesz;	/* size of volume name */
 	const char		*volname;	/* name of volume to mount */
 	struct afs_net		*net;		/* the AFS net namespace stuff */
@@ -200,7 +200,7 @@ static inline struct key *afs_file_key(struct file *file)
  */
 struct afs_read {
 	loff_t			pos;		/* Where to start reading */
-	loff_t			len;		/* How much we're asking for */
+	loff_t			len;		/* How much are we asking for */
 	loff_t			actual_len;	/* How much we're actually getting */
 	loff_t			remain;		/* Amount remaining */
 	loff_t			file_size;	/* File size returned by server */
@@ -1261,12 +1261,14 @@ extern int afs_protocol_error(struct afs_call *, enum afs_eproto_cause);
 static inline void afs_make_op_call(struct afs_operation *op, struct afs_call *call,
 				    gfp_t gfp)
 {
+	atomic_inc(&call->usage);
 	op->call = call;
 	op->type = call->type;
 	call->op = op;
 	call->key = op->key;
 	call->intr = !(op->flags & AFS_OPERATION_UNINTR);
 	afs_make_call(&op->ac, call, gfp);
+	afs_put_call(call);
 }
 
 static inline void afs_extract_begin(struct afs_call *call, void *buf, size_t size)
@@ -1407,7 +1409,8 @@ static inline bool afs_is_probing_server(struct afs_server *server)
  */
 static inline struct afs_server_list *afs_get_serverlist(struct afs_server_list *slist)
 {
-	refcount_inc(&slist->usage);
+	if (slist)
+		refcount_inc(&slist->usage);
 	return slist;
 }
 
@@ -1484,261 +1487,3 @@ extern struct afs_vlserver_list *afs_extract_vlserver_list(struct afs_cell *,
 extern struct afs_volume *afs_create_volume(struct afs_fs_context *);
 extern void afs_activate_volume(struct afs_volume *);
 extern void afs_deactivate_volume(struct afs_volume *);
-extern struct afs_volume *afs_get_volume(struct afs_volume *, enum afs_volume_trace);
-extern void afs_put_volume(struct afs_net *, struct afs_volume *, enum afs_volume_trace);
-extern int afs_check_volume_status(struct afs_volume *, struct afs_operation *);
-
-/*
- * write.c
- */
-extern int afs_set_page_dirty(struct page *);
-extern int afs_write_begin(struct file *file, struct address_space *mapping,
-			loff_t pos, unsigned len, unsigned flags,
-			struct page **pagep, void **fsdata);
-extern int afs_write_end(struct file *file, struct address_space *mapping,
-			loff_t pos, unsigned len, unsigned copied,
-			struct page *page, void *fsdata);
-extern int afs_writepage(struct page *, struct writeback_control *);
-extern int afs_writepages(struct address_space *, struct writeback_control *);
-extern ssize_t afs_file_write(struct kiocb *, struct iov_iter *);
-extern int afs_fsync(struct file *, loff_t, loff_t, int);
-extern vm_fault_t afs_page_mkwrite(struct vm_fault *vmf);
-extern void afs_prune_wb_keys(struct afs_vnode *);
-extern int afs_launder_page(struct page *);
-
-/*
- * xattr.c
- */
-extern const struct xattr_handler *afs_xattr_handlers[];
-
-/*
- * yfsclient.c
- */
-extern void yfs_fs_fetch_data(struct afs_operation *);
-extern void yfs_fs_create_file(struct afs_operation *);
-extern void yfs_fs_make_dir(struct afs_operation *);
-extern void yfs_fs_remove_file2(struct afs_operation *);
-extern void yfs_fs_remove_file(struct afs_operation *);
-extern void yfs_fs_remove_dir(struct afs_operation *);
-extern void yfs_fs_link(struct afs_operation *);
-extern void yfs_fs_symlink(struct afs_operation *);
-extern void yfs_fs_rename(struct afs_operation *);
-extern void yfs_fs_store_data(struct afs_operation *);
-extern void yfs_fs_setattr(struct afs_operation *);
-extern void yfs_fs_get_volume_status(struct afs_operation *);
-extern void yfs_fs_set_lock(struct afs_operation *);
-extern void yfs_fs_extend_lock(struct afs_operation *);
-extern void yfs_fs_release_lock(struct afs_operation *);
-extern void yfs_fs_fetch_status(struct afs_operation *);
-extern void yfs_fs_inline_bulk_status(struct afs_operation *);
-
-struct yfs_acl {
-	struct afs_acl	*acl;		/* Dir/file/symlink ACL */
-	struct afs_acl	*vol_acl;	/* Whole volume ACL */
-	u32		inherit_flag;	/* True if ACL is inherited from parent dir */
-	u32		num_cleaned;	/* Number of ACEs removed due to subject removal */
-	unsigned int	flags;
-#define YFS_ACL_WANT_ACL	0x01	/* Set if caller wants ->acl */
-#define YFS_ACL_WANT_VOL_ACL	0x02	/* Set if caller wants ->vol_acl */
-};
-
-extern void yfs_free_opaque_acl(struct yfs_acl *);
-extern void yfs_fs_fetch_opaque_acl(struct afs_operation *);
-extern void yfs_fs_store_opaque_acl2(struct afs_operation *);
-
-/*
- * Miscellaneous inline functions.
- */
-static inline struct afs_vnode *AFS_FS_I(struct inode *inode)
-{
-	return container_of(inode, struct afs_vnode, vfs_inode);
-}
-
-static inline struct inode *AFS_VNODE_TO_I(struct afs_vnode *vnode)
-{
-	return &vnode->vfs_inode;
-}
-
-/*
- * Note that a dentry got changed.  We need to set d_fsdata to the data version
- * number derived from the result of the operation.  It doesn't matter if
- * d_fsdata goes backwards as we'll just revalidate.
- */
-static inline void afs_update_dentry_version(struct afs_operation *op,
-					     struct afs_vnode_param *dir_vp,
-					     struct dentry *dentry)
-{
-	if (!op->error)
-		dentry->d_fsdata =
-			(void *)(unsigned long)dir_vp->scb.status.data_version;
-}
-
-/*
- * Set the file size and block count.  Estimate the number of 512 bytes blocks
- * used, rounded up to nearest 1K for consistency with other AFS clients.
- */
-static inline void afs_set_i_size(struct afs_vnode *vnode, u64 size)
-{
-	i_size_write(&vnode->vfs_inode, size);
-	vnode->vfs_inode.i_blocks = ((size + 1023) >> 10) << 1;
-}
-
-/*
- * Check for a conflicting operation on a directory that we just unlinked from.
- * If someone managed to sneak a link or an unlink in on the file we just
- * unlinked, we won't be able to trust nlink on an AFS file (but not YFS).
- */
-static inline void afs_check_dir_conflict(struct afs_operation *op,
-					  struct afs_vnode_param *dvp)
-{
-	if (dvp->dv_before + dvp->dv_delta != dvp->scb.status.data_version)
-		op->flags |= AFS_OPERATION_DIR_CONFLICT;
-}
-
-static inline int afs_io_error(struct afs_call *call, enum afs_io_error where)
-{
-	trace_afs_io_error(call->debug_id, -EIO, where);
-	return -EIO;
-}
-
-static inline int afs_bad(struct afs_vnode *vnode, enum afs_file_error where)
-{
-	trace_afs_file_error(vnode, -EIO, where);
-	return -EIO;
-}
-
-/*****************************************************************************/
-/*
- * debug tracing
- */
-extern unsigned afs_debug;
-
-#define dbgprintk(FMT,...) \
-	printk("[%-6.6s] "FMT"\n", current->comm ,##__VA_ARGS__)
-
-#define kenter(FMT,...)	dbgprintk("==> %s("FMT")",__func__ ,##__VA_ARGS__)
-#define kleave(FMT,...)	dbgprintk("<== %s()"FMT"",__func__ ,##__VA_ARGS__)
-#define kdebug(FMT,...)	dbgprintk("    "FMT ,##__VA_ARGS__)
-
-
-#if defined(__KDEBUG)
-#define _enter(FMT,...)	kenter(FMT,##__VA_ARGS__)
-#define _leave(FMT,...)	kleave(FMT,##__VA_ARGS__)
-#define _debug(FMT,...)	kdebug(FMT,##__VA_ARGS__)
-
-#elif defined(CONFIG_AFS_DEBUG)
-#define AFS_DEBUG_KENTER	0x01
-#define AFS_DEBUG_KLEAVE	0x02
-#define AFS_DEBUG_KDEBUG	0x04
-
-#define _enter(FMT,...)					\
-do {							\
-	if (unlikely(afs_debug & AFS_DEBUG_KENTER))	\
-		kenter(FMT,##__VA_ARGS__);		\
-} while (0)
-
-#define _leave(FMT,...)					\
-do {							\
-	if (unlikely(afs_debug & AFS_DEBUG_KLEAVE))	\
-		kleave(FMT,##__VA_ARGS__);		\
-} while (0)
-
-#define _debug(FMT,...)					\
-do {							\
-	if (unlikely(afs_debug & AFS_DEBUG_KDEBUG))	\
-		kdebug(FMT,##__VA_ARGS__);		\
-} while (0)
-
-#else
-#define _enter(FMT,...)	no_printk("==> %s("FMT")",__func__ ,##__VA_ARGS__)
-#define _leave(FMT,...)	no_printk("<== %s()"FMT"",__func__ ,##__VA_ARGS__)
-#define _debug(FMT,...)	no_printk("    "FMT ,##__VA_ARGS__)
-#endif
-
-/*
- * debug assertion checking
- */
-#if 1 // defined(__KDEBUGALL)
-
-#define ASSERT(X)						\
-do {								\
-	if (unlikely(!(X))) {					\
-		printk(KERN_ERR "\n");				\
-		printk(KERN_ERR "AFS: Assertion failed\n");	\
-		BUG();						\
-	}							\
-} while(0)
-
-#define ASSERTCMP(X, OP, Y)						\
-do {									\
-	if (unlikely(!((X) OP (Y)))) {					\
-		printk(KERN_ERR "\n");					\
-		printk(KERN_ERR "AFS: Assertion failed\n");		\
-		printk(KERN_ERR "%lu " #OP " %lu is false\n",		\
-		       (unsigned long)(X), (unsigned long)(Y));		\
-		printk(KERN_ERR "0x%lx " #OP " 0x%lx is false\n",	\
-		       (unsigned long)(X), (unsigned long)(Y));		\
-		BUG();							\
-	}								\
-} while(0)
-
-#define ASSERTRANGE(L, OP1, N, OP2, H)					\
-do {									\
-	if (unlikely(!((L) OP1 (N)) || !((N) OP2 (H)))) {		\
-		printk(KERN_ERR "\n");					\
-		printk(KERN_ERR "AFS: Assertion failed\n");		\
-		printk(KERN_ERR "%lu "#OP1" %lu "#OP2" %lu is false\n",	\
-		       (unsigned long)(L), (unsigned long)(N),		\
-		       (unsigned long)(H));				\
-		printk(KERN_ERR "0x%lx "#OP1" 0x%lx "#OP2" 0x%lx is false\n", \
-		       (unsigned long)(L), (unsigned long)(N),		\
-		       (unsigned long)(H));				\
-		BUG();							\
-	}								\
-} while(0)
-
-#define ASSERTIF(C, X)						\
-do {								\
-	if (unlikely((C) && !(X))) {				\
-		printk(KERN_ERR "\n");				\
-		printk(KERN_ERR "AFS: Assertion failed\n");	\
-		BUG();						\
-	}							\
-} while(0)
-
-#define ASSERTIFCMP(C, X, OP, Y)					\
-do {									\
-	if (unlikely((C) && !((X) OP (Y)))) {				\
-		printk(KERN_ERR "\n");					\
-		printk(KERN_ERR "AFS: Assertion failed\n");		\
-		printk(KERN_ERR "%lu " #OP " %lu is false\n",		\
-		       (unsigned long)(X), (unsigned long)(Y));		\
-		printk(KERN_ERR "0x%lx " #OP " 0x%lx is false\n",	\
-		       (unsigned long)(X), (unsigned long)(Y));		\
-		BUG();							\
-	}								\
-} while(0)
-
-#else
-
-#define ASSERT(X)				\
-do {						\
-} while(0)
-
-#define ASSERTCMP(X, OP, Y)			\
-do {						\
-} while(0)
-
-#define ASSERTRANGE(L, OP1, N, OP2, H)		\
-do {						\
-} while(0)
-
-#define ASSERTIF(C, X)				\
-do {						\
-} while(0)
-
-#define ASSERTIFCMP(C, X, OP, Y)		\
-do {						\
-} while(0)
-
-#endif /* __KDEBUGALL */
