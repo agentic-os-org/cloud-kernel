@@ -1302,11 +1302,13 @@ static inline void afs_make_op_call(struct afs_operation *op, struct afs_call *c
 				    gfp_t gfp)
 {
 	op->call = call;
+	refcount_inc(&call->ref);
 	op->type = call->type;
 	call->op = op;
 	call->key = op->key;
 	call->intr = !(op->flags & AFS_OPERATION_UNINTR);
 	afs_make_call(&op->ac, call, gfp);
+	afs_put_call(call);
 }
 
 static inline void afs_extract_begin(struct afs_call *call, void *buf, size_t size)
