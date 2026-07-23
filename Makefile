@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0
+# Jenkins PR test trigger
 VERSION = 6
 PATCHLEVEL = 6
 SUBLEVEL = 102
