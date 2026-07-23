@@ -7,7 +7,7 @@
  *
  *  Hotplug & misc device support: Jochen Roehrig (roehrig@de.ibm.com)
  *  Major cleanup & driver split: Martin Schwidefsky <schwidefsky@de.ibm.com>
- *				  Ralph Wuerthner <rwuerthn@de.ibm.com>
+ *				 Ralph Wuerthner <rwuerthn@de.ibm.com>
  *  MSGTYPE restruct:		  Holger Dengler <hd@linux.vnet.ibm.com>
  *  Multiple device nodes: Harald Freudenberger <freude@linux.ibm.com>
  */
@@ -871,6 +871,7 @@ static long _zcrypt_send_cprb(bool userspace, struct ap_perms *perms,
 	tdom = *domain;
 	if (perms != &ap_perms && tdom < AP_DOMAINS) {
 		if (ap_msg.flags & AP_MSG_FLAG_ADMIN) {
+			tdom = array_index_nospec(tdom, AP_DOMAINS);
 			if (!test_bit_inv(tdom, perms->adm)) {
 				rc = -ENODEV;
 				goto out;
@@ -1050,6 +1051,7 @@ static long _zcrypt_send_ep11_cprb(bool userspace, struct ap_perms *perms,
 
 	if (perms != &ap_perms && domain < AUTOSEL_DOM) {
 		if (ap_msg.flags & AP_MSG_FLAG_ADMIN) {
+			domain = array_index_nospec(domain, AP_DOMAINS);
 			if (!test_bit_inv(domain, perms->adm)) {
 				rc = -ENODEV;
 				goto out_free;
@@ -1978,7 +1980,7 @@ void zcrypt_rng_device_remove(void)
  * The AP bus scan and the binding of ap devices to device drivers is
  * an asynchronous job. This function waits until these initial jobs
  * are done and so the zcrypt api should be ready to serve crypto
- * requests - if there are resources available. The function uses an
+ * requests - if there are resources available. The module uses an
  * internal timeout of 60s. The very first caller will either wait for
  * ap bus bindings complete or the timeout happens. This state will be
  * remembered for further callers which will only be blocked until a
