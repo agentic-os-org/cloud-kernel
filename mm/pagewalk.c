@@ -282,7 +282,7 @@ static int walk_hugetlb_range(unsigned long addr, unsigned long end,
 /*
  * Decide whether we really walk over the current vma on [@start, @end)
  * or skip it via the returned value. Return 0 if we do walk over the
- * current vma, and return 1 if we skip the vma. Negative values means
+ * current vma, and return 1 if we skip it. Negative values means
  * error, where we abort the current walk.
  */
 static int walk_page_test(unsigned long start, unsigned long end,
@@ -453,7 +453,25 @@ int walk_page_range_novma(struct mm_struct *mm, unsigned long start,
 		.no_vma		= true
 	};
 
-	if (start >= end || !walk.mm)
+	/*
+	 * When walking userland page tables, an mmap write lock must be held to
+	 * account for munmap() downgrading to an mmap read lock when tearing
+	 * down page tables.
+	 *
+	 * When walking kernel page tables, an mmap write lock must also be held
+	 * to account for page table freeing on vmap huge page mapping.
+	 */
+	mmap_assert_write_locked(mm);
+	/*
+	 * x86, arm64 ptdump allow walks of efi mm's and x86 ptdump allows walks
+	 * of arbitrary mm's.
+	 *
+	 * However, they both must also hold the init_mm lock to account for
+	 * concurrent kernel page table freeing.
+	 */
+	mmap_assert_write_locked(&init_mm);
+
+	if (start >= end)
 		return -EINVAL;
 
 	mmap_assert_write_locked(walk.mm);
@@ -495,8 +513,8 @@ int walk_page_vma(struct vm_area_struct *vma, const struct mm_walk_ops *ops,
  *
  * This function walks all memory areas mapped into a struct address_space.
  * The walk is limited to only the given page-size index range, but if
- * the index boundaries cross a huge page-table entry, that entry will be
- * included.
+ * the index boundaries cross a huge page-table entry, that entry will
+ * be included.
  *
  * Also see walk_page_range() for additional information.
  *
