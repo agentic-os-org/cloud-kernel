@@ -9,12 +9,13 @@
 #include <linux/memory.h>
 #include <linux/mutex.h>
 #include <asm/bug.h>
+#include <asm/cacheflush.h>
 #include <asm/patch.h>
 #include <asm/insn-def.h>
 
 #define RISCV_INSN_JAL 0x0000006fU
 
-void arch_jump_label_transform(struct jump_entry *entry,
+bool arch_jump_label_transform_queue(struct jump_entry *entry,
 			       enum jump_label_type type)
 {
 	void *addr = (void *)jump_entry_code(entry);
@@ -24,7 +25,7 @@ void arch_jump_label_transform(struct jump_entry *entry,
 		long offset = jump_entry_target(entry) - jump_entry_code(entry);
 
 		if (WARN_ON(offset & 1 || offset < -524288 || offset >= 524288))
-			return;
+			return true;
 
 		insn = RISCV_INSN_JAL |
 			(((u32)offset & GENMASK(19, 12)) << (12 - 12)) |
@@ -36,6 +37,13 @@ void arch_jump_label_transform(struct jump_entry *entry,
 	}
 
 	mutex_lock(&text_mutex);
-	patch_text_nosync(addr, &insn, sizeof(insn));
+	patch_insn_write(addr, &insn, sizeof(insn));
 	mutex_unlock(&text_mutex);
+
+	return true;
+}
+
+void arch_jump_label_transform_apply(void)
+{
+	flush_icache_all();
 }
