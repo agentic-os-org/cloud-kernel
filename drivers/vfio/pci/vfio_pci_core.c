@@ -2217,6 +2217,10 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 	struct iommu_group *group;
 	int ret;
 
+	/* Drivers must set a name.  Required for sequestering SR-IOV VFs */
+	if (WARN_ON(!vdev->vdev.ops->name))
+		return -EINVAL;
+
 	if (pdev->hdr_type != PCI_HEADER_TYPE_NORMAL)
 		return -EINVAL;
 
