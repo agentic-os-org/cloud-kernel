@@ -800,8 +800,8 @@ static void sdw_modify_slave_status(struct sdw_slave *slave,
 			"%s: initializing completion for Slave %d\n",
 			__func__, slave->dev_num);
 
-		init_completion(&slave->enumeration_complete);
-		init_completion(&slave->initialization_complete);
+		reinit_completion(&slave->enumeration_complete);
+		reinit_completion(&slave->initialization_complete);
 
 	} else if ((status == SDW_SLAVE_ATTACHED) &&
 		   (slave->status == SDW_SLAVE_UNATTACHED)) {
@@ -809,7 +809,7 @@ static void sdw_modify_slave_status(struct sdw_slave *slave,
 			"%s: signaling completion for Slave %d\n",
 			__func__, slave->dev_num);
 
-		complete(&slave->enumeration_complete);
+		complete_all(&slave->enumeration_complete);
 	}
 	slave->status = status;
 	mutex_unlock(&slave->bus->bus_lock);
@@ -1735,7 +1735,7 @@ int sdw_handle_slave_status(struct sdw_bus *bus,
 			dev_err(slave->bus->dev,
 				"Update Slave status failed:%d\n", ret);
 		if (attached_initializing)
-			complete(&slave->initialization_complete);
+			complete_all(&slave->initialization_complete);
 	}
 
 	return ret;
