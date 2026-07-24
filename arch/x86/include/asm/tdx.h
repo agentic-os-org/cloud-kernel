@@ -5,9 +5,11 @@
 
 #include <linux/init.h>
 #include <linux/bits.h>
+#include <linux/mmzone.h>
 
 #include <asm/errno.h>
 #include <asm/ptrace.h>
+#include <asm/trapnr.h>
 #include <asm/shared/tdx.h>
 
 /*
@@ -20,7 +22,19 @@
 #define TDX_SW_ERROR			(TDX_ERROR | GENMASK_ULL(47, 40))
 #define TDX_SEAMCALL_VMFAILINVALID	(TDX_SW_ERROR | _UL(0xFFFF0000))
 
+#define TDX_SEAMCALL_GP			(TDX_SW_ERROR | X86_TRAP_GP)
+#define TDX_SEAMCALL_UD			(TDX_SW_ERROR | X86_TRAP_UD)
+
+/*
+ * TDX module SEAMCALL leaf function error codes
+ */
+#define TDX_SUCCESS		0ULL
+#define TDX_RND_NO_ENTROPY	0x8000020300000000ULL
+
 #ifndef __ASSEMBLY__
+
+#include <uapi/asm/mce.h>
+#include <linux/pgtable.h>
 
 /*
  * Used by the #VE exception handler to gather the #VE exception
@@ -56,6 +70,9 @@ int tdx_mcall_extend_rtmr(u8 index, u8 *data);
 
 u64 tdx_hcall_get_quote(u8 *buf, size_t size);
 
+void __init tdx_dump_attributes(u64 td_attr);
+void __init tdx_dump_td_ctls(u64 td_ctls);
+
 #else
 
 static inline void tdx_early_init(void) { };
@@ -76,5 +93,95 @@ static inline long tdx_kvm_hypercall(unsigned int nr, unsigned long p1,
 	return -ENODEV;
 }
 #endif /* CONFIG_INTEL_TDX_GUEST && CONFIG_KVM_GUEST */
+
+#ifdef CONFIG_INTEL_TDX_HOST
+u64 __seamcall(u64 fn, struct tdx_module_args *args);
+u64 __seamcall_ret(u64 fn, struct tdx_module_args *args);
+u64 __seamcall_saved_ret(u64 fn, struct tdx_module_args *args);
+void tdx_init(void);
+
+#include <asm/archrandom.h>
+
+typedef u64 (*sc_func_t)(u64 fn, struct tdx_module_args *args);
+
+static __always_inline u64 sc_retry(sc_func_t func, u64 fn,
+			   struct tdx_module_args *args)
+{
+	int retry = RDRAND_RETRY_LOOPS;
+	u64 ret;
+
+	do {
+		ret = func(fn, args);
+	} while (ret == TDX_RND_NO_ENTROPY && --retry);
+
+	return ret;
+}
+
+#define seamcall(_fn, _args)		sc_retry(__seamcall, (_fn), (_args))
+#define seamcall_ret(_fn, _args)	sc_retry(__seamcall_ret, (_fn), (_args))
+#define seamcall_saved_ret(_fn, _args)	sc_retry(__seamcall_saved_ret, (_fn), (_args))
+int tdx_cpu_enable(void);
+int tdx_enable(void);
+const char *tdx_dump_mce_info(struct mce *m);
+
+int tdx_guest_keyid_alloc(void);
+void tdx_guest_keyid_free(unsigned int keyid);
+
+struct tdx_td {
+	/* TD root structure: */
+	struct page *tdr_page;
+
+	int tdcs_nr_pages;
+	/* TD control structure: */
+	struct page **tdcs_pages;
+
+	/* Size of `tdcx_pages` in struct tdx_vp */
+	int tdcx_nr_pages;
+};
+
+struct tdx_vp {
+	/* TDVP root page */
+	struct page *tdvpr_page;
+
+	/* TD vCPU control structure: */
+	struct page **tdcx_pages;
+};
+
+
+static inline u64 mk_keyed_paddr(u16 hkid, struct page *page)
+{
+	u64 ret;
+
+	ret = page_to_phys(page);
+	/* KeyID bits are just above the physical address bits: */
+	ret |= (u64)hkid << boot_cpu_data.x86_phys_bits;
+
+	return ret;
+
+}
+
+u64 tdh_mng_addcx(struct tdx_td *td, struct page *tdcs_page);
+u64 tdh_vp_addcx(struct tdx_vp *vp, struct page *tdcx_page);
+u64 tdh_mng_key_config(struct tdx_td *td);
+u64 tdh_mng_create(struct tdx_td *td, u16 hkid);
+u64 tdh_vp_create(struct tdx_td *td, struct tdx_vp *vp);
+u64 tdh_mng_rd(struct tdx_td *td, u64 field, u64 *data);
+u64 tdh_vp_flush(struct tdx_vp *vp);
+u64 tdh_mng_vpflushdone(struct tdx_td *td);
+u64 tdh_mng_key_freeid(struct tdx_td *td);
+u64 tdh_mng_init(struct tdx_td *td, u64 td_params, u64 *extended_err);
+u64 tdh_vp_init(struct tdx_vp *vp, u64 initial_rcx, u32 x2apicid);
+u64 tdh_vp_rd(struct tdx_vp *vp, u64 field, u64 *data);
+u64 tdh_vp_wr(struct tdx_vp *vp, u64 field, u64 data, u64 mask);
+u64 tdh_phymem_page_reclaim(struct page *page, u64 *tdx_pt, u64 *tdx_owner, u64 *tdx_size);
+u64 tdh_phymem_cache_wb(bool resume);
+u64 tdh_phymem_page_wbinvd_tdr(struct tdx_td *td);
+#else
+static inline void tdx_init(void) { }
+static inline int tdx_cpu_enable(void) { return -ENODEV; }
+static inline int tdx_enable(void)  { return -ENODEV; }
+static inline const char *tdx_dump_mce_info(struct mce *m) { return NULL; }
+#endif	/* CONFIG_INTEL_TDX_HOST */
+
 #endif /* !__ASSEMBLY__ */
 #endif /* _ASM_X86_TDX_H */
