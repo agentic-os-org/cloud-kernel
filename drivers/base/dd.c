@@ -350,6 +350,58 @@ static void __exit deferred_probe_exit(void)
 }
 __exitcall(deferred_probe_exit);
 
+int __device_set_driver_override(struct device *dev, const char *s, size_t len)
+{
+	const char *new = NULL, *old;
+
+	if (!s)
+		return -EINVAL;
+
+	/*
+	 * The stored value will be used in sysfs show callback (sysfs_emit()),
+	 * which has a length limit of PAGE_SIZE and adds a trailing newline.
+	 * Thus we can store one character less to avoid truncation during sysfs
+	 * show.
+	 */
+	if (len >= (PAGE_SIZE - 1))
+		return -EINVAL;
+
+	/*
+	 * Compute the real length of the string in case userspace sends us a
+	 * bunch of \0 characters like python likes to do.
+	 */
+	len = strlen(s);
+
+	/* Handle trailing newline */
+	if (len) {
+		char *cp;
+
+		cp = strnchr(s, len, '\n');
+		if (cp)
+			len = cp - s;
+	}
+
+	/*
+	 * If empty string or "\n" passed, new remains NULL, clearing
+	 * the driver_override.name.
+	 */
+	if (len) {
+		new = kstrndup(s, len, GFP_KERNEL);
+		if (!new)
+			return -ENOMEM;
+	}
+
+	spin_lock(&dev->driver_override.lock);
+	old = dev->driver_override.name;
+	dev->driver_override.name = new;
+	spin_unlock(&dev->driver_override.lock);
+
+	kfree(old);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(__device_set_driver_override);
+
 /**
  * device_is_bound() - Check if device is bound to a driver
  * @dev: device to check

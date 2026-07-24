@@ -2026,8 +2026,8 @@ static int vfio_pci_bus_notifier(struct notifier_block *nb,
 	    pdev->is_virtfn && physfn == vdev->pdev) {
 		pci_info(vdev->pdev, "Captured SR-IOV VF %s driver_override\n",
 			 pci_name(pdev));
-		pdev->driver_override = kasprintf(GFP_KERNEL, "%s",
-						  vdev->vdev.ops->name);
+		WARN_ON(device_set_driver_override(&pdev->dev,
+						   vdev->vdev.ops->name));
 	} else if (action == BUS_NOTIFY_BOUND_DRIVER &&
 		   pdev->is_virtfn && physfn == vdev->pdev) {
 		struct pci_driver *drv = pci_dev_driver(pdev);
@@ -2215,6 +2215,10 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 	struct pci_dev *pdev = vdev->pdev;
 	struct iommu_group *group;
 	int ret;
+
+	/* Drivers must set a name.  Required for sequestering SR-IOV VFs */
+	if (WARN_ON(!vdev->vdev.ops->name))
+		return -EINVAL;
 
 	if (pdev->hdr_type != PCI_HEADER_TYPE_NORMAL)
 		return -EINVAL;
