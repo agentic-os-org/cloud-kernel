@@ -1597,7 +1597,7 @@ out_no_multi_part:
  * Global enables we care about.
  */
 #define GLOBAL_ENABLES_MASK (IPMI_BMC_EVT_MSG_BUFF | IPMI_BMC_RCV_MSG_INTR | \
-			     IPMI_BMC_EVT_MSG_INTR)
+		     IPMI_BMC_EVT_MSG_INTR)
 
 static void ssif_remove_dup(struct i2c_client *client)
 {
