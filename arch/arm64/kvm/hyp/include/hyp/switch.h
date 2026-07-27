@@ -27,7 +27,6 @@
 #include <asm/kvm_hyp.h>
 #include <asm/kvm_mmu.h>
 #include <asm/kvm_nested.h>
-#include <asm/kvm_ptrauth.h>
 #include <asm/fpsimd.h>
 #include <asm/debug-monitors.h>
 #include <asm/processor.h>
@@ -79,7 +78,7 @@ static inline void __activate_traps_fpsimd32(struct kvm_vcpu *vcpu)
 		switch(reg) {						\
 		case HFGRTR_EL2:					\
 		case HFGWTR_EL2:					\
-			id = HFGxTR_GROUP;				\
+			id = HFGRTR_GROUP;				\
 			break;						\
 		case HFGITR_EL2:					\
 			id = HFGITR_GROUP;				\
@@ -110,7 +109,7 @@ static inline void __activate_traps_fpsimd32(struct kvm_vcpu *vcpu)
 		u64 c = 0, s = 0;					\
 									\
 		ctxt_sys_reg(hctxt, reg) = read_sysreg_s(SYS_ ## reg);	\
-		if (vcpu_has_nv(vcpu) && !is_hyp_ctxt(vcpu))		\
+		if (is_nested_ctxt(vcpu))		\
 			compute_clr_set(vcpu, reg, c, s);		\
 									\
 		compute_undef_clr_set(vcpu, kvm, reg, c, s);		\
@@ -166,7 +165,7 @@ static inline void __activate_traps_hfgxtr(struct kvm_vcpu *vcpu)
 	update_fgt_traps(hctxt, vcpu, kvm, HFGRTR_EL2);
 	update_fgt_traps_cs(hctxt, vcpu, kvm, HFGWTR_EL2, 0,
 			    cpus_have_final_cap(ARM64_WORKAROUND_AMPERE_AC03_CPU_38) ?
-			    HFGxTR_EL2_TCR_EL1_MASK : 0);
+			    HFGWTR_EL2_TCR_EL1_MASK : 0);
 	update_fgt_traps(hctxt, vcpu, kvm, HFGITR_EL2);
 	update_fgt_traps(hctxt, vcpu, kvm, HDFGRTR_EL2);
 	update_fgt_traps(hctxt, vcpu, kvm, HDFGWTR_EL2);
@@ -177,7 +176,7 @@ static inline void __activate_traps_hfgxtr(struct kvm_vcpu *vcpu)
 
 #define __deactivate_fgt(htcxt, vcpu, kvm, reg)				\
 	do {								\
-		if ((vcpu_has_nv(vcpu) && !is_hyp_ctxt(vcpu)) ||	\
+		if (is_nested_ctxt(vcpu) ||	\
 		    kvm->arch.fgu[reg_to_fgt_group_id(reg)])		\
 			write_sysreg_s(ctxt_sys_reg(hctxt, reg),	\
 				       SYS_ ## reg);			\
@@ -266,7 +265,7 @@ static inline void __activate_traps_common(struct kvm_vcpu *vcpu)
 
 	if (cpus_have_final_cap(ARM64_HAS_HCX)) {
 		u64 hcrx = vcpu->arch.hcrx_el2;
-		if (vcpu_has_nv(vcpu) && !is_hyp_ctxt(vcpu)) {
+		if (is_nested_ctxt(vcpu)) {
 			u64 clr = 0, set = 0;
 
 			compute_clr_set(vcpu, HCRX_EL2, clr, set);
@@ -310,23 +309,58 @@ static inline void ___activate_traps(struct kvm_vcpu *vcpu, u64 hcr)
 	if (cpus_have_final_cap(ARM64_WORKAROUND_CAVIUM_TX2_219_TVM))
 		hcr |= HCR_TVM;
 
-	write_sysreg(hcr, hcr_el2);
+	write_sysreg_hcr(hcr);
 
-	if (cpus_have_final_cap(ARM64_HAS_RAS_EXTN) && (hcr & HCR_VSE))
-		write_sysreg_s(vcpu->arch.vsesr_el2, SYS_VSESR_EL2);
+	if (cpus_have_final_cap(ARM64_HAS_RAS_EXTN) && (hcr & HCR_VSE)) {
+		u64 vsesr;
+
+		/*
+		 * When HCR_EL2.AMO is set, physical SErrors are taken to EL2
+		 * and vSError injection is enabled for EL1. Conveniently, for
+		 * NV this means that it is never the case where a 'physical'
+		 * SError (injected by KVM or userspace) and vSError are
+		 * deliverable to the same context.
+		 *
+		 * As such, we can trivially select between the host or guest's
+		 * VSESR_EL2. Except for the case that FEAT_RAS hasn't been
+		 * exposed to the guest, where ESR propagation in hardware
+		 * occurs unconditionally.
+		 *
+		 * Paper over the architectural wart and use an IMPLEMENTATION
+		 * DEFINED ESR value in case FEAT_RAS is hidden from the guest.
+		 */
+		if (!vserror_state_is_nested(vcpu))
+			vsesr = vcpu->arch.vsesr_el2;
+		else if (kvm_has_ras(kern_hyp_va(vcpu->kvm)))
+			vsesr = __vcpu_sys_reg(vcpu, VSESR_EL2);
+		else
+			vsesr = ESR_ELx_ISV;
+
+		write_sysreg_s(vsesr, SYS_VSESR_EL2);
+	}
 }
 
 static inline void ___deactivate_traps(struct kvm_vcpu *vcpu)
 {
+	u64 *hcr;
+
+	if (vserror_state_is_nested(vcpu))
+		hcr = __ctxt_sys_reg(&vcpu->arch.ctxt, HCR_EL2);
+	else
+		hcr = &vcpu->arch.hcr_el2;
+
 	/*
 	 * If we pended a virtual abort, preserve it until it gets
 	 * cleared. See D1.14.3 (Virtual Interrupts) for details, but
 	 * the crucial bit is "On taking a vSError interrupt,
 	 * HCR_EL2.VSE is cleared to 0."
+	 *
+	 * Additionally, when in a nested context we need to propagate the
+	 * updated state to the guest hypervisor's HCR_EL2.
 	 */
-	if (vcpu->arch.hcr_el2 & HCR_VSE) {
-		vcpu->arch.hcr_el2 &= ~HCR_VSE;
-		vcpu->arch.hcr_el2 |= read_sysreg(hcr_el2) & HCR_VSE;
+	if (*hcr & HCR_VSE) {
+		*hcr &= ~HCR_VSE;
+		*hcr |= read_sysreg(hcr_el2) & HCR_VSE;
 	}
 }
 
@@ -337,11 +371,13 @@ static inline bool __populate_fault_info(struct kvm_vcpu *vcpu)
 
 static inline void __hyp_sve_restore_guest(struct kvm_vcpu *vcpu)
 {
+	u64 zcr_el2 = vcpu_sve_max_vq(vcpu) - 1;
+
 	/*
 	 * The vCPU's saved SVE state layout always matches the max VL of the
 	 * vCPU. Start off with the max VL so we can load the SVE state.
 	 */
-	sve_cond_update_zcr_vq(vcpu_sve_max_vq(vcpu) - 1, SYS_ZCR_EL2);
+	sve_cond_update_zcr_vq(zcr_el2, SYS_ZCR_EL2);
 	__sve_restore_state(vcpu_sve_pffr(vcpu),
 			    &vcpu->arch.ctxt.fp_regs.fpsr,
 			    true);
@@ -351,8 +387,10 @@ static inline void __hyp_sve_restore_guest(struct kvm_vcpu *vcpu)
 	 * nested guest, as the guest hypervisor could select a smaller VL. Slap
 	 * that into hardware before wrapping up.
 	 */
-	if (vcpu_has_nv(vcpu) && !is_hyp_ctxt(vcpu))
-		sve_cond_update_zcr_vq(__vcpu_sys_reg(vcpu, ZCR_EL2), SYS_ZCR_EL2);
+	if (is_nested_ctxt(vcpu)) {
+		zcr_el2 = min(zcr_el2, __vcpu_sys_reg(vcpu, ZCR_EL2));
+		sve_cond_update_zcr_vq(zcr_el2, SYS_ZCR_EL2);
+	}
 
 	write_sysreg_el1(__vcpu_sys_reg(vcpu, vcpu_sve_zcr_elx(vcpu)), SYS_ZCR);
 }
@@ -366,6 +404,10 @@ static inline void fpsimd_lazy_switch_to_guest(struct kvm_vcpu *vcpu)
 
 	if (vcpu_has_sve(vcpu)) {
 		zcr_el2 = vcpu_sve_max_vq(vcpu) - 1;
+
+		/* A guest hypervisor may restrict the effective max VL. */
+		if (is_nested_ctxt(vcpu))
+			zcr_el2 = min(zcr_el2, __vcpu_sys_reg(vcpu, ZCR_EL2));
 
 		write_sysreg_el2(zcr_el2, SYS_ZCR);
 
@@ -384,7 +426,7 @@ static inline void fpsimd_lazy_switch_to_host(struct kvm_vcpu *vcpu)
 	/*
 	 * When the guest owns the FP regs, we know that guest+hyp traps for
 	 * any FPSIMD/SVE/SME features exposed to the guest have been disabled
-	 * by either fpsimd_lazy_switch_to_guest() or kvm_hyp_handle_fpsimd()
+	 * by either __activate_cptr_traps() or kvm_hyp_handle_fpsimd()
 	 * prior to __guest_entry(). As __guest_entry() guarantees a context
 	 * synchronization event, we don't need an ISB here to avoid taking
 	 * traps for anything that was exposed to the guest.

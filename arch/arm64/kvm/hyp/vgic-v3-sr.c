@@ -58,7 +58,7 @@ u64 __gic_v3_get_lr(unsigned int lr)
 	unreachable();
 }
 
-static void __gic_v3_set_lr(u64 val, int lr)
+void __gic_v3_set_lr(u64 val, int lr)
 {
 	switch (lr & 0xf) {
 	case 0:
@@ -212,13 +212,11 @@ void __vgic_v3_save_state(struct vgic_v3_cpu_if *cpu_if)
 		}
 	}
 
-	if (used_lrs || cpu_if->its_vpe.its_vm) {
+	if (used_lrs) {
 		int i;
 		u32 elrsr;
 
 		elrsr = read_gicreg(ICH_ELRSR_EL2);
-
-		write_gicreg(cpu_if->vgic_hcr & ~ICH_HCR_EL2_En, ICH_HCR_EL2);
 
 		for (i = 0; i < used_lrs; i++) {
 			if (elrsr & (1 << i))
@@ -229,6 +227,21 @@ void __vgic_v3_save_state(struct vgic_v3_cpu_if *cpu_if)
 			__gic_v3_set_lr(0, i);
 		}
 	}
+
+	if (cpu_if->vgic_hcr & ICH_HCR_EL2_LRENPIE) {
+		u64 val = read_gicreg(ICH_HCR_EL2);
+		cpu_if->vgic_hcr &= ~ICH_HCR_EL2_EOIcount;
+		cpu_if->vgic_hcr |= val & ICH_HCR_EL2_EOIcount;
+	}
+
+	write_gicreg(cpu_if->vgic_hcr & ~ICH_HCR_EL2_En, ICH_HCR_EL2);
+
+	/*
+	 * Hack alert: On NV, this results in a trap so that the above
+	 * ICH_HCR_EL2 write actually takes effect. No synchronisation is
+	 * necessary, as we only care about the effects when this traps.
+	 */
+	read_gicreg(ICH_MISR_EL2);
 }
 
 void __vgic_v3_restore_state(struct vgic_v3_cpu_if *cpu_if)
@@ -236,12 +249,10 @@ void __vgic_v3_restore_state(struct vgic_v3_cpu_if *cpu_if)
 	u64 used_lrs = cpu_if->used_lrs;
 	int i;
 
-	if (used_lrs || cpu_if->its_vpe.its_vm) {
-		write_gicreg(cpu_if->vgic_hcr, ICH_HCR_EL2);
+	write_gicreg(cpu_if->vgic_hcr, ICH_HCR_EL2);
 
-		for (i = 0; i < used_lrs; i++)
-			__gic_v3_set_lr(cpu_if->vgic_lr[i], i);
-	}
+	for (i = 0; i < used_lrs; i++)
+		__gic_v3_set_lr(cpu_if->vgic_lr[i], i);
 
 	/*
 	 * Ensure that writes to the LRs, and on non-VHE systems ensure that
@@ -444,7 +455,7 @@ u64 __vgic_v3_get_gic_config(void)
 	 * that to be able to set ICC_SRE_EL1.SRE to 0, all the
 	 * interrupt overrides must be set. You've got to love this.
 	 */
-	sysreg_clear_set(hcr_el2, 0, HCR_AMO | HCR_FMO | HCR_IMO);
+	sysreg_clear_set_hcr(0, HCR_AMO | HCR_FMO | HCR_IMO);
 	isb();
 	write_gicreg(0, ICC_SRE_EL1);
 	isb();
@@ -453,7 +464,7 @@ u64 __vgic_v3_get_gic_config(void)
 
 	write_gicreg(sre, ICC_SRE_EL1);
 	isb();
-	sysreg_clear_set(hcr_el2, HCR_AMO | HCR_FMO | HCR_IMO, 0);
+	sysreg_clear_set_hcr(HCR_AMO | HCR_FMO | HCR_IMO, 0);
 	isb();
 
 	if (has_vhe())
@@ -1044,7 +1055,7 @@ static bool __vgic_v3_check_trap_forwarding(struct kvm_vcpu *vcpu,
 {
 	u64 ich_hcr;
 
-	if (!vcpu_has_nv(vcpu) || is_hyp_ctxt(vcpu))
+	if (!is_nested_ctxt(vcpu))
 		return false;
 
 	ich_hcr = __vcpu_sys_reg(vcpu, ICH_HCR_EL2);
@@ -1052,11 +1063,11 @@ static bool __vgic_v3_check_trap_forwarding(struct kvm_vcpu *vcpu,
 	switch (sysreg) {
 	case SYS_ICC_IGRPEN0_EL1:
 		if (is_read &&
-		    (__vcpu_sys_reg(vcpu, HFGRTR_EL2) & HFGxTR_EL2_ICC_IGRPENn_EL1))
+		    (__vcpu_sys_reg(vcpu, HFGRTR_EL2) & HFGRTR_EL2_ICC_IGRPENn_EL1))
 			return true;
 
 		if (!is_read &&
-		    (__vcpu_sys_reg(vcpu, HFGWTR_EL2) & HFGxTR_EL2_ICC_IGRPENn_EL1))
+		    (__vcpu_sys_reg(vcpu, HFGWTR_EL2) & HFGWTR_EL2_ICC_IGRPENn_EL1))
 			return true;
 
 		fallthrough;
@@ -1073,11 +1084,11 @@ static bool __vgic_v3_check_trap_forwarding(struct kvm_vcpu *vcpu,
 
 	case SYS_ICC_IGRPEN1_EL1:
 		if (is_read &&
-		    (__vcpu_sys_reg(vcpu, HFGRTR_EL2) & HFGxTR_EL2_ICC_IGRPENn_EL1))
+		    (__vcpu_sys_reg(vcpu, HFGRTR_EL2) & HFGRTR_EL2_ICC_IGRPENn_EL1))
 			return true;
 
 		if (!is_read &&
-		    (__vcpu_sys_reg(vcpu, HFGWTR_EL2) & HFGxTR_EL2_ICC_IGRPENn_EL1))
+		    (__vcpu_sys_reg(vcpu, HFGWTR_EL2) & HFGWTR_EL2_ICC_IGRPENn_EL1))
 			return true;
 
 		fallthrough;

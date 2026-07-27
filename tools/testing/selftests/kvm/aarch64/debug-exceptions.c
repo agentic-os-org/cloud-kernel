@@ -433,15 +433,15 @@ static void test_guest_debug_exceptions(uint8_t bpn, uint8_t wpn, uint8_t ctx_bp
 	vcpu_init_descriptor_tables(vcpu);
 
 	vm_install_sync_handler(vm, VECTOR_SYNC_CURRENT,
-				ESR_EC_BRK_INS, guest_sw_bp_handler);
+				ESR_ELx_EC_BRK64, guest_sw_bp_handler);
 	vm_install_sync_handler(vm, VECTOR_SYNC_CURRENT,
-				ESR_EC_HW_BP_CURRENT, guest_hw_bp_handler);
+				ESR_ELx_EC_BREAKPT_CUR, guest_hw_bp_handler);
 	vm_install_sync_handler(vm, VECTOR_SYNC_CURRENT,
-				ESR_EC_WP_CURRENT, guest_wp_handler);
+				ESR_ELx_EC_WATCHPT_CUR, guest_wp_handler);
 	vm_install_sync_handler(vm, VECTOR_SYNC_CURRENT,
-				ESR_EC_SSTEP_CURRENT, guest_ss_handler);
+				ESR_ELx_EC_SOFTSTP_CUR, guest_ss_handler);
 	vm_install_sync_handler(vm, VECTOR_SYNC_CURRENT,
-				ESR_EC_SVC64, guest_svc_handler);
+				ESR_ELx_EC_SVC64, guest_svc_handler);
 
 	/* Specify bpn/wpn/ctx_bpn to be tested */
 	vcpu_args_set(vcpu, 3, bpn, wpn, ctx_bpn);
@@ -501,7 +501,7 @@ void test_single_step_from_userspace(int test_cnt)
 		TEST_ASSERT(ss_enable, "Unexpected KVM_EXIT_DEBUG");
 
 		/* Check if the current pc is expected. */
-		vcpu_get_reg(vcpu, ARM64_CORE_REG(regs.pc), &pc);
+		pc = vcpu_get_reg(vcpu, ARM64_CORE_REG(regs.pc));
 		TEST_ASSERT(!test_pc || pc == test_pc,
 			    "Unexpected pc 0x%lx (expected 0x%lx)",
 			    pc, test_pc);
@@ -583,7 +583,7 @@ int main(int argc, char *argv[])
 	uint64_t aa64dfr0;
 
 	vm = vm_create_with_one_vcpu(&vcpu, guest_code);
-	vcpu_get_reg(vcpu, KVM_ARM64_SYS_REG(SYS_ID_AA64DFR0_EL1), &aa64dfr0);
+	aa64dfr0 = vcpu_get_reg(vcpu, KVM_ARM64_SYS_REG(SYS_ID_AA64DFR0_EL1));
 	__TEST_REQUIRE(debug_version(aa64dfr0) >= 6,
 		       "Armv8 debug architecture not supported.");
 	kvm_vm_free(vm);

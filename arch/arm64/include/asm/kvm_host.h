@@ -39,7 +39,7 @@
 
 #define KVM_MAX_VCPUS VGIC_V3_MAX_CPUS
 
-#define KVM_VCPU_MAX_FEATURES 7
+#define KVM_VCPU_MAX_FEATURES 9
 #define KVM_VCPU_VALID_FEATURES	(BIT(KVM_VCPU_MAX_FEATURES) - 1)
 
 #define KVM_REQ_SLEEP \
@@ -279,7 +279,8 @@ struct kvm_sysreg_masks;
 
 enum fgt_group_id {
 	__NO_FGT_GROUP__,
-	HFGxTR_GROUP,
+	HFGRTR_GROUP,
+	HFGWTR_GROUP = HFGRTR_GROUP,
 	HDFGRTR_GROUP,
 	HDFGWTR_GROUP = HDFGRTR_GROUP,
 	HFGITR_GROUP,
@@ -361,8 +362,8 @@ struct kvm_arch {
 
 	cpumask_var_t supported_cpus;
 
-	/* PMCR_EL0.N value for the guest */
-	u8 pmcr_n;
+	/* Maximum number of counters for the guest */
+	u8 nr_pmu_counters;
 
 	/* Iterator for idreg debugfs */
 	u8	idreg_debugfs_iter;
@@ -516,6 +517,7 @@ enum vcpu_sysreg {
 	/* Anything from this can be RES0/RES1 sanitised */
 	MARKER(__SANITISED_REG_START__),
 	TCR2_EL2,	/* Extended Translation Control Register (EL2) */
+	SCTLR2_EL2,	/* System Control Register 2 (EL2) */
 	MDCR_EL2,	/* Monitor Debug Configuration Register (EL2) */
 	CNTHCTL_EL2,	/* Counter-timer Hypervisor Control register */
 
@@ -530,6 +532,7 @@ enum vcpu_sysreg {
 	VNCR(TTBR1_EL1),/* Translation Table Base Register 1 */
 	VNCR(TCR_EL1),	/* Translation Control Register */
 	VNCR(TCR2_EL1),	/* Extended Translation Control Register */
+	VNCR(SCTLR2_EL1), /* System Control Register 2 */
 	VNCR(ESR_EL1),	/* Exception Syndrome Register */
 	VNCR(AFSR0_EL1),/* Auxiliary Fault Status Register 0 */
 	VNCR(AFSR1_EL1),/* Auxiliary Fault Status Register 1 */
@@ -555,6 +558,10 @@ enum vcpu_sysreg {
 	/* Permission Indirection Extension registers */
 	VNCR(PIR_EL1),	 /* Permission Indirection Register 1 (EL1) */
 	VNCR(PIRE0_EL1), /*  Permission Indirection Register 0 (EL1) */
+
+	/* FEAT_RAS registers */
+	VNCR(VDISR_EL2),
+	VNCR(VSESR_EL2),
 
 	VNCR(HFGRTR_EL2),
 	VNCR(HFGWTR_EL2),
@@ -778,7 +785,7 @@ struct kvm_vcpu_arch {
 	u8 iflags;
 
 	/* State flags for kernel bookkeeping, unused by the hypervisor code */
-	u8 sflags;
+	u16 sflags;
 
 	/*
 	 * Don't run the guest (internal implementation need).
@@ -925,9 +932,21 @@ struct kvm_vcpu_arch {
 		__vcpu_flags_preempt_enable();			\
 	} while (0)
 
+#define __vcpu_test_and_clear_flag(v, flagset, f, m)		\
+	({							\
+		typeof(v->arch.flagset) set;			\
+								\
+		set = __vcpu_get_flag(v, flagset, f, m);	\
+		__vcpu_clear_flag(v, flagset, f, m);		\
+								\
+		set;						\
+	})
+
 #define vcpu_get_flag(v, ...)	__vcpu_get_flag((v), __VA_ARGS__)
 #define vcpu_set_flag(v, ...)	__vcpu_set_flag((v), __VA_ARGS__)
 #define vcpu_clear_flag(v, ...)	__vcpu_clear_flag((v), __VA_ARGS__)
+#define vcpu_test_and_clear_flag(v, ...)			\
+	__vcpu_test_and_clear_flag((v), __VA_ARGS__)
 
 /* SVE exposed to guest */
 #define GUEST_HAS_SVE		__vcpu_single_flag(cflags, BIT(0))
@@ -989,6 +1008,8 @@ struct kvm_vcpu_arch {
 #define IN_WFI			__vcpu_single_flag(sflags, BIT(6))
 /* KVM is currently emulating a nested ERET */
 #define IN_NESTED_ERET		__vcpu_single_flag(sflags, BIT(7))
+/* SError pending for nested guest */
+#define NESTED_SERROR_PENDING	__vcpu_single_flag(sflags, BIT(8))
 
 
 /* Pointer to the vcpu's SVE FFR for sve_{save,load}_state() */
@@ -1125,6 +1146,7 @@ static inline bool __vcpu_read_sys_reg_from_cpu(int reg, u64 *val)
 	case IFSR32_EL2:	*val = read_sysreg_s(SYS_IFSR32_EL2);	break;
 	case DBGVCR32_EL2:	*val = read_sysreg_s(SYS_DBGVCR32_EL2);	break;
 	case ZCR_EL1:		*val = read_sysreg_s(SYS_ZCR_EL12);	break;
+	case SCTLR2_EL1:	*val = read_sysreg_s(SYS_SCTLR2_EL12);	break;
 	default:		return false;
 	}
 
@@ -1171,6 +1193,7 @@ static inline bool __vcpu_write_sys_reg_to_cpu(u64 val, int reg)
 	case IFSR32_EL2:	write_sysreg_s(val, SYS_IFSR32_EL2);	break;
 	case DBGVCR32_EL2:	write_sysreg_s(val, SYS_DBGVCR32_EL2);	break;
 	case ZCR_EL1:		write_sysreg_s(val, SYS_ZCR_EL12);	break;
+	case SCTLR2_EL1:	write_sysreg_s(val, SYS_SCTLR2_EL12);	break;
 	default:		return false;
 	}
 
@@ -1226,9 +1249,8 @@ void kvm_arm_resume_guest(struct kvm *kvm);
 	})
 
 /*
- * The couple of isb() below are there to guarantee the same behaviour
- * on VHE as on !VHE, where the eret to EL1 acts as a context
- * synchronization event.
+ * The isb() below is there to guarantee the same behaviour on VHE as on !VHE,
+ * where the eret to EL1 acts as a context synchronization event.
  */
 #define kvm_call_hyp(f, ...)						\
 	do {								\
@@ -1246,7 +1268,6 @@ void kvm_arm_resume_guest(struct kvm *kvm);
 									\
 		if (has_vhe()) {					\
 			ret = f(__VA_ARGS__);				\
-			isb();						\
 		} else {						\
 			ret = kvm_call_hyp_nvhe(f, ##__VA_ARGS__);	\
 		}							\
@@ -1355,8 +1376,6 @@ static inline bool kvm_arm_is_pvsched_enabled(struct kvm_vcpu_arch *vcpu_arch)
 	return false;
 }
 #endif
-
-void kvm_set_sei_esr(struct kvm_vcpu *vcpu, u64 syndrome);
 
 struct kvm_vcpu *kvm_mpidr_to_vcpu(struct kvm *kvm, unsigned long mpidr);
 
@@ -1601,6 +1620,24 @@ void kvm_set_vm_id_reg(struct kvm *kvm, u32 reg, u64 val);
 	(kvm_cmp_feat(kvm, id, fld, >=, min) &&				\
 	kvm_cmp_feat(kvm, id, fld, <=, max))
 
+/* Check for a given level of PAuth support */
+#define kvm_has_pauth(k, l)						\
+	({								\
+		bool pa, pi, pa3;					\
+									\
+		pa  = kvm_has_feat((k), ID_AA64ISAR1_EL1, APA, l);	\
+		pa &= kvm_has_feat((k), ID_AA64ISAR1_EL1, GPA, IMP);	\
+		pi  = kvm_has_feat((k), ID_AA64ISAR1_EL1, API, l);	\
+		pi &= kvm_has_feat((k), ID_AA64ISAR1_EL1, GPI, IMP);	\
+		pa3  = kvm_has_feat((k), ID_AA64ISAR2_EL1, APA3, l);	\
+		pa3 &= kvm_has_feat((k), ID_AA64ISAR2_EL1, GPA3, IMP);	\
+									\
+		(pa + pi + pa3) == 1;					\
+	})
+
+#define kvm_has_tcr2(k)				\
+	(kvm_has_feat((k), ID_AA64MMFR3_EL1, TCRX, IMP))
+
 extern bool kvm_ncsnp_support;
 extern bool kvm_dvmbm_support;
 
@@ -1665,23 +1702,14 @@ static inline void host_kvm_vcpu_pmu_resync_el0(void)
 
 u32 kvm_pv_cpu_freq_get(struct kvm_vcpu *vcpu);
 
-/* Check for a given level of PAuth support */
-#define kvm_has_pauth(k, l)						\
-	({								\
-		bool pa, pi, pa3;					\
-									\
-		pa  = kvm_has_feat((k), ID_AA64ISAR1_EL1, APA, l);	\
-		pa &= kvm_has_feat((k), ID_AA64ISAR1_EL1, GPA, IMP);	\
-		pi  = kvm_has_feat((k), ID_AA64ISAR1_EL1, API, l);	\
-		pi &= kvm_has_feat((k), ID_AA64ISAR1_EL1, GPI, IMP);	\
-		pa3  = kvm_has_feat((k), ID_AA64ISAR2_EL1, APA3, l);	\
-		pa3 &= kvm_has_feat((k), ID_AA64ISAR2_EL1, GPA3, IMP);	\
-									\
-		(pa + pi + pa3) == 1;					\
-	})
-
 #define kvm_has_fpmr(k)					\
 	(system_supports_fpmr() &&			\
 	 kvm_has_feat((k), ID_AA64PFR2_EL1, FPMR, IMP))
+
+#define kvm_has_ras(k)					\
+	(kvm_has_feat((k), ID_AA64PFR0_EL1, RAS, IMP))
+
+#define kvm_has_sctlr2(k)				\
+	(kvm_has_feat((k), ID_AA64MMFR3_EL1, SCTLRX, IMP))
 
 #endif /* __ARM64_KVM_HOST_H__ */

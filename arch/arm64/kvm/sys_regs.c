@@ -143,6 +143,7 @@ static bool get_el2_to_el1_mapping(unsigned int reg,
 		MAPPED_EL2_SYSREG(SPSR_EL2,    SPSR_EL1,    NULL	     );
 		MAPPED_EL2_SYSREG(ZCR_EL2,     ZCR_EL1,     NULL	     );
 		MAPPED_EL2_SYSREG(CONTEXTIDR_EL2, CONTEXTIDR_EL1, NULL	     );
+		MAPPED_EL2_SYSREG(SCTLR2_EL2,  SCTLR2_EL1,  NULL	     );
 	default:
 		return false;
 	}
@@ -435,7 +436,7 @@ static bool access_vm_reg(struct kvm_vcpu *vcpu,
 	u64 val, mask, shift;
 
 	if (reg_to_encoding(r) == SYS_TCR2_EL1 &&
-	    !kvm_has_feat(vcpu->kvm, ID_AA64MMFR3_EL1, TCRX, IMP))
+	    !kvm_has_tcr2(vcpu->kvm))
 		return undef_access(vcpu, p, r);
 
 	BUG_ON(!p->is_write);
@@ -460,7 +461,7 @@ static bool access_tcr2_el2(struct kvm_vcpu *vcpu,
 			    struct sys_reg_params *p,
 			    const struct sys_reg_desc *r)
 {
-	if (!kvm_has_feat(vcpu->kvm, ID_AA64MMFR3_EL1, TCRX, IMP)) {
+	if (!kvm_has_tcr2(vcpu->kvm)) {
 		kvm_inject_undefined(vcpu);
 		return false;
 	}
@@ -801,7 +802,7 @@ static unsigned int pmu_visibility(const struct kvm_vcpu *vcpu,
 static u64 reset_pmu_reg(struct kvm_vcpu *vcpu, const struct sys_reg_desc *r)
 {
 	u64 mask = BIT(ARMV8_PMU_CYCLE_IDX);
-	u8 n = vcpu->kvm->arch.pmcr_n;
+	u8 n = vcpu->kvm->arch.nr_pmu_counters;
 
 	if (n)
 		mask |= GENMASK(n - 1, 0);
@@ -1117,16 +1118,14 @@ static bool access_pmcnten(struct kvm_vcpu *vcpu, struct sys_reg_params *p,
 	mask = kvm_pmu_accessible_counter_mask(vcpu);
 	if (p->is_write) {
 		val = p->regval & mask;
-		if (r->Op2 & 0x1) {
+		if (r->Op2 & 0x1)
 			/* accessing PMCNTENSET_EL0 */
 			__vcpu_sys_reg(vcpu, PMCNTENSET_EL0) |= val;
-			kvm_pmu_enable_counter_mask(vcpu, val);
-			kvm_vcpu_pmu_restore_guest(vcpu);
-		} else {
+		else
 			/* accessing PMCNTENCLR_EL0 */
 			__vcpu_sys_reg(vcpu, PMCNTENSET_EL0) &= ~val;
-			kvm_pmu_disable_counter_mask(vcpu, val);
-		}
+
+		kvm_pmu_reprogram_counter_mask(vcpu, val);
 	} else {
 		p->regval = __vcpu_sys_reg(vcpu, PMCNTENSET_EL0);
 	}
@@ -1234,8 +1233,9 @@ static int set_pmcr(struct kvm_vcpu *vcpu, const struct sys_reg_desc *r,
 	 * with the existing KVM behavior.
 	 */
 	if (!kvm_vm_has_ran_once(kvm) &&
+	    !vcpu_has_nv(vcpu)	      &&
 	    new_n <= kvm_arm_pmu_get_max_counters(kvm))
-		kvm->arch.pmcr_n = new_n;
+		kvm->arch.nr_pmu_counters = new_n;
 
 	mutex_unlock(&kvm->arch.config_lock);
 
@@ -1622,7 +1622,6 @@ static u64 __kvm_read_sanitised_id_reg(const struct kvm_vcpu *vcpu,
 		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_GCS);
 		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_THE);
 		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_MTEX);
-		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_DF2);
 		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_PFAR);
 		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_MPAM_frac);
 		val &= ~ARM64_FEATURE_MASK(ID_AA64PFR1_EL1_NMI);
@@ -1648,8 +1647,10 @@ static u64 __kvm_read_sanitised_id_reg(const struct kvm_vcpu *vcpu,
 		val &= ~ID_AA64MMFR2_EL1_NV;
 		break;
 	case SYS_ID_AA64MMFR3_EL1:
-		val &= ID_AA64MMFR3_EL1_TCRX | ID_AA64MMFR3_EL1_S1POE |
-			ID_AA64MMFR3_EL1_S1PIE;
+		val &= ID_AA64MMFR3_EL1_TCRX |
+		       ID_AA64MMFR3_EL1_SCTLRX |
+		       ID_AA64MMFR3_EL1_S1POE |
+		       ID_AA64MMFR3_EL1_S1PIE;
 
 		if (!system_supports_poe())
 			val &= ~ID_AA64MMFR3_EL1_S1POE;
@@ -1827,6 +1828,26 @@ static u64 sanitise_id_aa64dfr0_el1(const struct kvm_vcpu *vcpu, u64 val)
 	return val;
 }
 
+/*
+ * Older versions of KVM erroneously claim support for FEAT_DoubleLock with
+ * NV-enabled VMs on unsupporting hardware. Silently ignore the incorrect
+ * value if it is consistent with the bug.
+ */
+static bool ignore_feat_doublelock(struct kvm_vcpu *vcpu, u64 val)
+{
+	u8 host, user;
+
+	if (!vcpu_has_nv(vcpu))
+		return false;
+
+	host = SYS_FIELD_GET(ID_AA64DFR0_EL1, DoubleLock,
+			     read_sanitised_ftr_reg(SYS_ID_AA64DFR0_EL1));
+	user = SYS_FIELD_GET(ID_AA64DFR0_EL1, DoubleLock, val);
+
+	return host == ID_AA64DFR0_EL1_DoubleLock_NI &&
+	       user == ID_AA64DFR0_EL1_DoubleLock_IMP;
+}
+
 static int set_id_aa64dfr0_el1(struct kvm_vcpu *vcpu,
 			       const struct sys_reg_desc *rd,
 			       u64 val)
@@ -1858,18 +1879,25 @@ static int set_id_aa64dfr0_el1(struct kvm_vcpu *vcpu,
 	if (debugver < ID_AA64DFR0_EL1_DebugVer_IMP)
 		return -EINVAL;
 
+	if (ignore_feat_doublelock(vcpu, val)) {
+		val &= ~ID_AA64DFR0_EL1_DoubleLock;
+		val |= SYS_FIELD_PREP_ENUM(ID_AA64DFR0_EL1, DoubleLock, NI);
+	}
+
 	return set_id_reg(vcpu, rd, val);
 }
 
 static u64 read_sanitised_id_dfr0_el1(struct kvm_vcpu *vcpu,
 				      const struct sys_reg_desc *rd)
 {
-	u8 perfmon = pmuver_to_perfmon(kvm_arm_pmu_get_pmuver_limit());
+	u8 perfmon;
 	u64 val = read_sanitised_ftr_reg(SYS_ID_DFR0_EL1);
 
 	val &= ~ID_DFR0_EL1_PerfMon_MASK;
-	if (kvm_vcpu_has_pmu(vcpu))
+	if (kvm_vcpu_has_pmu(vcpu)) {
+		perfmon = pmuver_to_perfmon(kvm_arm_pmu_get_pmuver_limit());
 		val |= SYS_FIELD_PREP(ID_DFR0_EL1, PerfMon, perfmon);
+	}
 
 	val = ID_REG_LIMIT_FIELD_ENUM(val, ID_DFR0_EL1, CopDbg, Debugv8p8);
 
@@ -1954,6 +1982,34 @@ static int set_id_aa64pfr1_el1(struct kvm_vcpu *vcpu,
 	/* See set_id_aa64pfr0_el1 for comment about MPAM */
 	if ((hw_val & mpam_mask) == (user_val & mpam_mask))
 		user_val &= ~ID_AA64PFR1_EL1_MPAM_frac_MASK;
+
+	return set_id_reg(vcpu, rd, user_val);
+}
+
+/*
+ * Allow userspace to de-feature a stage-2 translation granule but prevent it
+ * from claiming the impossible.
+ */
+#define tgran2_val_allowed(tg, safe, user)			\
+({								\
+	u8 __s = SYS_FIELD_GET(ID_AA64MMFR0_EL1, tg, safe);	\
+	u8 __u = SYS_FIELD_GET(ID_AA64MMFR0_EL1, tg, user);	\
+								\
+	__s == __u || __u == ID_AA64MMFR0_EL1_##tg##_NI;	\
+})
+
+static int set_id_aa64mmfr0_el1(struct kvm_vcpu *vcpu,
+				const struct sys_reg_desc *rd, u64 user_val)
+{
+	u64 sanitized_val = kvm_read_sanitised_id_reg(vcpu, rd);
+
+	if (!vcpu_has_nv(vcpu))
+		return set_id_reg(vcpu, rd, user_val);
+
+	if (!tgran2_val_allowed(TGRAN4_2, sanitized_val, user_val) ||
+	    !tgran2_val_allowed(TGRAN16_2, sanitized_val, user_val) ||
+	    !tgran2_val_allowed(TGRAN64_2, sanitized_val, user_val))
+		return -EINVAL;
 
 	return set_id_reg(vcpu, rd, user_val);
 }
@@ -2416,6 +2472,21 @@ static unsigned int vncr_el2_visibility(const struct kvm_vcpu *vcpu,
 	return REG_HIDDEN;
 }
 
+static unsigned int sctlr2_visibility(const struct kvm_vcpu *vcpu,
+				      const struct sys_reg_desc *rd)
+{
+	if (kvm_has_sctlr2(vcpu->kvm))
+		return 0;
+
+	return REG_HIDDEN;
+}
+
+static unsigned int sctlr2_el2_visibility(const struct kvm_vcpu *vcpu,
+					  const struct sys_reg_desc *rd)
+{
+	return __el2_visibility(vcpu, rd, sctlr2_visibility);
+}
+
 static bool access_zcr_el2(struct kvm_vcpu *vcpu,
 			   struct sys_reg_params *p,
 			   const struct sys_reg_desc *r)
@@ -2489,6 +2560,73 @@ static bool access_gic_elrsr(struct kvm_vcpu *vcpu,
 	p->regval = vgic_v3_get_elrsr(vcpu);
 
 	return true;
+}
+
+static unsigned int cnthv_visibility(const struct kvm_vcpu *vcpu,
+				     const struct sys_reg_desc *rd)
+{
+	if (vcpu_has_nv(vcpu) &&
+	    !vcpu_has_feature(vcpu, KVM_ARM_VCPU_HAS_EL2_E2H0))
+		return 0;
+
+	return REG_HIDDEN;
+}
+
+static bool access_mdcr(struct kvm_vcpu *vcpu,
+			struct sys_reg_params *p,
+			const struct sys_reg_desc *r)
+{
+	u64 hpmn, val, old = __vcpu_sys_reg(vcpu, MDCR_EL2);
+
+	if (!p->is_write) {
+		p->regval = old;
+		return true;
+	}
+
+	val = p->regval;
+	hpmn = FIELD_GET(MDCR_EL2_HPMN, val);
+
+	/*
+	 * If HPMN is out of bounds, limit it to what we actually
+	 * support. This matches the UNKNOWN definition of the field
+	 * in that case, and keeps the emulation simple. Sort of.
+	 */
+	if (hpmn > vcpu->kvm->arch.nr_pmu_counters) {
+		hpmn = vcpu->kvm->arch.nr_pmu_counters;
+		u64p_replace_bits(&val, hpmn, MDCR_EL2_HPMN);
+	}
+
+	__vcpu_sys_reg(vcpu, MDCR_EL2) = val;
+
+	/*
+	 * Request a reload of the PMU to enable/disable the counters
+	 * affected by HPME.
+	 */
+	if ((old ^ val) & MDCR_EL2_HPME)
+		kvm_make_request(KVM_REQ_RELOAD_PMU, vcpu);
+
+	return true;
+}
+
+static u64 reset_mdcr(struct kvm_vcpu *vcpu, const struct sys_reg_desc *r)
+{
+	__vcpu_sys_reg(vcpu, r->reg) = vcpu->kvm->arch.nr_pmu_counters;
+	return vcpu->kvm->arch.nr_pmu_counters;
+}
+
+static unsigned int tcr2_visibility(const struct kvm_vcpu *vcpu,
+				    const struct sys_reg_desc *rd)
+{
+	if (kvm_has_tcr2(vcpu->kvm))
+		return 0;
+
+	return REG_HIDDEN;
+}
+
+static unsigned int tcr2_el2_visibility(const struct kvm_vcpu *vcpu,
+				    const struct sys_reg_desc *rd)
+{
+	return __el2_visibility(vcpu, rd, tcr2_visibility);
 }
 
 /*
@@ -2599,7 +2737,6 @@ static const struct sys_reg_desc sys_reg_descs[] = {
 		      ID_AA64PFR0_EL1_FP)),
 	ID_FILTERED(ID_AA64PFR1_EL1, id_aa64pfr1_el1,
 				     ~(ID_AA64PFR1_EL1_PFAR |
-				       ID_AA64PFR1_EL1_DF2 |
 				       ID_AA64PFR1_EL1_MTEX |
 				       ID_AA64PFR1_EL1_THE |
 				       ID_AA64PFR1_EL1_GCS |
@@ -2661,10 +2798,8 @@ static const struct sys_reg_desc sys_reg_descs[] = {
 	ID_UNALLOCATED(6,7),
 
 	/* CRm=7 */
-	ID_WRITABLE(ID_AA64MMFR0_EL1, ~(ID_AA64MMFR0_EL1_RES0 |
-					ID_AA64MMFR0_EL1_TGRAN4_2 |
-					ID_AA64MMFR0_EL1_TGRAN64_2 |
-					ID_AA64MMFR0_EL1_TGRAN16_2 |
+	ID_FILTERED(ID_AA64MMFR0_EL1, id_aa64mmfr0_el1,
+				      ~(ID_AA64MMFR0_EL1_RES0 |
 					ID_AA64MMFR0_EL1_ASIDBITS)),
 	ID_WRITABLE(ID_AA64MMFR1_EL1, ~(ID_AA64MMFR1_EL1_RES0 |
 					ID_AA64MMFR1_EL1_HCX |
@@ -2681,6 +2816,7 @@ static const struct sys_reg_desc sys_reg_descs[] = {
 					ID_AA64MMFR2_EL1_NV |
 					ID_AA64MMFR2_EL1_CCIDX)),
 	ID_WRITABLE(ID_AA64MMFR3_EL1, (ID_AA64MMFR3_EL1_TCRX	|
+				       ID_AA64MMFR3_EL1_SCTLRX	|
 				       ID_AA64MMFR3_EL1_S1PIE   |
 				       ID_AA64MMFR3_EL1_S1POE)),
 	ID_WRITABLE(ID_AA64MMFR4_EL1, ID_AA64MMFR4_EL1_NV_frac),
@@ -2691,6 +2827,8 @@ static const struct sys_reg_desc sys_reg_descs[] = {
 	{ SYS_DESC(SYS_SCTLR_EL1), access_vm_reg, reset_val, SCTLR_EL1, 0x00C50078 },
 	{ SYS_DESC(SYS_ACTLR_EL1), access_actlr, reset_actlr, ACTLR_EL1 },
 	{ SYS_DESC(SYS_CPACR_EL1), NULL, reset_val, CPACR_EL1, 0 },
+	{ SYS_DESC(SYS_SCTLR2_EL1), access_vm_reg, reset_val, SCTLR2_EL1, 0,
+	  .visibility = sctlr2_visibility },
 
 	MTE_REG(RGSR_EL1),
 	MTE_REG(GCR_EL1),
@@ -2702,7 +2840,8 @@ static const struct sys_reg_desc sys_reg_descs[] = {
 	{ SYS_DESC(SYS_TTBR0_EL1), access_vm_reg, reset_unknown, TTBR0_EL1 },
 	{ SYS_DESC(SYS_TTBR1_EL1), access_vm_reg, reset_unknown, TTBR1_EL1 },
 	{ SYS_DESC(SYS_TCR_EL1), access_vm_reg, reset_val, TCR_EL1, 0 },
-	{ SYS_DESC(SYS_TCR2_EL1), access_vm_reg, reset_val, TCR2_EL1, 0 },
+	{ SYS_DESC(SYS_TCR2_EL1), access_vm_reg, reset_val, TCR2_EL1, 0,
+	  .visibility = tcr2_visibility },
 
 	PTRAUTH_KEY(APIA),
 	PTRAUTH_KEY(APIB),
@@ -3029,8 +3168,10 @@ static const struct sys_reg_desc sys_reg_descs[] = {
 	EL2_REG_VNCR(VMPIDR_EL2, reset_unknown, 0),
 	EL2_REG(SCTLR_EL2, access_rw, reset_val, SCTLR_EL2_RES1),
 	EL2_REG(ACTLR_EL2, access_rw, reset_val, 0),
+	EL2_REG_FILTERED(SCTLR2_EL2, access_vm_reg, reset_val, 0,
+			 sctlr2_el2_visibility),
 	EL2_REG_VNCR(HCR_EL2, reset_hcr, 0),
-	EL2_REG(MDCR_EL2, access_rw, reset_val, 0),
+	EL2_REG(MDCR_EL2, access_mdcr, reset_mdcr, 0),
 	EL2_REG(CPTR_EL2, access_rw, reset_val, CPTR_NVHE_EL2_RES1),
 	EL2_REG_VNCR(HSTR_EL2, reset_val, 0),
 	EL2_REG_VNCR(HFGRTR_EL2, reset_val, 0),
@@ -3046,7 +3187,8 @@ static const struct sys_reg_desc sys_reg_descs[] = {
 	EL2_REG(TTBR0_EL2, access_rw, reset_val, 0),
 	EL2_REG(TTBR1_EL2, access_rw, reset_val, 0),
 	EL2_REG(TCR_EL2, access_rw, reset_val, TCR_EL2_RES1),
-	EL2_REG(TCR2_EL2, access_tcr2_el2, reset_val, TCR2_EL2_RES1),
+	EL2_REG_FILTERED(TCR2_EL2, access_tcr2_el2, reset_val, TCR2_EL2_RES1,
+			 tcr2_el2_visibility),
 	EL2_REG_VNCR(VTTBR_EL2, reset_val, 0),
 	EL2_REG_VNCR(VTCR_EL2, reset_val, 0),
 	EL2_REG_FILTERED(VNCR_EL2, bad_vncr_trap, reset_val, 0,
@@ -3074,6 +3216,7 @@ static const struct sys_reg_desc sys_reg_descs[] = {
 	EL2_REG(AFSR0_EL2, access_rw, reset_val, 0),
 	EL2_REG(AFSR1_EL2, access_rw, reset_val, 0),
 	EL2_REG_REDIR(ESR_EL2, reset_val, 0),
+	EL2_REG_VNCR(VSESR_EL2, reset_unknown, 0),
 	{ SYS_DESC(SYS_FPEXC32_EL2), undef_access, reset_val, FPEXC32_EL2, 0x700 },
 
 	EL2_REG_REDIR(FAR_EL2, reset_val, 0),
@@ -3096,6 +3239,7 @@ static const struct sys_reg_desc sys_reg_descs[] = {
 	EL2_REG(VBAR_EL2, access_rw, reset_val, 0),
 	EL2_REG(RVBAR_EL2, access_rw, reset_val, 0),
 	{ SYS_DESC(SYS_RMR_EL2), undef_access },
+	EL2_REG_VNCR(VDISR_EL2, reset_unknown, 0),
 
 	EL2_REG_VNCR(ICH_AP0R0_EL2, reset_val, 0),
 	EL2_REG_VNCR(ICH_AP0R1_EL2, reset_val, 0),
@@ -3141,9 +3285,9 @@ static const struct sys_reg_desc sys_reg_descs[] = {
 	EL2_REG(CNTHP_CTL_EL2, access_arch_timer, reset_val, 0),
 	EL2_REG(CNTHP_CVAL_EL2, access_arch_timer, reset_val, 0),
 
-	{ SYS_DESC(SYS_CNTHV_TVAL_EL2), access_arch_timer },
-	EL2_REG(CNTHV_CTL_EL2, access_arch_timer, reset_val, 0),
-	EL2_REG(CNTHV_CVAL_EL2, access_arch_timer, reset_val, 0),
+	{ SYS_DESC(SYS_CNTHV_TVAL_EL2), access_arch_timer, .visibility = cnthv_visibility },
+	EL2_REG_FILTERED(CNTHV_CTL_EL2, access_arch_timer, reset_val, 0, cnthv_visibility),
+	EL2_REG_FILTERED(CNTHV_CVAL_EL2, access_arch_timer, reset_val, 0, cnthv_visibility),
 
 	EL12_REG(CNTKCTL, access_rw, reset_val, 0),
 
@@ -5013,33 +5157,19 @@ void kvm_calculate_traps(struct kvm_vcpu *vcpu)
 	vcpu_set_hcr(vcpu);
 	vcpu_set_ich_hcr(vcpu);
 
-	if (cpus_have_final_cap(ARM64_HAS_HCX)) {
-		/*
-		 * In general, all HCRX_EL2 bits are gated by a feature.
-		 * The only reason we can set SMPME without checking any
-		 * feature is that its effects are not directly observable
-		 * from the guest.
-		 */
-		vcpu->arch.hcrx_el2 = HCRX_EL2_SMPME;
-
-		if (kvm_has_feat(kvm, ID_AA64ISAR2_EL1, MOPS, IMP))
-			vcpu->arch.hcrx_el2 |= (HCRX_EL2_MSCEn | HCRX_EL2_MCE2);
-
-		if (kvm_has_feat(kvm, ID_AA64MMFR3_EL1, TCRX, IMP))
-			vcpu->arch.hcrx_el2 |= HCRX_EL2_TCR2En;
-	}
+	vcpu_set_hcrx(vcpu);
 
 	if (test_bit(KVM_ARCH_FLAG_FGU_INITIALIZED, &kvm->arch.flags))
 		goto out;
 
-	kvm->arch.fgu[HFGxTR_GROUP] = (HFGxTR_EL2_nAMAIR2_EL1		|
-				       HFGxTR_EL2_nMAIR2_EL1		|
-				       HFGxTR_EL2_nS2POR_EL1		|
-				       HFGxTR_EL2_nPOR_EL1		|
-				       HFGxTR_EL2_nPOR_EL0		|
-				       HFGxTR_EL2_nACCDATA_EL1		|
-				       HFGxTR_EL2_nSMPRI_EL1_MASK	|
-				       HFGxTR_EL2_nTPIDR2_EL0_MASK);
+	kvm->arch.fgu[HFGRTR_GROUP] = (HFGRTR_EL2_nAMAIR2_EL1		|
+				       HFGRTR_EL2_nMAIR2_EL1		|
+				       HFGRTR_EL2_nS2POR_EL1		|
+				       HFGRTR_EL2_nPOR_EL1		|
+				       HFGRTR_EL2_nPOR_EL0		|
+				       HFGRTR_EL2_nACCDATA_EL1		|
+				       HFGRTR_EL2_nSMPRI_EL1_MASK	|
+				       HFGRTR_EL2_nTPIDR2_EL0_MASK);
 
 	if (!kvm_has_feat(kvm, ID_AA64ISAR0_EL1, TLB, OS))
 		kvm->arch.fgu[HFGITR_GROUP] |= (HFGITR_EL2_TLBIRVAALE1OS|
@@ -5075,8 +5205,8 @@ void kvm_calculate_traps(struct kvm_vcpu *vcpu)
 						HFGITR_EL2_ATS1E1WP);
 
 	if (!kvm_has_feat(kvm, ID_AA64MMFR3_EL1, S1PIE, IMP))
-		kvm->arch.fgu[HFGxTR_GROUP] |= (HFGxTR_EL2_nPIRE0_EL1 |
-						HFGxTR_EL2_nPIR_EL1);
+		kvm->arch.fgu[HFGRTR_GROUP] |= (HFGRTR_EL2_nPIRE0_EL1 |
+						HFGRTR_EL2_nPIR_EL1);
 
 	if (!kvm_has_feat(kvm, ID_AA64PFR0_EL1, AMU, IMP))
 		kvm->arch.fgu[HAFGRTR_GROUP] |= ~(HAFGRTR_EL2_RES0 |

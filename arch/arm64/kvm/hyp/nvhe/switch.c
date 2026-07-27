@@ -143,7 +143,7 @@ static void __deactivate_traps(struct kvm_vcpu *vcpu)
 
 	__deactivate_traps_common(vcpu);
 
-	write_sysreg(this_cpu_ptr(&kvm_init_params)->hcr_el2, hcr_el2);
+	write_sysreg_hcr(this_cpu_ptr(&kvm_init_params)->hcr_el2);
 
 	__deactivate_cptr_traps(vcpu);
 	write_sysreg(__kvm_hyp_host_vector, vbar_el2);
@@ -211,9 +211,8 @@ static void __pmu_switch_to_host(struct kvm_vcpu *vcpu)
 static bool kvm_handle_pvm_sys64(struct kvm_vcpu *vcpu, u64 *exit_code)
 {
 	/*
-	 * Make sure we handle the exit for workarounds and ptrauth
-	 * before the pKVM handling, as the latter could decide to
-	 * UNDEF.
+	 * Make sure we handle the exit for workarounds before the pKVM
+	 * handling, as the latter could decide to UNDEF.
 	 */
 	return (kvm_hyp_handle_sysreg(vcpu, exit_code) ||
 		kvm_handle_pvm_sysreg(vcpu, exit_code));

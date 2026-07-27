@@ -154,31 +154,31 @@ static int get_ia_size(struct s2_walk_info *wi)
 	return 64 - wi->t0sz;
 }
 
-static int check_base_s2_limits(struct s2_walk_info *wi,
+static int check_base_s2_limits(struct kvm_vcpu *vcpu, struct s2_walk_info *wi,
 				int level, int input_size, int stride)
 {
-	int start_size, ia_size;
+	int start_size, pa_max;
 
-	ia_size = get_ia_size(wi);
+	pa_max = kvm_get_pa_bits(vcpu->kvm);
 
 	/* Check translation limits */
 	switch (BIT(wi->pgshift)) {
 	case SZ_64K:
-		if (level == 0 || (level == 1 && ia_size <= 42))
+		if (level == 0 || (level == 1 && pa_max <= 42))
 			return -EFAULT;
 		break;
 	case SZ_16K:
-		if (level == 0 || (level == 1 && ia_size <= 40))
+		if (level == 0 || (level == 1 && pa_max <= 40))
 			return -EFAULT;
 		break;
 	case SZ_4K:
-		if (level < 0 || (level == 0 && ia_size <= 42))
+		if (level < 0 || (level == 0 && pa_max <= 42))
 			return -EFAULT;
 		break;
 	}
 
 	/* Check input size limits */
-	if (input_size > ia_size)
+	if (input_size > pa_max)
 		return -EFAULT;
 
 	/* Check number of entries in starting level table */
@@ -207,7 +207,7 @@ static int check_output_size(struct s2_walk_info *wi, phys_addr_t output)
  *
  * Must be called with the kvm->srcu read lock held
  */
-static int walk_nested_s2_pgd(phys_addr_t ipa,
+static int walk_nested_s2_pgd(struct kvm_vcpu *vcpu, phys_addr_t ipa,
 			      struct s2_walk_info *wi, struct kvm_s2_trans *out)
 {
 	int first_block_level, level, stride, input_size, base_lower_bound;
@@ -235,16 +235,19 @@ static int walk_nested_s2_pgd(phys_addr_t ipa,
 	if (input_size > 48 || input_size < 25)
 		return -EFAULT;
 
-	ret = check_base_s2_limits(wi, level, input_size, stride);
-	if (WARN_ON(ret))
+	ret = check_base_s2_limits(vcpu, wi, level, input_size, stride);
+	if (WARN_ON(ret)) {
+		out->esr = compute_fsc(0, ESR_ELx_FSC_FAULT);
 		return ret;
+	}
 
 	base_lower_bound = 3 + input_size - ((3 - level) * stride +
 			   wi->pgshift);
 	base_addr = wi->baddr & GENMASK_ULL(47, base_lower_bound);
 
 	if (check_output_size(wi, base_addr)) {
-		out->esr = compute_fsc(level, ESR_ELx_FSC_ADDRSZ);
+		/* R_BFHQH */
+		out->esr = compute_fsc(0, ESR_ELx_FSC_ADDRSZ);
 		return 1;
 	}
 
@@ -259,8 +262,10 @@ static int walk_nested_s2_pgd(phys_addr_t ipa,
 
 		paddr = base_addr | index;
 		ret = wi->read_desc(paddr, &desc, wi->data);
-		if (ret < 0)
+		if (ret < 0) {
+			out->esr = ESR_ELx_FSC_SEA_TTW(level);
 			return ret;
+		}
 
 		/*
 		 * Handle reversedescriptors if endianness differs between the
@@ -373,7 +378,7 @@ int kvm_walk_nested_s2(struct kvm_vcpu *vcpu, phys_addr_t gipa,
 
 	wi.be = vcpu_read_sys_reg(vcpu, SCTLR_EL2) & SCTLR_ELx_EE;
 
-	ret = walk_nested_s2_pgd(gipa, &wi, result);
+	ret = walk_nested_s2_pgd(vcpu, gipa, &wi, result);
 	if (ret)
 		result->esr |= (kvm_vcpu_get_esr(vcpu) & ~ESR_ELx_FSC);
 
@@ -1457,12 +1462,11 @@ u64 limit_nv_id_reg(struct kvm *kvm, u32 reg, u64 val)
 		break;
 
 	case SYS_ID_AA64PFR0_EL1:
-		/* No RME, AMU, MPAM, S-EL2, or RAS */
+		/* No RME, AMU, MPAM, or S-EL2 */
 		val &= ~(ID_AA64PFR0_EL1_RME	|
 			 ID_AA64PFR0_EL1_AMU	|
 			 ID_AA64PFR0_EL1_MPAM	|
 			 ID_AA64PFR0_EL1_SEL2	|
-			 ID_AA64PFR0_EL1_RAS	|
 			 ID_AA64PFR0_EL1_EL3	|
 			 ID_AA64PFR0_EL1_EL2	|
 			 ID_AA64PFR0_EL1_EL1	|
@@ -1476,9 +1480,16 @@ u64 limit_nv_id_reg(struct kvm *kvm, u32 reg, u64 val)
 
 	case SYS_ID_AA64PFR1_EL1:
 		/* Only support BTI, SSBS, CSV2_frac */
-		val &= (ID_AA64PFR1_EL1_BT	|
-			ID_AA64PFR1_EL1_SSBS	|
-			ID_AA64PFR1_EL1_CSV2_frac);
+		val &= ~(ID_AA64PFR1_EL1_PFAR		|
+			 ID_AA64PFR1_EL1_MTEX		|
+			 ID_AA64PFR1_EL1_THE		|
+			 ID_AA64PFR1_EL1_GCS		|
+			 ID_AA64PFR1_EL1_MTE_frac	|
+			 ID_AA64PFR1_EL1_NMI		|
+			 ID_AA64PFR1_EL1_SME		|
+			 ID_AA64PFR1_EL1_RES0		|
+			 ID_AA64PFR1_EL1_MPAM_frac	|
+			 ID_AA64PFR1_EL1_MTE);
 		break;
 
 	case SYS_ID_AA64MMFR0_EL1:
@@ -1531,12 +1542,11 @@ u64 limit_nv_id_reg(struct kvm *kvm, u32 reg, u64 val)
 		break;
 
 	case SYS_ID_AA64MMFR1_EL1:
-		val &= (ID_AA64MMFR1_EL1_HCX	|
-			ID_AA64MMFR1_EL1_PAN	|
-			ID_AA64MMFR1_EL1_LO	|
-			ID_AA64MMFR1_EL1_HPDS	|
-			ID_AA64MMFR1_EL1_VH	|
-			ID_AA64MMFR1_EL1_VMIDBits);
+		val &= ~(ID_AA64MMFR1_EL1_CMOW		|
+			 ID_AA64MMFR1_EL1_nTLBPA	|
+			 ID_AA64MMFR1_EL1_ETS		|
+			 ID_AA64MMFR1_EL1_XNX		|
+			 ID_AA64MMFR1_EL1_HAFDBS);
 		/* FEAT_E2H0 implies no VHE */
 		if (test_bit(KVM_ARM_VCPU_HAS_EL2_E2H0, kvm->arch.vcpu_features))
 			val &= ~ID_AA64MMFR1_EL1_VH;
@@ -1578,14 +1588,22 @@ u64 limit_nv_id_reg(struct kvm *kvm, u32 reg, u64 val)
 
 	case SYS_ID_AA64DFR0_EL1:
 		/* Only limited support for PMU, Debug, BPs, WPs, and HPMN0 */
-		val &= (ID_AA64DFR0_EL1_PMUVer	|
-			ID_AA64DFR0_EL1_WRPs	|
-			ID_AA64DFR0_EL1_BRPs	|
-			ID_AA64DFR0_EL1_DebugVer|
-			ID_AA64DFR0_EL1_HPMN0);
+		val &= ~(ID_AA64DFR0_EL1_ExtTrcBuff	|
+			 ID_AA64DFR0_EL1_BRBE		|
+			 ID_AA64DFR0_EL1_MTPMU		|
+			 ID_AA64DFR0_EL1_TraceBuffer	|
+			 ID_AA64DFR0_EL1_TraceFilt	|
+			 ID_AA64DFR0_EL1_PMSVer		|
+			 ID_AA64DFR0_EL1_CTX_CMPs	|
+			 ID_AA64DFR0_EL1_SEBEP		|
+			 ID_AA64DFR0_EL1_PMSS		|
+			 ID_AA64DFR0_EL1_TraceVer);
 
-		/* Cap Debug to ARMv8.1 */
-		val = ID_REG_LIMIT_FIELD_ENUM(val, ID_AA64DFR0_EL1, DebugVer, VHE);
+		/*
+		 * FEAT_Debugv8p9 requires support for extended breakpoints /
+		 * watchpoints.
+		 */
+		val = ID_REG_LIMIT_FIELD_ENUM(val, ID_AA64DFR0_EL1, DebugVer, V8P8);
 		break;
 	}
 
@@ -1715,7 +1733,7 @@ int kvm_init_nv_sysregs(struct kvm_vcpu *vcpu)
 		res0 |= HCRX_EL2_PTTWI;
 	if (!kvm_has_feat(kvm, ID_AA64MMFR3_EL1, SCTLRX, IMP))
 		res0 |= HCRX_EL2_SCTLR2En;
-	if (!kvm_has_feat(kvm, ID_AA64MMFR3_EL1, TCRX, IMP))
+	if (!kvm_has_tcr2(kvm))
 		res0 |= HCRX_EL2_TCR2En;
 	if (!kvm_has_feat(kvm, ID_AA64ISAR2_EL1, MOPS, IMP))
 		res0 |= (HCRX_EL2_MSCEn | HCRX_EL2_MCE2);
@@ -1740,40 +1758,40 @@ int kvm_init_nv_sysregs(struct kvm_vcpu *vcpu)
 	res0 = res1 = 0;
 	if (!(__vcpu_has_feature(&kvm->arch, KVM_ARM_VCPU_PTRAUTH_ADDRESS) &&
 	      __vcpu_has_feature(&kvm->arch, KVM_ARM_VCPU_PTRAUTH_GENERIC)))
-		res0 |= (HFGxTR_EL2_APDAKey | HFGxTR_EL2_APDBKey |
-			 HFGxTR_EL2_APGAKey | HFGxTR_EL2_APIAKey |
-			 HFGxTR_EL2_APIBKey);
+		res0 |= (HFGRTR_EL2_APDAKey | HFGRTR_EL2_APDBKey |
+			 HFGRTR_EL2_APGAKey | HFGRTR_EL2_APIAKey |
+			 HFGRTR_EL2_APIBKey);
 	if (!kvm_has_feat(kvm, ID_AA64MMFR1_EL1, LO, IMP))
-		res0 |= (HFGxTR_EL2_LORC_EL1 | HFGxTR_EL2_LOREA_EL1 |
-			 HFGxTR_EL2_LORID_EL1 | HFGxTR_EL2_LORN_EL1 |
-			 HFGxTR_EL2_LORSA_EL1);
+		res0 |= (HFGRTR_EL2_LORC_EL1 | HFGRTR_EL2_LOREA_EL1 |
+			 HFGRTR_EL2_LORID_EL1 | HFGRTR_EL2_LORN_EL1 |
+			 HFGRTR_EL2_LORSA_EL1);
 	if (!kvm_has_feat(kvm, ID_AA64PFR0_EL1, CSV2, CSV2_2) &&
 	    !kvm_has_feat(kvm, ID_AA64PFR1_EL1, CSV2_frac, CSV2_1p2))
-		res0 |= (HFGxTR_EL2_SCXTNUM_EL1 | HFGxTR_EL2_SCXTNUM_EL0);
+		res0 |= (HFGRTR_EL2_SCXTNUM_EL1 | HFGRTR_EL2_SCXTNUM_EL0);
 	if (!kvm_has_feat(kvm, ID_AA64PFR0_EL1, GIC, IMP))
-		res0 |= HFGxTR_EL2_ICC_IGRPENn_EL1;
+		res0 |= HFGRTR_EL2_ICC_IGRPENn_EL1;
 	if (!kvm_has_feat(kvm, ID_AA64PFR0_EL1, RAS, IMP))
-		res0 |= (HFGxTR_EL2_ERRIDR_EL1 | HFGxTR_EL2_ERRSELR_EL1 |
-			 HFGxTR_EL2_ERXFR_EL1 | HFGxTR_EL2_ERXCTLR_EL1 |
-			 HFGxTR_EL2_ERXSTATUS_EL1 | HFGxTR_EL2_ERXMISCn_EL1 |
-			 HFGxTR_EL2_ERXPFGF_EL1 | HFGxTR_EL2_ERXPFGCTL_EL1 |
-			 HFGxTR_EL2_ERXPFGCDN_EL1 | HFGxTR_EL2_ERXADDR_EL1);
+		res0 |= (HFGRTR_EL2_ERRIDR_EL1 | HFGRTR_EL2_ERRSELR_EL1 |
+			 HFGRTR_EL2_ERXFR_EL1 | HFGRTR_EL2_ERXCTLR_EL1 |
+			 HFGRTR_EL2_ERXSTATUS_EL1 | HFGRTR_EL2_ERXMISCn_EL1 |
+			 HFGRTR_EL2_ERXPFGF_EL1 | HFGRTR_EL2_ERXPFGCTL_EL1 |
+			 HFGRTR_EL2_ERXPFGCDN_EL1 | HFGRTR_EL2_ERXADDR_EL1);
 	if (!kvm_has_feat(kvm, ID_AA64ISAR1_EL1, LS64, LS64_ACCDATA))
-		res0 |= HFGxTR_EL2_nACCDATA_EL1;
+		res0 |= HFGRTR_EL2_nACCDATA_EL1;
 	if (!kvm_has_feat(kvm, ID_AA64PFR1_EL1, GCS, IMP))
-		res0 |= (HFGxTR_EL2_nGCS_EL0 | HFGxTR_EL2_nGCS_EL1);
+		res0 |= (HFGRTR_EL2_nGCS_EL0 | HFGRTR_EL2_nGCS_EL1);
 	if (!kvm_has_feat(kvm, ID_AA64PFR1_EL1, SME, IMP))
-		res0 |= (HFGxTR_EL2_nSMPRI_EL1 | HFGxTR_EL2_nTPIDR2_EL0);
+		res0 |= (HFGRTR_EL2_nSMPRI_EL1 | HFGRTR_EL2_nTPIDR2_EL0);
 	if (!kvm_has_feat(kvm, ID_AA64PFR1_EL1, THE, IMP))
-		res0 |= HFGxTR_EL2_nRCWMASK_EL1;
+		res0 |= HFGRTR_EL2_nRCWMASK_EL1;
 	if (!kvm_has_feat(kvm, ID_AA64MMFR3_EL1, S1PIE, IMP))
-		res0 |= (HFGxTR_EL2_nPIRE0_EL1 | HFGxTR_EL2_nPIR_EL1);
+		res0 |= (HFGRTR_EL2_nPIRE0_EL1 | HFGRTR_EL2_nPIR_EL1);
 	if (!kvm_has_feat(kvm, ID_AA64MMFR3_EL1, S1POE, IMP))
-		res0 |= (HFGxTR_EL2_nPOR_EL0 | HFGxTR_EL2_nPOR_EL1);
+		res0 |= (HFGRTR_EL2_nPOR_EL0 | HFGRTR_EL2_nPOR_EL1);
 	if (!kvm_has_feat(kvm, ID_AA64MMFR3_EL1, S2POE, IMP))
-		res0 |= HFGxTR_EL2_nS2POR_EL1;
+		res0 |= HFGRTR_EL2_nS2POR_EL1;
 	if (!kvm_has_feat(kvm, ID_AA64MMFR3_EL1, AIE, IMP))
-		res0 |= (HFGxTR_EL2_nMAIR2_EL1 | HFGxTR_EL2_nAMAIR2_EL1);
+		res0 |= (HFGRTR_EL2_nMAIR2_EL1 | HFGRTR_EL2_nAMAIR2_EL1);
 	set_sysreg_masks(kvm, HFGRTR_EL2, res0 | __HFGRTR_EL2_RES0, res1);
 	set_sysreg_masks(kvm, HFGWTR_EL2, res0 | __HFGWTR_EL2_RES0, res1);
 
@@ -1962,4 +1980,74 @@ void check_nested_vcpu_requests(struct kvm_vcpu *vcpu)
 	/* Must be last, as may switch context! */
 	if (kvm_check_request(KVM_REQ_GUEST_HYP_IRQ_PENDING, vcpu))
 		kvm_inject_nested_irq(vcpu);
+}
+
+/*
+ * One of the many architectural bugs in FEAT_NV2 is that the guest hypervisor
+ * can write to HCR_EL2 behind our back, potentially changing the exception
+ * routing / masking for even the host context.
+ *
+ * What follows is some slop to (1) react to exception routing / masking and (2)
+ * preserve the pending SError state across translation regimes.
+ */
+void kvm_nested_flush_hwstate(struct kvm_vcpu *vcpu)
+{
+	if (!vcpu_has_nv(vcpu))
+		return;
+
+	if (unlikely(vcpu_test_and_clear_flag(vcpu, NESTED_SERROR_PENDING)))
+		kvm_inject_serror_esr(vcpu, vcpu_get_vsesr(vcpu));
+}
+
+void kvm_nested_sync_hwstate(struct kvm_vcpu *vcpu)
+{
+	unsigned long *hcr = vcpu_hcr(vcpu);
+
+	if (!vcpu_has_nv(vcpu))
+		return;
+
+	/*
+	 * We previously decided that an SError was deliverable to the guest.
+	 * Reap the pending state from HCR_EL2 and...
+	 */
+	if (unlikely(__test_and_clear_bit(__ffs(HCR_VSE), hcr)))
+		vcpu_set_flag(vcpu, NESTED_SERROR_PENDING);
+
+	/*
+	 * Re-attempt SError injection in case the deliverability has changed,
+	 * which is necessary to faithfully emulate WFI the case of a pending
+	 * SError being a wakeup condition.
+	 */
+	if (unlikely(vcpu_test_and_clear_flag(vcpu, NESTED_SERROR_PENDING)))
+		kvm_inject_serror_esr(vcpu, vcpu_get_vsesr(vcpu));
+}
+
+/*
+ * KVM unconditionally sets most of these traps anyway but use an allowlist
+ * to document the guest hypervisor traps that may take precedence and guard
+ * against future changes to the non-nested trap configuration.
+ */
+#define NV_MDCR_GUEST_INCLUDE	(MDCR_EL2_TDE	|	\
+				 MDCR_EL2_TDA	|	\
+				 MDCR_EL2_TDRA	|	\
+				 MDCR_EL2_TTRF	|	\
+				 MDCR_EL2_TPMS	|	\
+				 MDCR_EL2_TPM	|	\
+				 MDCR_EL2_TPMCR	|	\
+				 MDCR_EL2_TDCC	|	\
+				 MDCR_EL2_TDOSA)
+
+void kvm_nested_setup_mdcr_el2(struct kvm_vcpu *vcpu)
+{
+	u64 guest_mdcr = __vcpu_sys_reg(vcpu, MDCR_EL2);
+
+	/*
+	 * In yet another example where FEAT_NV2 is fscking broken, accesses
+	 * to MDSCR_EL1 are redirected to the VNCR despite having an effect
+	 * at EL2. Use a big hammer to apply sanity.
+	 */
+	if (is_hyp_ctxt(vcpu))
+		vcpu->arch.mdcr_el2 |= MDCR_EL2_TDA;
+	else
+		vcpu->arch.mdcr_el2 |= (guest_mdcr & NV_MDCR_GUEST_INCLUDE);
 }

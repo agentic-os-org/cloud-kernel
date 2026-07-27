@@ -279,8 +279,8 @@ void aarch64_vcpu_setup(struct kvm_vcpu *vcpu, struct kvm_vcpu_init *init)
 	 */
 	vcpu_set_reg(vcpu, KVM_ARM64_SYS_REG(SYS_CPACR_EL1), 3 << 20);
 
-	vcpu_get_reg(vcpu, KVM_ARM64_SYS_REG(SYS_SCTLR_EL1), &sctlr_el1);
-	vcpu_get_reg(vcpu, KVM_ARM64_SYS_REG(SYS_TCR_EL1), &tcr_el1);
+	sctlr_el1 = vcpu_get_reg(vcpu, KVM_ARM64_SYS_REG(SYS_SCTLR_EL1));
+	tcr_el1 = vcpu_get_reg(vcpu, KVM_ARM64_SYS_REG(SYS_TCR_EL1));
 
 	/* Configure base granule size */
 	switch (vm->mode) {
@@ -358,8 +358,8 @@ void vcpu_arch_dump(FILE *stream, struct kvm_vcpu *vcpu, uint8_t indent)
 {
 	uint64_t pstate, pc;
 
-	vcpu_get_reg(vcpu, ARM64_CORE_REG(regs.pstate), &pstate);
-	vcpu_get_reg(vcpu, ARM64_CORE_REG(regs.pc), &pc);
+	pstate = vcpu_get_reg(vcpu, ARM64_CORE_REG(regs.pstate));
+	pc = vcpu_get_reg(vcpu, ARM64_CORE_REG(regs.pc));
 
 	fprintf(stream, "%*spstate: 0x%.16lx pc: 0x%.16lx\n",
 		indent, "", pstate, pc);
@@ -436,7 +436,7 @@ void assert_on_unhandled_exception(struct kvm_vcpu *vcpu)
 }
 
 struct handlers {
-	handler_fn exception_handlers[VECTOR_NUM][ESR_EC_NUM];
+	handler_fn exception_handlers[VECTOR_NUM][ESR_ELx_EC_MAX + 1];
 };
 
 void vcpu_init_descriptor_tables(struct kvm_vcpu *vcpu)
@@ -455,7 +455,7 @@ void route_exception(struct ex_regs *regs, int vector)
 	switch (vector) {
 	case VECTOR_SYNC_CURRENT:
 	case VECTOR_SYNC_LOWER_64:
-		ec = (read_sysreg(esr_el1) >> ESR_EC_SHIFT) & ESR_EC_MASK;
+		ec = ESR_ELx_EC(read_sysreg(esr_el1));
 		valid_ec = true;
 		break;
 	case VECTOR_IRQ_CURRENT:
@@ -494,7 +494,7 @@ void vm_install_sync_handler(struct kvm_vm *vm, int vector, int ec,
 
 	assert(VECTOR_IS_SYNC(vector));
 	assert(vector < VECTOR_NUM);
-	assert(ec < ESR_EC_NUM);
+	assert(ec <= ESR_ELx_EC_MAX);
 	handlers->exception_handlers[vector][ec] = handler;
 }
 

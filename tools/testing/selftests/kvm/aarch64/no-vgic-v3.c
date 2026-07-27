@@ -150,7 +150,7 @@ static void test_guest_no_gicv3(void)
 	vcpu_init_descriptor_tables(vcpu);
 
 	vm_install_sync_handler(vm, VECTOR_SYNC_CURRENT,
-				ESR_EC_UNKNOWN, guest_undef_handler);
+				ESR_ELx_EC_UNKNOWN, guest_undef_handler);
 
 	test_run_vcpu(vcpu);
 
@@ -164,7 +164,7 @@ int main(int argc, char *argv[])
 	uint64_t pfr0;
 
 	vm = vm_create_with_one_vcpu(&vcpu, NULL);
-	vcpu_get_reg(vcpu, KVM_ARM64_SYS_REG(SYS_ID_AA64PFR0_EL1), &pfr0);
+	pfr0 = vcpu_get_reg(vcpu, KVM_ARM64_SYS_REG(SYS_ID_AA64PFR0_EL1));
 	__TEST_REQUIRE(FIELD_GET(ARM64_FEATURE_MASK(ID_AA64PFR0_EL1_GIC), pfr0),
 		       "GICv3 not supported.");
 	kvm_vm_free(vm);

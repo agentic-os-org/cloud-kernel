@@ -53,8 +53,7 @@ DEFINE_PER_CPU(unsigned long, kvm_hyp_vector);
 
 static u64 __compute_hcr(struct kvm_vcpu *vcpu)
 {
-	u64 guest_hcr = __vcpu_sys_reg(vcpu, HCR_EL2);
-	u64 hcr = vcpu->arch.hcr_el2;
+	u64 guest_hcr, hcr = vcpu->arch.hcr_el2;
 
 	if (!vcpu_has_nv(vcpu))
 		return hcr;
@@ -73,10 +72,21 @@ static u64 __compute_hcr(struct kvm_vcpu *vcpu)
 		if (!vcpu_el2_e2h_is_set(vcpu))
 			hcr |= HCR_NV1;
 
+		/*
+		 * Nothing in HCR_EL2 should impact running in hypervisor
+		 * context, apart from bits we have defined as RESx (E2H,
+		 * HCD and co), or that cannot be set directly (the EXCLUDE
+		 * bits). Given that we OR the guest's view with the host's,
+		 * we can use the 0 value as the starting point, and only
+		 * use the config-driven RES1 bits.
+		 */
+		guest_hcr = kvm_vcpu_apply_reg_masks(vcpu, HCR_EL2, 0);
+
 		write_sysreg_s(vcpu->arch.ctxt.vncr_array, SYS_VNCR_EL2);
 	} else {
 		host_data_clear_flag(VCPU_IN_HYP_CONTEXT);
 
+		guest_hcr = __vcpu_sys_reg(vcpu, HCR_EL2);
 		if (guest_hcr & HCR_NV) {
 			u64 va = __fix_to_virt(vncr_fixmap(smp_processor_id()));
 
@@ -87,6 +97,13 @@ static u64 __compute_hcr(struct kvm_vcpu *vcpu)
 			/* Force NV2 in case the guest is forgetful... */
 			guest_hcr |= HCR_NV2;
 		}
+
+		/*
+		 * Exclude the guest's TWED configuration if it hasn't set TWE
+		 * to avoid potentially delaying traps for the host.
+		 */
+		if (!(guest_hcr & HCR_TWE))
+			guest_hcr &= ~(HCR_EL2_TWEDEn | HCR_EL2_TWEDEL);
 	}
 
 	BUG_ON(host_data_test_flag(VCPU_IN_HYP_CONTEXT) &&
@@ -204,7 +221,7 @@ static void __deactivate_traps(struct kvm_vcpu *vcpu)
 
 	___deactivate_traps(vcpu);
 
-	write_sysreg(HCR_HOST_VHE_FLAGS, hcr_el2);
+	write_sysreg_hcr(HCR_HOST_VHE_FLAGS);
 
 	if (has_cntpoff()) {
 		struct timer_map map;
@@ -577,7 +594,8 @@ static inline bool fixup_guest_exit(struct kvm_vcpu *vcpu, u64 *exit_code)
 	 * invariant that the guest's HYP context status is preserved
 	 * across a run.
 	 */
-	if (vcpu_has_nv(vcpu) && (read_sysreg(hcr_el2) & HCR_NV)) {
+	if (vcpu_has_nv(vcpu) &&
+	    unlikely(host_data_test_flag(VCPU_IN_HYP_CONTEXT))) {
 		u64 mode = *vcpu_cpsr(vcpu) & (PSR_MODE_MASK | PSR_MODE32_BIT);
 
 		switch (mode) {
@@ -610,9 +628,9 @@ static int __kvm_vcpu_run_vhe(struct kvm_vcpu *vcpu)
 	host_ctxt = host_data_ptr(host_ctxt);
 	guest_ctxt = &vcpu->arch.ctxt;
 
-	sysreg_save_host_state_vhe(host_ctxt);
-
 	fpsimd_lazy_switch_to_guest(vcpu);
+
+	sysreg_save_host_state_vhe(host_ctxt);
 
 	/*
 	 * Note that ARM erratum 1165522 requires us to configure both stage 1
@@ -638,14 +656,22 @@ static int __kvm_vcpu_run_vhe(struct kvm_vcpu *vcpu)
 
 	__deactivate_traps(vcpu);
 
-	fpsimd_lazy_switch_to_host(vcpu);
-
 	sysreg_restore_host_state_vhe(host_ctxt);
+
+	__debug_switch_to_host(vcpu);
+
+	/*
+	 * Ensure that all system register writes above have taken effect
+	 * before returning to the host. In VHE mode, CPTR traps for
+	 * FPSIMD/SVE/SME also apply to EL2, so FPSIMD/SVE/SME state must be
+	 * manipulated after the ISB.
+	 */
+	isb();
+
+	fpsimd_lazy_switch_to_host(vcpu);
 
 	if (guest_owns_fp_regs())
 		__fpsimd_save_fpexc32(vcpu);
-
-	__debug_switch_to_host(vcpu);
 
 	return exit_code;
 }
@@ -676,12 +702,6 @@ int __kvm_vcpu_run(struct kvm_vcpu *vcpu)
 	 */
 	local_daif_restore(DAIF_PROCCTX_NOIRQ);
 
-	/*
-	 * When we exit from the guest we change a number of CPU configuration
-	 * parameters, such as traps.  We rely on the isb() in kvm_call_hyp*()
-	 * to make sure these changes take effect before running the host or
-	 * additional guests.
-	 */
 	return ret;
 }
 

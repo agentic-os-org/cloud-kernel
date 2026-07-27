@@ -384,6 +384,12 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 	case KVM_CAP_ARM_EL1_32BIT:
 		r = cpus_have_const_cap(ARM64_HAS_32BIT_EL1);
 		break;
+	case KVM_CAP_ARM_EL2:
+		r = cpus_have_final_cap(ARM64_HAS_NESTED_VIRT);
+		break;
+	case KVM_CAP_ARM_EL2_E2H0:
+		r = cpus_have_final_cap(ARM64_HAS_HCR_NV1);
+		break;
 	case KVM_CAP_GUEST_DEBUG_HW_BPS:
 		r = get_num_brps();
 		break;
@@ -550,12 +556,12 @@ void kvm_arch_vcpu_unblocking(struct kvm_vcpu *vcpu)
 
 static void vcpu_set_pauth_traps(struct kvm_vcpu *vcpu)
 {
-	if (vcpu_has_ptrauth(vcpu)) {
+	if (vcpu_has_ptrauth(vcpu) && !is_protected_kvm_enabled()) {
 		/*
-		 * Either we're running running an L2 guest, and the API/APK
-		 * bits come from L1's HCR_EL2, or API/APK are both set.
+		 * Either we're running an L2 guest, and the API/APK bits come
+		 * from L1's HCR_EL2, or API/APK are both set.
 		 */
-		if (unlikely(vcpu_has_nv(vcpu) && !is_hyp_ctxt(vcpu))) {
+		if (unlikely(is_nested_ctxt(vcpu))) {
 			u64 val;
 
 			val = __vcpu_sys_reg(vcpu, HCR_EL2);
@@ -570,14 +576,7 @@ static void vcpu_set_pauth_traps(struct kvm_vcpu *vcpu)
 		 * Save the host keys if there is any chance for the guest
 		 * to use pauth, as the entry code will reload the guest
 		 * keys in that case.
-		 * Protected mode is the exception to that rule, as the
-		 * entry into the EL2 code eagerly switch back and forth
-		 * between host and hyp keys (and kvm_hyp_ctxt is out of
-		 * reach anyway).
 		 */
-		if (is_protected_kvm_enabled())
-			return;
-
 		if (vcpu->arch.hcr_el2 & (HCR_API | HCR_APK)) {
 			struct kvm_cpu_context *ctxt;
 			ctxt = this_cpu_ptr_hyp_sym_wrapper(kvm_hyp_ctxt);
@@ -749,7 +748,7 @@ int kvm_arch_vcpu_ioctl_set_mpstate(struct kvm_vcpu *vcpu,
  */
 int kvm_arch_vcpu_runnable(struct kvm_vcpu *v)
 {
-	bool irq_lines = *vcpu_hcr(v) & (HCR_VI | HCR_VF);
+	bool irq_lines = *vcpu_hcr(v) & (HCR_VI | HCR_VF | HCR_VSE);
 #ifdef CONFIG_PARAVIRT_SCHED
 	bool pv_unhalted = v->arch.pvsched.pv_unhalted;
 #endif
@@ -890,9 +889,11 @@ int kvm_arch_vcpu_run_pid_change(struct kvm_vcpu *vcpu)
 	if (ret)
 		return ret;
 
-	ret = kvm_arm_pmu_v3_enable(vcpu);
-	if (ret)
-		return ret;
+	if (kvm_vcpu_has_pmu(vcpu)) {
+		ret = kvm_arm_pmu_v3_enable(vcpu);
+		if (ret)
+			return ret;
+	}
 
 	if (is_protected_kvm_enabled()) {
 		ret = pkvm_create_hyp_vm(kvm);
@@ -1206,7 +1207,10 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		 */
 		preempt_disable();
 
-		kvm_pmu_flush_hwstate(vcpu);
+		kvm_nested_flush_hwstate(vcpu);
+
+		if (kvm_vcpu_has_pmu(vcpu))
+			kvm_pmu_flush_hwstate(vcpu);
 
 		local_irq_disable();
 
@@ -1225,7 +1229,8 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		if (ret <= 0 || kvm_vcpu_exit_request(vcpu, &ret)) {
 			vcpu->mode = OUTSIDE_GUEST_MODE;
 			isb(); /* Ensure work in x_flush_hwstate is committed */
-			kvm_pmu_sync_hwstate(vcpu);
+			if (kvm_vcpu_has_pmu(vcpu))
+				kvm_pmu_sync_hwstate(vcpu);
 			if (unlikely(!irqchip_in_kernel(vcpu->kvm)))
 				kvm_timer_sync_user(vcpu);
 			kvm_vgic_sync_hwstate(vcpu);
@@ -1255,7 +1260,8 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 		 * that the vgic can properly sample the updated state of the
 		 * interrupt line.
 		 */
-		kvm_pmu_sync_hwstate(vcpu);
+		if (kvm_vcpu_has_pmu(vcpu))
+			kvm_pmu_sync_hwstate(vcpu);
 
 		/*
 		 * Sync the vgic state before syncing the timer state because
@@ -1301,6 +1307,8 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 		/* Exit types that need handling before we can be preempted */
 		handle_exit_early(vcpu, ret);
+
+		kvm_nested_sync_hwstate(vcpu);
 
 		preempt_enable();
 
@@ -1484,11 +1492,6 @@ static int kvm_vcpu_init_check_features(struct kvm_vcpu *vcpu,
 	 */
 	if (test_bit(KVM_ARM_VCPU_PTRAUTH_ADDRESS, &features) !=
 	    test_bit(KVM_ARM_VCPU_PTRAUTH_GENERIC, &features))
-		return -EINVAL;
-
-	/* Disallow NV+SVE for the time being */
-	if (test_bit(KVM_ARM_VCPU_HAS_EL2, &features) &&
-	    test_bit(KVM_ARM_VCPU_SVE, &features))
 		return -EINVAL;
 
 	if (!test_bit(KVM_ARM_VCPU_EL1_32BIT, &features))

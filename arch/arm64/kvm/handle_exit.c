@@ -31,7 +31,7 @@ typedef int (*exit_handle_fn)(struct kvm_vcpu *);
 static void kvm_handle_guest_serror(struct kvm_vcpu *vcpu, u64 esr)
 {
 	if (!arm64_is_ras_serror(esr) || arm64_is_fatal_ras_serror(NULL, esr))
-		kvm_inject_vabt(vcpu);
+		kvm_inject_serror(vcpu);
 }
 
 static int handle_hvc(struct kvm_vcpu *vcpu)
@@ -146,7 +146,12 @@ static int kvm_handle_wfx(struct kvm_vcpu *vcpu)
 		if (esr & ESR_ELx_WFx_ISS_RV) {
 			u64 val, now;
 
-			now = kvm_arm_timer_get_reg(vcpu, KVM_REG_ARM_TIMER_CNT);
+			now = kvm_phys_timer_read();
+			if (is_hyp_ctxt(vcpu) && vcpu_el2_e2h_is_set(vcpu))
+				now -= timer_get_offset(vcpu_hvtimer(vcpu));
+			else
+				now -= timer_get_offset(vcpu_vtimer(vcpu));
+
 			val = vcpu_get_reg(vcpu, kvm_vcpu_sys_get_rt(vcpu));
 
 			if (now >= val)
@@ -263,7 +268,7 @@ static int kvm_handle_ptrauth(struct kvm_vcpu *vcpu)
 		return 1;
 	}
 
-	if (vcpu_has_nv(vcpu) && !is_hyp_ctxt(vcpu)) {
+	if (is_nested_ctxt(vcpu)) {
 		kvm_inject_nested_sync(vcpu, kvm_vcpu_get_esr(vcpu));
 		return 1;
 	}
@@ -430,7 +435,7 @@ void handle_exit_early(struct kvm_vcpu *vcpu, int exception_index)
 
 			kvm_handle_guest_serror(vcpu, disr_to_esr(disr));
 		} else {
-			kvm_inject_vabt(vcpu);
+			kvm_inject_serror(vcpu);
 		}
 
 		return;
