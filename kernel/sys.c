@@ -2651,6 +2651,9 @@ static int do_sysinfo(struct sysinfo *info)
 		si_swapinfo(info);
 	} else {
 		memcg_meminfo(memcg, info, &dummy_ext);
+	#ifdef CONFIG_MEMCG
+		css_put(&memcg->css);
+	#endif
 	}
 
 	/*
