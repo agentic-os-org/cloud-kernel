@@ -55,6 +55,7 @@
 #define KVM_REQ_NESTED_S2_UNMAP		KVM_ARCH_REQ(9)
 #define KVM_REQ_GUEST_HYP_IRQ_PENDING	KVM_ARCH_REQ(10)
 #define KVM_REQ_MAP_L1_VNCR_EL2		KVM_ARCH_REQ(11)
+#define KVM_REQ_RELOAD_WFI_TRAPS        KVM_ARCH_REQ(12)
 
 #define KVM_DIRTY_LOG_MANUAL_CAPS   (KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE | \
 				     KVM_DIRTY_LOG_INITIALLY_SET)
@@ -1601,6 +1602,7 @@ void kvm_set_vm_id_reg(struct kvm *kvm, u32 reg, u64 val);
 	(kvm_cmp_feat(kvm, id, fld, >=, min) &&				\
 	kvm_cmp_feat(kvm, id, fld, <=, max))
 
+extern bool force_wfi_trap;
 extern bool kvm_ncsnp_support;
 extern bool kvm_dvmbm_support;
 
