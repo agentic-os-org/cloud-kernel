@@ -54,6 +54,7 @@ static int vfio_ccw_mdev_init_dev(struct vfio_device *vdev)
 	INIT_LIST_HEAD(&private->crw);
 	INIT_WORK(&private->io_work, vfio_ccw_sch_io_todo);
 	INIT_WORK(&private->crw_work, vfio_ccw_crw_todo);
+	spin_lock_init(&private->crw_lock);
 
 	private->cp.guest_cp = kcalloc(CCWCHAIN_LEN_MAX, sizeof(struct ccw1),
 				       GFP_KERNEL);
@@ -131,11 +132,14 @@ static void vfio_ccw_mdev_release_dev(struct vfio_device *vdev)
 	struct vfio_ccw_private *private =
 		container_of(vdev, struct vfio_ccw_private, vdev);
 	struct vfio_ccw_crw *crw, *temp;
+	unsigned long flags;
 
+	spin_lock_irqsave(&private->crw_lock, flags);
 	list_for_each_entry_safe(crw, temp, &private->crw, next) {
 		list_del(&crw->next);
 		kfree(crw);
 	}
+	spin_unlock_irqrestore(&private->crw_lock, flags);
 
 	kmem_cache_free(vfio_ccw_crw_region, private->crw_region);
 	kmem_cache_free(vfio_ccw_schib_region, private->schib_region);
@@ -245,7 +249,7 @@ static ssize_t vfio_ccw_mdev_read(struct vfio_device *vdev,
 	default:
 		index -= VFIO_CCW_NUM_REGIONS;
 		return private->region[index].ops->read(private, buf, count,
-							ppos);
+						       ppos);
 	}
 
 	return -EINVAL;
@@ -297,7 +301,7 @@ static ssize_t vfio_ccw_mdev_write(struct vfio_device *vdev,
 	default:
 		index -= VFIO_CCW_NUM_REGIONS;
 		return private->region[index].ops->write(private, buf, count,
-							 ppos);
+							ppos);
 	}
 
 	return -EINVAL;
