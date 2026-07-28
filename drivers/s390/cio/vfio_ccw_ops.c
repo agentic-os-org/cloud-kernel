@@ -305,7 +305,7 @@ static ssize_t vfio_ccw_mdev_write(struct mdev_device *mdev,
 	default:
 		index -= VFIO_CCW_NUM_REGIONS;
 		return private->region[index].ops->write(private, buf, count,
-							 ppos);
+							ppos);
 	}
 
 	return -EINVAL;
@@ -593,8 +593,8 @@ static ssize_t vfio_ccw_mdev_ioctl(struct mdev_device *mdev,
 			return -EFAULT;
 
 		ret = vfio_set_irqs_validate_and_prepare(&hdr, 1,
-							 VFIO_CCW_NUM_IRQS,
-							 &data_size);
+							VFIO_CCW_NUM_IRQS,
+							&data_size);
 		if (ret)
 			return ret;
 
