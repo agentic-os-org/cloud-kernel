@@ -569,6 +569,26 @@ void irq_remove_generic_chip(struct irq_chip_generic *gc, u32 msk,
 }
 EXPORT_SYMBOL_GPL(irq_remove_generic_chip);
 
+/**
+ * irq_domain_remove_generic_chips - Remove generic chips from an irq domain
+ * @d:		irq domain for which generic chips are to be removed
+ */
+void irq_domain_remove_generic_chips(struct irq_domain *d)
+{
+	struct irq_domain_chip_generic *dgc = d->gc;
+	unsigned int i;
+
+	if (!dgc)
+		return;
+
+	for (i = 0; i < dgc->num_chips; i++)
+		irq_remove_generic_chip(dgc->gc[i], ~0U, 0, 0);
+
+	d->gc = NULL;
+	kfree(dgc);
+}
+EXPORT_SYMBOL_GPL(irq_domain_remove_generic_chips);
+
 static struct irq_data *irq_gc_get_irq_data(struct irq_chip_generic *gc)
 {
 	unsigned int virq;
