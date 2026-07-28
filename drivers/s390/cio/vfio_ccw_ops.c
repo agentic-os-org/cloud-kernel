@@ -152,6 +152,13 @@ static int vfio_ccw_mdev_remove(struct mdev_device *mdev)
 		/* The state will be NOT_OPER on error. */
 	}
 
+	/*
+	 * Ensure these work items are fully drained, so none can
+	 * fire after being released.
+	 */
+	cancel_work_sync(&private->io_work);
+	cancel_work_sync(&private->crw_work);
+
 	cp_free(&private->cp);
 	private->mdev = NULL;
 	atomic_inc(&private->avail);
@@ -205,6 +212,13 @@ static void vfio_ccw_mdev_close_device(struct mdev_device *mdev)
 			private->state = VFIO_CCW_STATE_STANDBY;
 		/* The state will be NOT_OPER on error. */
 	}
+
+	/*
+	 * Ensure these work items are drained, in the event the
+	 * device is re-opened instead of released.
+	 */
+	cancel_work_sync(&private->io_work);
+	cancel_work_sync(&private->crw_work);
 
 	cp_free(&private->cp);
 	vfio_ccw_unregister_dev_regions(private);
