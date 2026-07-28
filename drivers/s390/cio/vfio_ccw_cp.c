@@ -532,6 +532,10 @@ static int ccwchain_fetch_direct(struct ccwchain *chain,
 	} else {
 		iova = ccw->cda;
 	}
+
+	/* Save the read address for later */
+	cp->guest_iova = iova;
+
 	idaw_nr = idal_nr_words((void *)iova, bytes);
 	idal_len = idaw_nr * sizeof(*idaws);
 
@@ -558,6 +562,12 @@ static int ccwchain_fetch_direct(struct ccwchain *chain,
 		ret = copy_from_iova(cp->mdev, idaws, ccw->cda, idal_len);
 		if (ret)
 			goto out_unpin;
+
+		/* Unexpected mismatch from earlier read */
+		if (idaws[0] != cp->guest_iova) {
+			ret = -EINVAL;
+			goto out_unpin;
+		}
 
 		/*
 		 * Copy guest IDAWs into pfn_array, in case the memory they
@@ -718,8 +728,8 @@ void cp_free(struct channel_program *cp)
  * translate the channel program to a real-device runnable channel
  * program.
  *
- * These APIs will copy the ccws into kernel-space buffers, and update
- * the guest phsical addresses with their corresponding host physical
+ * These APIs will copy the ccws into kernel-space buffers, and update the
+ * guest phsical addresses with their corresponding host physical
  * addresses.  Then channel I/O device drivers could issue the
  * translated channel program to real devices to perform an I/O
  * operation.
