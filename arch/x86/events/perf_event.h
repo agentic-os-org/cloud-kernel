@@ -89,6 +89,7 @@ static inline bool constraint_match(struct event_constraint *c, u64 ecode)
 #define PERF_X86_EVENT_PEBS_LAT_HYBRID	0x20000 /* ld and st lat for hybrid */
 #define PERF_X86_EVENT_NEEDS_BRANCH_STACK	0x40000 /* require branch stack setup */
 #define PERF_X86_EVENT_BRANCH_COUNTERS	0x80000 /* logs the counters in the extra space of each branch */
+#define PERF_X86_EVENT_UNPRIVILEGED	0x100000 /* Unprivileged event (wrt perf_allow_kernel()) */
 
 static inline bool is_topdown_count(struct perf_event *event)
 {
