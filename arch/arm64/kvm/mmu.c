@@ -1716,6 +1716,8 @@ static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 			ret = vma_pagesize;
 			goto out_unlock;
 		}
+
+		canonical_ipa = ALIGN_DOWN(canonical_ipa, vma_pagesize);
 	}
 
 	if (!fault_is_perm && !s2_force_noncacheable && kvm_has_mte(kvm)) {
@@ -1726,7 +1728,6 @@ static int user_mem_abort(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 			ret = -EFAULT;
 			goto out_unlock;
 		}
-		canonical_gpa = ALIGN_DOWN(canonical_gpa, mapping_size);
 	}
 
 	if (writable)
