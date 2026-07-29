@@ -616,6 +616,10 @@ struct Scsi_Host {
 	 * the total queue depth is can_queue.
 	 */
 	unsigned nr_hw_queues;
+
+	/* Don't resume host in EH */
+	bool eh_noresume;
+
 	unsigned active_mode:2;
 	unsigned unchecked_isa_dma:1;
 
@@ -634,12 +638,6 @@ struct Scsi_Host {
 
 	/* Task mgmt function in progress */
 	unsigned tmf_in_progress:1;
-
-	/* Asynchronous scan in progress */
-	unsigned async_scan:1;
-
-	/* Don't resume host in EH */
-	unsigned eh_noresume:1;
 
 	/* The controller does not support WRITE SAME */
 	unsigned no_write_same:1;
