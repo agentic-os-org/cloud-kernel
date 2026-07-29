@@ -428,18 +428,22 @@ v3d_sched_init(struct v3d_dev *v3d)
 	int hang_limit_ms = 500;
 	int ret;
 
+	v3d->reset_wq = alloc_ordered_workqueue("v3d_reset", 0);
+	if (!v3d->reset_wq)
+		return -ENOMEM;
+
 	ret = drm_sched_init(&v3d->queue[V3D_BIN].sched,
 			     &v3d_bin_sched_ops,
 			     hw_jobs_limit, job_hang_limit,
-			     msecs_to_jiffies(hang_limit_ms), NULL,
+			     msecs_to_jiffies(hang_limit_ms), v3d->reset_wq,
 			     NULL, "v3d_bin", v3d->drm.dev);
 	if (ret)
-		return ret;
+		goto fail;
 
 	ret = drm_sched_init(&v3d->queue[V3D_RENDER].sched,
 			     &v3d_render_sched_ops,
 			     hw_jobs_limit, job_hang_limit,
-			     msecs_to_jiffies(hang_limit_ms), NULL,
+			     msecs_to_jiffies(hang_limit_ms), v3d->reset_wq,
 			     NULL, "v3d_render", v3d->drm.dev);
 	if (ret)
 		goto fail;
@@ -447,7 +451,7 @@ v3d_sched_init(struct v3d_dev *v3d)
 	ret = drm_sched_init(&v3d->queue[V3D_TFU].sched,
 			     &v3d_tfu_sched_ops,
 			     hw_jobs_limit, job_hang_limit,
-			     msecs_to_jiffies(hang_limit_ms), NULL,
+			     msecs_to_jiffies(hang_limit_ms), v3d->reset_wq,
 			     NULL, "v3d_tfu", v3d->drm.dev);
 	if (ret)
 		goto fail;
@@ -456,7 +460,7 @@ v3d_sched_init(struct v3d_dev *v3d)
 		ret = drm_sched_init(&v3d->queue[V3D_CSD].sched,
 				     &v3d_csd_sched_ops,
 				     hw_jobs_limit, job_hang_limit,
-				     msecs_to_jiffies(hang_limit_ms), NULL,
+				     msecs_to_jiffies(hang_limit_ms), v3d->reset_wq,
 				     NULL, "v3d_csd", v3d->drm.dev);
 		if (ret)
 			goto fail;
@@ -464,7 +468,7 @@ v3d_sched_init(struct v3d_dev *v3d)
 		ret = drm_sched_init(&v3d->queue[V3D_CACHE_CLEAN].sched,
 				     &v3d_cache_clean_sched_ops,
 				     hw_jobs_limit, job_hang_limit,
-				     msecs_to_jiffies(hang_limit_ms), NULL,
+				     msecs_to_jiffies(hang_limit_ms), v3d->reset_wq,
 				     NULL, "v3d_cache_clean", v3d->drm.dev);
 		if (ret)
 			goto fail;
@@ -486,4 +490,6 @@ v3d_sched_fini(struct v3d_dev *v3d)
 		if (v3d->queue[q].sched.ready)
 			drm_sched_fini(&v3d->queue[q].sched);
 	}
+
+	destroy_workqueue(v3d->reset_wq);
 }
