@@ -2215,6 +2215,38 @@ static void validate_direct_spte(struct kvm_vcpu *vcpu, u64 *sptep,
 	}
 }
 
+/*
+ * Check whether @sp's role matches the expected role for a child shadow
+ * page at @level, with @direct and @access, for address @addr.
+ */
+static bool kvm_mmu_role_mismatch(struct kvm_vcpu *vcpu,
+				  struct kvm_mmu_page *sp,
+				  unsigned int level,
+				  bool direct,
+				  unsigned int access,
+				  u64 addr)
+{
+	union kvm_mmu_page_role role;
+
+	role = vcpu->arch.mmu->mmu_role.base;
+	role.level = level;
+	role.direct = direct;
+	if (role.direct)
+		role.gpte_is_8_bytes = true;
+	role.access = access;
+
+	if (!vcpu->arch.mmu->direct_map &&
+	    vcpu->arch.mmu->root_level <= PT32_ROOT_LEVEL) {
+		unsigned int quadrant;
+
+		quadrant = addr >> (PAGE_SHIFT + (PT64_PT_BITS * level));
+		quadrant &= (1 << ((PT32_PT_BITS - PT64_PT_BITS) * level)) - 1;
+		role.quadrant = quadrant;
+	}
+
+	return sp->role.word != role.word;
+}
+
 /* Returns the number of zapped non-leaf child shadow pages. */
 static int mmu_page_zap_pte(struct kvm *kvm, struct kvm_mmu_page *sp,
 			    u64 *spte, struct list_head *invalid_list)
@@ -2891,6 +2923,27 @@ static int __direct_map(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 			if (is_tdp && huge_page_disallowed &&
 			    req_level >= it.level)
 				account_huge_nx_page(vcpu->kvm, sp);
+		} else {
+			struct kvm_mmu_page *existing_sp;
+			struct kvm_mmu_page *parent_sp = sptep_to_sp(it.sptep);
+
+			/*
+			 * If the existing shadow page was created for a different
+			 * GFN or role (e.g. a large page was split from outside the
+			 * guest), zap it to avoid a use-after-free when the page is
+			 * later freed but rmap entries survive under the wrong GFN.
+			 */
+			existing_sp = to_shadow_page(*it.sptep & PT64_BASE_ADDR_MASK);
+			if (existing_sp->gfn != base_gfn ||
+			    kvm_mmu_role_mismatch(vcpu, existing_sp,
+						  it.level - 1, true, ACC_ALL,
+						  it.addr)) {
+				drop_parent_pte(existing_sp, it.sptep);
+				kvm_flush_remote_tlbs_with_address(vcpu->kvm,
+								   parent_sp->gfn,
+								   KVM_PAGES_PER_HPAGE(parent_sp->role.level));
+				return RET_PF_RETRY;
+			}
 		}
 	}
 
