@@ -66,6 +66,7 @@ static struct fuse_req *fuse_request_alloc(struct fuse_mount *fm, gfp_t flags)
 
 static void fuse_request_free(struct fuse_req *req)
 {
+	WARN_ON(!list_empty(&req->intr_entry));
 	kmem_cache_free(fuse_req_cachep, req);
 }
 
@@ -430,6 +431,13 @@ static void request_wait_answer(struct fuse_req *req)
 		/* Request is not yet in userspace, bail out */
 		if (test_bit(FR_PENDING, &req->flags)) {
 			list_del(&req->list);
+			/*
+			 * Remove stale intr_entry queued by queue_interrupt()
+			 * before the request was requeued, which would
+			 * otherwise dangle on fiq->interrupts once the
+			 * request is freed.
+			 */
+			list_del_init(&req->intr_entry);
 			spin_unlock(&fiq->lock);
 			__fuse_put_request(req);
 			req->out.h.error = -EINTR;
@@ -1882,6 +1890,14 @@ static void fuse_resend(struct fuse_conn *fc)
 			clear_bit(FR_PENDING, &req->flags);
 		end_requests(&to_queue);
 		return;
+	}
+	/*
+	 * Remove interrupt entries for resent requests to prevent stale
+	 * intr_entry on fiq->interrupts after the request is re-queued.
+	 */
+	list_for_each_entry(req, &to_queue, list) {
+		if (test_bit(FR_INTERRUPTED, &req->flags))
+			list_del_init(&req->intr_entry);
 	}
 	/* iq and pq requests are both oldest to newest */
 	list_splice(&to_queue, &fiq->pending);
