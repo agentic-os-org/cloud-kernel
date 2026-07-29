@@ -266,7 +266,7 @@ static int pkey_verifykey(const struct pkey_seckey *seckey,
 	int rc;
 
 	/* check the secure key for valid AES secure key */
-	rc = cca_check_secaeskeytoken(debug_info, 3, (u8 *) seckey, 0);
+	rc = cca_check_secaeskeytoken(debug_info, 3, (u8 *) seckey, SECKEYBLOBSIZE, 0);
 	if (rc)
 		goto out;
 	if (pattributes)
