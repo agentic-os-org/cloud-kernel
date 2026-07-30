@@ -25,6 +25,36 @@ struct of_serial_info {
 	int line;
 };
 
+static int lpc32xx_handle_irq(struct uart_port *port)
+{
+	struct uart_8250_port *up = up_to_u8250p(port);
+	unsigned int iir, status;
+	unsigned long flags;
+
+	iir = serial_port_in(port, UART_IIR);
+	if (iir & UART_IIR_NO_INT)
+		return 0;
+
+	/*
+	 * The LPC32xx UART can assert an RX character-timeout interrupt while
+	 * the RX FIFO is empty: IIR reports UART_IIR_RX_TIMEOUT but LSR.DR is
+	 * clear. The timeout is only cleared by reading RHR, but the core RX
+	 * path skips that read when the FIFO is empty, so the level-triggered
+	 * IRQ re-fires forever and livelocks this single-core SoC. Do one
+	 * throwaway RHR read to clear it; a healthy UART never reports a
+	 * timeout with DR/BI clear, so no received data is ever discarded.
+	 */
+	if ((iir & 0x3f) == UART_IIR_RX_TIMEOUT) {
+		spin_lock_irqsave(&port->lock, flags);
+		status = serial_port_in(port, UART_LSR);
+		if (!(status & (UART_LSR_DR | UART_LSR_BI)))
+			serial_port_in(port, UART_RX);
+		spin_unlock_irqrestore(&port->lock, flags);
+	}
+
+	return serial8250_handle_irq(port, iir);
+}
+
 /*
  * Fill a struct uart_port for a given device node
  */
@@ -171,6 +201,9 @@ static int of_platform_serial_setup(struct platform_device *ofdev,
 	switch (type) {
 	case PORT_RT2880:
 		port->iotype = UPIO_AU;
+		break;
+	case PORT_LPC3220:
+		port->handle_irq = lpc32xx_handle_irq;
 		break;
 	}
 
@@ -344,6 +377,7 @@ static struct platform_driver of_platform_serial_driver = {
 
 module_platform_driver(of_platform_serial_driver);
 
+MODULE_IMPORT_NS("SERIAL_8250");
 MODULE_AUTHOR("Arnd Bergmann <arnd@arndb.de>");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Serial Port driver for Open Firmware platform devices");
