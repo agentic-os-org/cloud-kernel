@@ -191,6 +191,7 @@ static void mms114_process_mt(struct mms114_data *data, struct mms114_touch *tou
 static irqreturn_t mms114_interrupt(int irq, void *dev_id)
 {
 	struct mms114_data *data = dev_id;
+	struct i2c_client *client = data->client;
 	struct input_dev *input_dev = data->input_dev;
 	struct mms114_touch touch[MMS114_MAX_TOUCH];
 	int packet_size;
@@ -208,6 +209,12 @@ static irqreturn_t mms114_interrupt(int irq, void *dev_id)
 	packet_size = mms114_read_reg(data, MMS114_PACKET_SIZE);
 	if (packet_size <= 0)
 		goto out;
+
+	if (packet_size > sizeof(touch)) {
+		dev_err(&client->dev, "Invalid packet size %d (max %zu)\n",
+			packet_size, sizeof(touch));
+		goto out;
+	}
 
 	touch_size = packet_size / MMS114_PACKET_NUM;
 
