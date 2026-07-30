@@ -37,3 +37,13 @@ config RESCTRL_RMID_DEPENDS_ON_CLOSID
 	  Enabled by the architecture when the RMID values depend on the CLOSID.
 	  This causes the CLOSID allocator to search for CLOSID with clean
 	  RMID.
+
+menuconfig RISCV_CBQRI
+	bool "RISC-V CBQRI support"
+	depends on RISCV && RISCV_ISA_SSQOSID
+	help
+	  Capacity and Bandwidth QoS Register Interface (CBQRI) support for
+	  RISC-V cache QoS resources. CBQRI exposes cache capacity
+	  allocation through the resctrl filesystem at /sys/fs/resctrl when
+	  RESCTRL_FS is also enabled.
+
