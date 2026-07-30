@@ -1,0 +1,4 @@
+* Thu Jul 30 2026 Tianchen Ding <dtcccc@linux.alibaba.com> [6.6.102-7%%DIST%%]
+- perf pmu: Skip test on Arm64 when #slots is zero (Leo Yan)
+- riscv: ftrace: Properly acquire text_mutex to fix a race condition (Alexandre Ghiti)
+
