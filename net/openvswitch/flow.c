@@ -274,8 +274,8 @@ static int parse_ipv6hdr(struct sk_buff *skb, struct sw_flow_key *key)
 	}
 
 	/* Delayed handling of error in ipv6_find_hdr() as it
-	 * always sets flags and frag_off to a valid value which may be
-	 * used to set key->ip.frag above.
+	 * always sets flags and frag_off to a valid value which may
+	 * be used to set key->ip.frag above.
 	 */
 	if (unlikely(nexthdr < 0))
 		return -EPROTO;
@@ -310,7 +310,7 @@ static int parse_vlan_tag(struct sk_buff *skb, struct vlan_head *key_vh,
 		return 0;
 
 	if (unlikely(!pskb_may_pull(skb, sizeof(struct vlan_head) +
-				 sizeof(__be16))))
+					 sizeof(__be16))))
 		return -ENOMEM;
 
 	vh = (struct vlan_head *)skb->data;
@@ -564,7 +564,7 @@ static int key_extract_l3l4(struct sk_buff *skb, struct sw_flow_key *key)
 			return 0;
 		}
 		if (nh->frag_off & htons(IP_MF) ||
-			skb_shinfo(skb)->gso_type & SKB_GSO_UDP)
+		    skb_shinfo(skb)->gso_type & SKB_GSO_UDP)
 			key->ip.frag = OVS_FRAG_TYPE_FIRST;
 		else
 			key->ip.frag = OVS_FRAG_TYPE_NONE;
@@ -656,7 +656,7 @@ static int key_extract_l3l4(struct sk_buff *skb, struct sw_flow_key *key)
 				       MPLS_HLEN);
 
 			skb_set_inner_network_header(skb, skb->mac_len +
-						     label_count * MPLS_HLEN);
+							     label_count * MPLS_HLEN);
 			if (lse & htonl(MPLS_LS_S_MASK))
 				break;
 
@@ -742,8 +742,6 @@ static int key_extract_l3l4(struct sk_buff *skb, struct sw_flow_key *key)
  * Ethernet header
  * @key: output flow key
  *
- * The caller must ensure that skb->len >= ETH_HLEN.
- *
  * Returns 0 if successful, otherwise a negative errno value.
  *
  * Initializes @skb header fields as follows:
@@ -763,8 +761,6 @@ static int key_extract_l3l4(struct sk_buff *skb, struct sw_flow_key *key)
  */
 static int key_extract(struct sk_buff *skb, struct sw_flow_key *key)
 {
-	struct ethhdr *eth;
-
 	/* Flags are always used as part of stats */
 	key->tp.flags = 0;
 
@@ -779,6 +775,13 @@ static int key_extract(struct sk_buff *skb, struct sw_flow_key *key)
 		skb_reset_network_header(skb);
 		key->eth.type = skb->protocol;
 	} else {
+		struct ethhdr *eth;
+		int err;
+
+		err = check_header(skb, ETH_HLEN);
+		if (unlikely(err))
+			return err;
+
 		eth = eth_hdr(skb);
 		ether_addr_copy(key->eth.src, eth->h_source);
 		ether_addr_copy(key->eth.dst, eth->h_dest);
