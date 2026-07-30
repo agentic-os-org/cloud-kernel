@@ -3491,10 +3491,14 @@ static void walk_update_folio(struct lru_gen_mm_walk *walk, struct vm_area_struc
 		old_gen = folio_update_gen(folio, new_gen, vma->vm_flags);
 		if (old_gen >= 0 && old_gen != new_gen)
 			update_batch_size(walk, folio, old_gen, new_gen);
+		else
+			folio_set_rotated(folio);
 	} else if (lru_gen_set_refs(folio, vma->vm_flags)) {
 		old_gen = folio_lru_gen(folio);
 		if (old_gen >= 0 && old_gen != new_gen)
 			folio_activate(folio);
+		else
+			folio_set_rotated(folio);
 	}
 }
 
@@ -4723,6 +4727,12 @@ static bool sort_folio(struct lruvec *lruvec, struct folio *folio, struct scan_c
 	if (zone > sc->reclaim_idx) {
 		gen = folio_inc_gen(lruvec, folio);
 		list_move_tail(&folio->lru, &lrugen->folios[gen][type][zone]);
+		return true;
+	}
+
+	/* Rotate the referenced folio to the head of the list */
+	if (folio_test_clear_rotated(folio)) {
+		list_move(&folio->lru, &lrugen->folios[gen][type][zone]);
 		return true;
 	}
 

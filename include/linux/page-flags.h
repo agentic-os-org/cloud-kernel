@@ -143,6 +143,7 @@ enum pageflags {
 #ifdef CONFIG_DUPTEXT
 	PG_dup,			/* Page has NUMA replicas */
 #endif
+	PG_rotated,
 	__NR_PAGEFLAGS,
 
 	PG_readahead = PG_reclaim,
@@ -580,6 +581,10 @@ PAGEFLAG(Readahead, readahead, PF_NO_COMPOUND)
 FOLIO_FLAG(dropbehind, FOLIO_HEAD_PAGE)
 	FOLIO_TEST_CLEAR_FLAG(dropbehind, FOLIO_HEAD_PAGE)
 	__FOLIO_SET_FLAG(dropbehind, FOLIO_HEAD_PAGE)
+
+FOLIO_FLAG(rotated, FOLIO_HEAD_PAGE)
+	FOLIO_TEST_CLEAR_FLAG(rotated, FOLIO_HEAD_PAGE)
+	__FOLIO_SET_FLAG(rotated, FOLIO_HEAD_PAGE)
 
 #ifdef CONFIG_HIGHMEM
 /*
