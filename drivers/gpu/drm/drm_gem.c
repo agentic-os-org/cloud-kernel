@@ -917,6 +917,84 @@ err:
 	return ret;
 }
 
+/*
+ * This ioctl is disabled for security reasons but also it failed
+ * to follow process in terms of adding testing in igt and verifying
+ * all the corner cases which made fixing security bugs in it even
+ * harder than necessary.
+ *
+ * To re-enable this ioctl
+ * 1. land working IGT tests in igt-gpu-tools that cover
+ *    all corner cases and race conditions.
+ * 2. handle idr_preload
+ * 3. handle == 0
+ * 4. handle == new_handle semantics definition.
+ */
+int drm_gem_change_handle_ioctl(struct drm_device *dev, void *data,
+				struct drm_file *file_priv)
+{
+	struct drm_gem_change_handle *args = data;
+	struct drm_gem_object *obj;
+	int new_handle, ret;
+
+	if (!drm_core_check_feature(dev, DRIVER_GEM))
+		return -EOPNOTSUPP;
+
+	/* idr_alloc() limitation. */
+	if (args->new_handle > INT_MAX)
+		return -EINVAL;
+	new_handle = args->new_handle;
+
+	if (args->handle == new_handle)
+		return 0;
+
+	mutex_lock(&file_priv->prime.lock);
+	spin_lock(&file_priv->table_lock);
+	ret = idr_alloc(&file_priv->object_idr, NULL, new_handle, new_handle + 1,
+			GFP_NOWAIT);
+
+	if (ret < 0) {
+		spin_unlock(&file_priv->table_lock);
+		goto out_unlock;
+	}
+
+	obj = idr_replace(&file_priv->object_idr, NULL, args->handle);
+	if (IS_ERR_OR_NULL(obj)) {
+		idr_remove(&file_priv->object_idr, new_handle);
+		spin_unlock(&file_priv->table_lock);
+		ret = -ENOENT;
+		goto out_unlock;
+	}
+	spin_unlock(&file_priv->table_lock);
+
+	if (obj->dma_buf) {
+		ret = drm_prime_add_buf_handle(&file_priv->prime, obj->dma_buf,
+					       new_handle);
+		if (ret < 0) {
+			spin_lock(&file_priv->table_lock);
+			idr_remove(&file_priv->object_idr, new_handle);
+			idr_replace(&file_priv->object_idr, obj, args->handle);
+			spin_unlock(&file_priv->table_lock);
+			goto out_unlock;
+		}
+
+		drm_prime_remove_buf_handle(&file_priv->prime, args->handle);
+	}
+
+	ret = 0;
+
+	spin_lock(&file_priv->table_lock);
+	idr_remove(&file_priv->object_idr, args->handle);
+	obj = idr_replace(&file_priv->object_idr, obj, new_handle);
+	spin_unlock(&file_priv->table_lock);
+	WARN_ON(obj != NULL);
+
+out_unlock:
+	mutex_unlock(&file_priv->prime.lock);
+
+	return ret;
+}
+
 /**
  * gem_gem_open - initalizes GEM file-private structures at devnode open time
  * @dev: drm_device which is being opened by userspace
