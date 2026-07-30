@@ -18,8 +18,8 @@
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
  * PRECISION INSIGHT AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
  * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
  *
  * Authors:
  *    Jerome Glisse <glisse@freedesktop.org>
@@ -37,6 +37,25 @@
 #include "amdgpu_gmc.h"
 #include "amdgpu_gem.h"
 #include "amdgpu_ras.h"
+
+/*
+ * Maximum IB length (dwords) for rings whose emit_ib packet format
+ * documents a 20-bit size field.
+ */
+#define AMDGPU_GFX_SDMA_IB_PACKET_SIZE_MAX_DW	0xFFFFF
+#define AMDGPU_MM_IB_PACKET_SIZE_MAX_DW	0x7FFFF0
+
+static u32 amdgpu_cs_ib_packet_size_max_dw(enum amdgpu_ring_type type)
+{
+	switch (type) {
+	case AMDGPU_RING_TYPE_GFX:
+	case AMDGPU_RING_TYPE_COMPUTE:
+	case AMDGPU_RING_TYPE_SDMA:
+		return AMDGPU_GFX_SDMA_IB_PACKET_SIZE_MAX_DW;
+	default:
+		return AMDGPU_MM_IB_PACKET_SIZE_MAX_DW;
+	}
+}
 
 static int amdgpu_cs_user_fence_chunk(struct amdgpu_cs_parser *p,
 				      struct drm_amdgpu_cs_chunk_fence *data,
@@ -195,7 +214,7 @@ static int amdgpu_cs_parser_init(struct amdgpu_cs_parser *p, union drm_amdgpu_cs
 			}
 
 			ret = amdgpu_cs_user_fence_chunk(p, p->chunks[i].kdata,
-							 &uf_offset);
+						 &uf_offset);
 			if (ret)
 				goto free_partial_kdata;
 
@@ -368,7 +387,7 @@ static void amdgpu_cs_get_threshold_for_moves(struct amdgpu_device *adev,
 		if (used_vis_vram < total_vis_vram) {
 			u64 free_vis_vram = total_vis_vram - used_vis_vram;
 			adev->mm_stats.accum_us_vis = min(adev->mm_stats.accum_us_vis +
-							  increment_us, us_upper_bound);
+						  increment_us, us_upper_bound);
 
 			if (free_vis_vram >= total_vis_vram / 2)
 				adev->mm_stats.accum_us_vis =
@@ -923,6 +942,11 @@ static int amdgpu_cs_ib_fill(struct amdgpu_device *adev,
 		parser->entity = entity;
 
 		ring = to_amdgpu_ring(entity->rq->sched);
+
+		if (chunk_ib->ib_bytes / 4 >
+		    amdgpu_cs_ib_packet_size_max_dw(ring->funcs->type))
+			return -EINVAL;
+
 		r =  amdgpu_ib_get(adev, vm, ring->funcs->parse_cs ?
 				   chunk_ib->ib_bytes : 0,
 				   AMDGPU_IB_POOL_DELAYED, ib);
