@@ -51,6 +51,7 @@ static u32 amdgpu_cs_ib_packet_size_max_dw(enum amdgpu_ring_type type)
 	case AMDGPU_RING_TYPE_GFX:
 	case AMDGPU_RING_TYPE_COMPUTE:
 	case AMDGPU_RING_TYPE_SDMA:
+	case AMDGPU_RING_TYPE_VPE:
 		return AMDGPU_GFX_SDMA_IB_PACKET_SIZE_MAX_DW;
 	default:
 		return AMDGPU_MM_IB_PACKET_SIZE_MAX_DW;
@@ -214,7 +215,7 @@ static int amdgpu_cs_parser_init(struct amdgpu_cs_parser *p, union drm_amdgpu_cs
 			}
 
 			ret = amdgpu_cs_user_fence_chunk(p, p->chunks[i].kdata,
-						 &uf_offset);
+							 &uf_offset);
 			if (ret)
 				goto free_partial_kdata;
 
@@ -387,7 +388,7 @@ static void amdgpu_cs_get_threshold_for_moves(struct amdgpu_device *adev,
 		if (used_vis_vram < total_vis_vram) {
 			u64 free_vis_vram = total_vis_vram - used_vis_vram;
 			adev->mm_stats.accum_us_vis = min(adev->mm_stats.accum_us_vis +
-						  increment_us, us_upper_bound);
+							  increment_us, us_upper_bound);
 
 			if (free_vis_vram >= total_vis_vram / 2)
 				adev->mm_stats.accum_us_vis =
