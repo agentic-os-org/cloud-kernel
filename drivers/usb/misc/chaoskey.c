@@ -308,7 +308,6 @@ static int chaoskey_release(struct inode *inode, struct file *file)
 	} else
 		mutex_unlock(&dev->lock);
 
-	usb_dbg(interface, "release success");
 	return 0;
 }
 
@@ -581,4 +580,3 @@ static struct usb_driver chaoskey_driver = {
 };
 
 module_usb_driver(chaoskey_driver);
-
