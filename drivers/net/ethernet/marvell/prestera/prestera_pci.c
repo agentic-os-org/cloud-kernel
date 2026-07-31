@@ -591,9 +591,14 @@ static int prestera_fw_rev_check(struct prestera_fw *fw)
 static int prestera_fw_hdr_parse(struct prestera_fw *fw,
 				 const struct firmware *img)
 {
-	struct prestera_fw_header *hdr = (struct prestera_fw_header *)img->data;
+	struct prestera_fw_header *hdr;
 	struct prestera_fw_rev *rev = &fw->dev.fw_rev;
 	u32 magic;
+
+	if (img->size < sizeof(*hdr))
+		return -EINVAL;
+
+	hdr = (struct prestera_fw_header *)img->data;
 
 	magic = be32_to_cpu(hdr->magic_number);
 	if (magic != PRESTERA_FW_HDR_MAGIC) {
