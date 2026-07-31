@@ -299,7 +299,7 @@
   {
     "MetricName": "umc_mem_read_bandwidth",
     "BriefDescription": "Estimated memory read bandwidth.",
-    "MetricExpr": "(umc_cas_cmd.rd * 64) / 1e6 / duration_time",
+    "MetricExpr": "(umc_cas_cmd.rd * 64) / 1000000 / duration_time",
     "MetricGroup": "memory_controller",
     "PerPkg": "1",
     "ScaleUnit": "1MB/s"
@@ -307,7 +307,7 @@
   {
     "MetricName": "umc_mem_write_bandwidth",
     "BriefDescription": "Estimated memory write bandwidth.",
-    "MetricExpr": "(umc_cas_cmd.wr * 64) / 1e6 / duration_time",
+    "MetricExpr": "(umc_cas_cmd.wr * 64) / 1000000 / duration_time",
     "MetricGroup": "memory_controller",
     "PerPkg": "1",
     "ScaleUnit": "1MB/s"
@@ -315,7 +315,7 @@
   {
     "MetricName": "umc_mem_bandwidth",
     "BriefDescription": "Estimated combined memory bandwidth.",
-    "MetricExpr": "(umc_cas_cmd.all * 64) / 1e6 / duration_time",
+    "MetricExpr": "(umc_cas_cmd.all * 64) / 1000000 / duration_time",
     "MetricGroup": "memory_controller",
     "PerPkg": "1",
     "ScaleUnit": "1MB/s"
