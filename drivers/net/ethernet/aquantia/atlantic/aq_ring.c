@@ -286,8 +286,8 @@ bool aq_ring_tx_clean(struct aq_ring_s *self)
 				if (!buff->is_eop &&
 				    buff->eop_index != 0xffffU &&
 				    (!aq_ring_dx_in_range(self->sw_head,
-						buff->eop_index,
-						self->hw_head)))
+							buff->eop_index,
+							self->hw_head)))
 					break;
 
 				dma_unmap_single(dev, buff->pa, buff->len,
@@ -312,6 +312,33 @@ bool aq_ring_tx_clean(struct aq_ring_s *self)
 	}
 
 	return !!budget;
+}
+
+void aq_ring_tx_deinit(struct aq_ring_s *self)
+{
+	if (!self)
+		return;
+
+	for (; self->sw_head != self->sw_tail;
+		self->sw_head = aq_ring_next_dx(self, self->sw_head)) {
+		struct aq_ring_buff_s *buff = &self->buff_ring[self->sw_head];
+		struct device *ndev = aq_nic_get_dev(self->aq_nic);
+
+		if (buff->is_mapped) {
+			if (buff->is_sop) {
+				dma_unmap_single(ndev, buff->pa, buff->len,
+						 DMA_TO_DEVICE);
+			} else {
+				dma_unmap_page(ndev, buff->pa, buff->len,
+					       DMA_TO_DEVICE);
+			}
+		}
+
+		if (buff->is_eop) {
+			if (buff->skb)
+				dev_kfree_skb_any(buff->skb);
+		}
+	}
 }
 
 static void aq_rx_checksum(struct aq_ring_s *self,
@@ -381,7 +408,7 @@ int aq_ring_rx_clean(struct aq_ring_s *self,
 							    self->hw_head);
 
 				if (unlikely(!is_rsc_completed) ||
-						frag_cnt > MAX_SKB_FRAGS) {
+					    frag_cnt > MAX_SKB_FRAGS) {
 					err = 0;
 					goto err_exit;
 				}
@@ -496,8 +523,8 @@ int aq_ring_rx_clean(struct aq_ring_s *self,
 		/* Send all PTP traffic to 0 queue */
 		skb_record_rx_queue(skb,
 				    is_ptp_ring ? 0
-						: AQ_NIC_RING2QMAP(self->aq_nic,
-								   self->idx));
+					       : AQ_NIC_RING2QMAP(self->aq_nic,
+								  self->idx));
 
 		u64_stats_update_begin(&self->stats.rx.syncp);
 		++self->stats.rx.packets;
