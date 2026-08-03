@@ -18,12 +18,14 @@
 #include <linux/kvm_para.h>
 #include <linux/stringify.h>
 
-#include "../kvm_util.h"
+#include "kvm_util.h"
+#include "ucall_common.h"
 
 extern bool host_cpu_is_intel;
 extern bool host_cpu_is_amd;
 extern bool host_cpu_is_hygon;
 extern bool host_cpu_is_zhaoxin;
+extern uint64_t guest_tsc_khz;
 
 #define NMI_VECTOR		0x02
 
@@ -802,6 +804,23 @@ static inline void cpu_relax(void)
 	asm volatile("rep; nop" ::: "memory");
 }
 
+static inline void udelay(unsigned long usec)
+{
+	uint64_t start, now, cycles;
+
+	GUEST_ASSERT(guest_tsc_khz);
+	cycles = guest_tsc_khz / 1000 * usec;
+
+	/*
+	 * Deliberately don't PAUSE, a.k.a. cpu_relax(), so that the delay is
+	 * as accurate as possible, e.g. doesn't trigger PAUSE-Loop VM-Exits.
+	 */
+	start = rdtsc();
+	do {
+		now = rdtsc();
+	} while (now - start < cycles);
+}
+
 #define ud2()			\
 	__asm__ __volatile__(	\
 		"ud2\n"	\
@@ -1102,8 +1121,6 @@ struct idt_entry {
 	uint32_t offset2; uint32_t reserved;
 };
 
-void vm_init_descriptor_tables(struct kvm_vm *vm);
-void vcpu_init_descriptor_tables(struct kvm_vcpu *vcpu);
 void vm_install_exception_handler(struct kvm_vm *vm, int vector,
 			void (*handler)(struct ex_regs *));
 
