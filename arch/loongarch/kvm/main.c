@@ -192,6 +192,14 @@ static void kvm_init_gcsr_flag(void)
 	set_gcsr_sw_flag(LOONGARCH_CSR_PERFCNTR2);
 	set_gcsr_sw_flag(LOONGARCH_CSR_PERFCTRL3);
 	set_gcsr_sw_flag(LOONGARCH_CSR_PERFCNTR3);
+
+	if (cpu_has_msgint) {
+		set_gcsr_hw_flag(LOONGARCH_CSR_IPR);
+		set_gcsr_hw_flag(LOONGARCH_CSR_ISR0);
+		set_gcsr_hw_flag(LOONGARCH_CSR_ISR1);
+		set_gcsr_hw_flag(LOONGARCH_CSR_ISR2);
+		set_gcsr_hw_flag(LOONGARCH_CSR_ISR3);
+	}
 }
 
 static void kvm_update_vpid(struct kvm_vcpu *vcpu, int cpu)
@@ -392,6 +400,7 @@ static int kvm_loongarch_env_init(void)
 	}
 
 	kvm_init_gcsr_flag();
+	kvm_register_perf_callbacks();
 
 	/* Register loongarch ipi interrupt controller interface. */
 	ret = kvm_loongarch_register_ipi_device();
@@ -423,6 +432,8 @@ static void kvm_loongarch_env_exit(void)
 		}
 		kfree(kvm_loongarch_ops);
 	}
+
+	kvm_unregister_perf_callbacks();
 }
 
 static int kvm_loongarch_init(void)

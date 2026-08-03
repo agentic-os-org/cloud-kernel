@@ -12,6 +12,7 @@
 #include <linux/kvm.h>
 #include <linux/kvm_types.h>
 #include <linux/mutex.h>
+#include <linux/perf_event.h>
 #include <linux/spinlock.h>
 #include <linux/threads.h>
 #include <linux/types.h>
@@ -34,6 +35,7 @@
 #define KVM_REQ_TLB_FLUSH_GPA		KVM_ARCH_REQ(0)
 #define KVM_REQ_STEAL_UPDATE		KVM_ARCH_REQ(1)
 #define KVM_REQ_PMU			KVM_ARCH_REQ(2)
+#define KVM_REQ_AUX_LOAD		KVM_ARCH_REQ(3)
 
 #define KVM_GUESTDBG_SW_BP_MASK		\
 	(KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP)
@@ -128,6 +130,8 @@ struct kvm_arch {
 	struct kvm_phyid_map  *phyid_map;
 	/* Enabled PV features */
 	unsigned long pv_features;
+	/* Supported KVM features */
+	unsigned long kvm_features;
 
 	s64 time_offset;
 	struct kvm_context __percpu *vmcs;
@@ -200,6 +204,7 @@ struct kvm_vcpu_arch {
 
 	/* Which auxiliary state is loaded (KVM_LARCH_*) */
 	unsigned int aux_inuse;
+	unsigned int aux_ldtype;
 
 	/* FPU state */
 	struct loongarch_fpu fpu FPU_ALIGN;
@@ -264,6 +269,11 @@ static inline void writel_sw_gcsr(struct loongarch_csrs *csr, int reg, unsigned 
 	csr->csrs[reg] = val;
 }
 
+static inline bool kvm_guest_has_msgint(struct kvm_vcpu_arch *arch)
+{
+	return arch->cpucfg[1] & CPUCFG1_MSGINT;
+}
+
 static inline bool kvm_guest_has_fpu(struct kvm_vcpu_arch *arch)
 {
 	return arch->cpucfg[2] & CPUCFG2_FP;
@@ -292,6 +302,14 @@ static inline bool kvm_guest_has_pmu(struct kvm_vcpu_arch *arch)
 static inline int kvm_get_pmu_num(struct kvm_vcpu_arch *arch)
 {
 	return (arch->cpucfg[6] & CPUCFG6_PMNUM) >> CPUCFG6_PMNUM_SHIFT;
+}
+
+bool kvm_arch_pmi_in_guest(struct kvm_vcpu *vcpu);
+
+/* Check whether KVM support this feature (VMM may disable it) */
+static inline bool kvm_vm_support(struct kvm_arch *arch, int feature)
+{
+	return !!(arch->kvm_features & BIT_ULL(feature));
 }
 
 /* Debug: dump vcpu state */
