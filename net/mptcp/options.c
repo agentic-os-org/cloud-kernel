@@ -44,6 +44,16 @@ static void mptcp_parse_option(const struct sk_buff *skb,
 		if (opsize != expected_opsize)
 			break;
 
+		/* Only the MPC + ACK can be used with a RM_ADDR */
+		if (opsize >= TCPOLEN_MPTCP_MPC_ACK) {
+			if (mp_opt->mp_capable || mp_opt->mp_join ||
+			    mp_opt->dss || mp_opt->add_addr)
+				break;
+		} else if (mp_opt->mp_capable || mp_opt->mp_join ||
+			   mp_opt->dss || mp_opt->add_addr || mp_opt->rm_addr) {
+			break;
+		}
+
 		/* try to be gentle vs future versions on the initial syn */
 		version = *ptr++ & MPTCP_VERSION_MASK;
 		if (opsize != TCPOLEN_MPTCP_MPC_SYN) {
@@ -101,6 +111,11 @@ static void mptcp_parse_option(const struct sk_buff *skb,
 		break;
 
 	case MPTCPOPT_MP_JOIN:
+		/* Can be used with a restricted number of other options */
+		if (mp_opt->mp_capable || mp_opt->mp_join || mp_opt->dss ||
+		    mp_opt->add_addr)
+			break;
+
 		mp_opt->mp_join = 1;
 		if (opsize == TCPOLEN_MPTCP_MPJ_SYN) {
 			mp_opt->backup = *ptr++ & MPTCPOPT_BACKUP;
@@ -132,6 +147,10 @@ static void mptcp_parse_option(const struct sk_buff *skb,
 		break;
 
 	case MPTCPOPT_DSS:
+		/* Can be used with a restricted number of other options */
+		if (mp_opt->mp_capable || mp_opt->mp_join || mp_opt->dss)
+			break;
+
 		pr_debug("DSS");
 		ptr++;
 
@@ -214,6 +233,10 @@ static void mptcp_parse_option(const struct sk_buff *skb,
 		break;
 
 	case MPTCPOPT_ADD_ADDR:
+		/* Can be used with a restricted number of other options */
+		if (mp_opt->mp_capable || mp_opt->mp_join || mp_opt->add_addr)
+			break;
+
 		mp_opt->echo = (*ptr++) & MPTCP_ADDR_ECHO;
 		if (!mp_opt->echo) {
 			if (opsize == TCPOLEN_MPTCP_ADD_ADDR ||
@@ -269,6 +292,10 @@ static void mptcp_parse_option(const struct sk_buff *skb,
 		break;
 
 	case MPTCPOPT_RM_ADDR:
+		/* Can be used with a restricted number of other options */
+		if (mp_opt->rm_addr)
+			break;
+
 		if (opsize != TCPOLEN_MPTCP_RM_ADDR_BASE)
 			break;
 
