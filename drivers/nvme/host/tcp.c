@@ -331,6 +331,22 @@ static inline bool nvme_tcp_queue_more(struct nvme_tcp_queue *queue)
 		!llist_empty(&queue->req_list);
 }
 
+/*
+ * ANCK 5.10 lacks init_llist_node()/llist_on_list() (upstream commit
+ * d6b3358a2813 "llist: add interface to check if a node is on a list.",
+ * v6.7). Open-code the same sentinel semantics locally: a node that is
+ * not on any lock-less list points to itself.
+ */
+static inline void nvme_tcp_init_llist_node(struct llist_node *node)
+{
+	node->next = node;
+}
+
+static inline bool nvme_tcp_llist_on_list(const struct llist_node *node)
+{
+	return node->next != node;
+}
+
 static inline void nvme_tcp_queue_request(struct nvme_tcp_request *req,
 		bool sync, bool last)
 {
@@ -381,7 +397,8 @@ nvme_tcp_fetch_request(struct nvme_tcp_queue *queue)
 			return NULL;
 	}
 
-	list_del(&req->entry);
+	list_del_init(&req->entry);
+	nvme_tcp_init_llist_node(&req->lentry);
 	return req;
 }
 
@@ -486,6 +503,8 @@ static int nvme_tcp_init_request(struct blk_mq_tag_set *set,
 
 	req->queue = queue;
 	nvme_req(rq)->ctrl = &ctrl->ctrl;
+	nvme_tcp_init_llist_node(&req->lentry);
+	INIT_LIST_HEAD(&req->entry);
 
 	return 0;
 }
@@ -686,6 +705,14 @@ static int nvme_tcp_handle_r2t(struct nvme_tcp_queue *queue,
 		return -ENOENT;
 	}
 	req = blk_mq_rq_to_pdu(rq);
+
+	if (nvme_tcp_llist_on_list(&req->lentry) ||
+	    !list_empty(&req->entry)) {
+		dev_err(queue->ctrl->ctrl.device,
+			"req %d unexpected r2t while processing request\n",
+			rq->tag);
+		return -EPROTO;
+	}
 
 	ret = nvme_tcp_setup_h2c_data_pdu(req, pdu);
 	if (unlikely(ret))
@@ -2355,6 +2382,8 @@ static void nvme_tcp_submit_async_event(struct nvme_ctrl *arg)
 	ctrl->async_req.offset = 0;
 	ctrl->async_req.curr_bio = NULL;
 	ctrl->async_req.data_len = 0;
+	nvme_tcp_init_llist_node(&ctrl->async_req.lentry);
+	INIT_LIST_HEAD(&ctrl->async_req.entry);
 
 	nvme_tcp_queue_request(&ctrl->async_req, true, true);
 }
