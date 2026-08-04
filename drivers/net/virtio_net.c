@@ -5949,6 +5949,20 @@ static int virtnet_probe(struct virtio_device *vdev)
 			vi->intr_coal_tx.max_packets = 0;
 	}
 
+	if (virtio_has_feature(vi->vdev, VIRTIO_NET_F_VQ_NOTF_COAL)) {
+		/* The reason is the same as VIRTIO_NET_F_NOTF_COAL. */
+		for (i = 0; i < vi->max_queue_pairs; i++)
+			if (vi->sq[i].napi.weight)
+				vi->sq[i].intr_coal.max_packets = 1;
+
+		/* The dim work of each rxq must be initialized before the
+		 * device becomes live.
+		 */
+		err = virtnet_init_irq_moder(vi);
+		if (err)
+			goto free_vqs;
+	}
+
 #ifdef CONFIG_SYSFS
 	if (vi->mergeable_rx_bufs)
 		dev->sysfs_rx_queue_group = &virtio_net_mrg_rx_group;
@@ -6029,15 +6043,6 @@ static int virtnet_probe(struct virtio_device *vdev)
 	virtnet_set_queues(vi, vi->curr_queue_pairs);
 
 	if (virtio_has_feature(vi->vdev, VIRTIO_NET_F_VQ_NOTF_COAL)) {
-		/* The reason is the same as VIRTIO_NET_F_NOTF_COAL. */
-		for (i = 0; i < vi->max_queue_pairs; i++)
-			if (vi->sq[i].napi.weight)
-				vi->sq[i].intr_coal.max_packets = 1;
-
-		err = virtnet_init_irq_moder(vi);
-		if (err)
-			goto free;
-
 		/* Getting the initial irq values from the first rxq
 		 * and txq. Even if it fails, the probe should continue.
 		 */
@@ -6078,6 +6083,7 @@ free_vqs:
 	disable_get_cvq_work(vi);
 	flush_delayed_work(&vi->get_cvq);
 	virtnet_del_coal_free_list(vi);
+	virtnet_free_irq_moder(vi);
 	cancel_delayed_work_sync(&vi->refill);
 	free_receive_page_frags(vi);
 	virtnet_del_vqs(vi);
