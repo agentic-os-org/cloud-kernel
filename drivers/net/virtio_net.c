@@ -1916,6 +1916,14 @@ static void __virtnet_add_dim_command(struct virtnet_info *vi,
 
 err_ret:
 	if (ret < 0) {
+		u16 qnum = le16_to_cpu(ctrl->coal_vqs.vqn) / 2;
+
+		/* The command is not delivered, so nobody will reset the
+		 * state for us. Leaving it as DIM_APPLY_NEW_PROFILE would
+		 * stall the dim of this queue forever.
+		 */
+		vi->rq[qnum].dim.state = DIM_START_MEASURE;
+
 		mutex_lock(&vi->coal_free_lock);
 		list_add(&ctrl->list, &vi->coal_free_list);
 		mutex_unlock(&vi->coal_free_lock);
