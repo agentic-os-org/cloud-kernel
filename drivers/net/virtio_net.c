@@ -5931,8 +5931,9 @@ static int virtnet_probe(struct virtio_device *vdev)
 	if (err)
 		goto free;
 
-	if (virtnet_init_coal_list(vi))
-		goto free;
+	err = virtnet_init_coal_list(vi);
+	if (err)
+		goto free_vqs;
 
 	if (virtio_has_feature(vi->vdev, VIRTIO_NET_F_NOTF_COAL)) {
 		vi->intr_coal_rx.max_usecs = 0;
@@ -6074,6 +6075,9 @@ free_unregister_netdev:
 free_failover:
 	net_failover_destroy(vi->failover);
 free_vqs:
+	disable_get_cvq_work(vi);
+	flush_delayed_work(&vi->get_cvq);
+	virtnet_del_coal_free_list(vi);
 	cancel_delayed_work_sync(&vi->refill);
 	free_receive_page_frags(vi);
 	virtnet_del_vqs(vi);
