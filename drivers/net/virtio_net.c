@@ -4214,14 +4214,14 @@ static void virtnet_rx_dim_work(struct work_struct *work)
 	struct virtnet_coal_node *avail_coal;
 	struct dim_cq_moder update_moder;
 
+	update_moder = net_dim_get_rx_irq_moder(vi->dev, dim);
+
 	if (!rq->dim_enabled ||
 	    (update_moder.usec == rq->intr_coal.max_usecs &&
 	     update_moder.pkts == rq->intr_coal.max_packets)) {
 		rq->dim.state = DIM_START_MEASURE;
 		return;
 	}
-
-	update_moder = net_dim_get_rx_irq_moder(vi->dev, dim);
 
 	avail_coal = virtnet_wait_space(vi);
 	avail_coal->coal_vqs.vqn = cpu_to_le16(rxq2vq(rq - vi->rq));
