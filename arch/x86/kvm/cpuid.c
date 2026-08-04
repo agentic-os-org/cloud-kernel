@@ -848,7 +848,7 @@ void kvm_set_cpu_caps(void)
 	);
 
 	/* Zhaoxin 0xC0000006 leaf */
-	kvm_cpu_cap_init(CPUID_C000_0006_EAX, 0 /* bit0: zxpause */ | 0 /* bit1 HMAC */);
+	kvm_cpu_cap_init(CPUID_C000_0006_EAX, 0 /* bit0: pauseopt */ | 0 /* bit1 HMAC */);
 
 	/*
 	 * Hide RDTSCP and RDPID if either feature is reported as supported but

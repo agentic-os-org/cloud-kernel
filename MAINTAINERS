@@ -24217,11 +24217,6 @@ L:	linux-hwmon@vger.kernel.org
 S:	Maintained
 F:	drivers/hwmon/zhaoxin-cputemp.c
 
-ZHAOXIN ZXPAUSE INSTRUCTION SUPPORT
-M:	LeoLiu-oc <LeoLiu-oc@zhaoxin.com>
-S:	Maintained
-F:	arch/x86/kernel/cpu/zxpause.c
-
 ZHAOXIN PINCTRL DRIVER
 M:	LeoLiu-oc <LeoLiu-oc@zhaoxin.com>
 L:	linux-kernel@vger.kernel.org
@@ -24230,6 +24225,11 @@ F:	drivers/pinctrl/zhaoxin/pinctrl-kh50000.c
 F:	drivers/pinctrl/zhaoxin/pinctrl-kx7000.c
 F:	drivers/pinctrl/zhaoxin/pinctrl-zhaoxin.c
 F:	drivers/pinctrl/zhaoxin/pinctrl-zhaoxin.h
+
+ZHAOXIN PAUSEOPT INSTRUCTION SUPPORT
+M:	LeoLiu-oc <LeoLiu-oc@zhaoxin.com>
+S:	Maintained
+F:	arch/x86/kernel/cpu/pauseopt.c
 
 ZONEFS FILESYSTEM
 M:	Damien Le Moal <dlemoal@kernel.org>

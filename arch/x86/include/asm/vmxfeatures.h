@@ -90,7 +90,10 @@
 /* Tertiary Processor-Based VM-Execution Controls, word 3 */
 #define VMX_FEATURE_IPI_VIRT		( 3*32+  4) /* Enable IPI virtualization */
 
-/* Zhaoxin Tertiary Processor-Based VM-Execution Controls, word 4 */
-#define VMX_FEATURE_GUEST_ZXPAUSE	(4*32 +  0) /* zxpause instruction in guest mode */
+/*
+ * Zhaoxin Tertiary Processor-Based VM-Execution Controls, word 5.
+ * Intel's tertiary controls actually consume two words.
+ */
+#define VMX_FEATURE_GUEST_PAUSEOPT      (5*32 +  0) /* pauseopt instruction in guest mode */
 
 #endif /* _ASM_X86_VMXFEATURES_H */

@@ -505,8 +505,6 @@
 #define X86_FEATURE_HYGON_CIS_SM3	(22*32 + 1) /* "sm3" SM3 instructions */
 #define X86_FEATURE_HYGON_CIS_SM4	(22*32 + 2) /* "sm4" SM4 instructions */
 
-/* VIA/Cyrix/Centaur-defined CPU features, CPUID level 0xC0000006, word 23 */
-#define X86_FEATURE_ZXPAUSE		(23*32 + 0) /* ZHAOXIN ZXPAUSE */
 #define X86_FEATURE_PREFETCHI		(20*32+20) /* "" Prefetch Data/Instruction to Cache Level */
 #define X86_FEATURE_AVX512_BMM		(20*32+23) /* AVX512 Bit Matrix Multiply instructions */
 
@@ -533,6 +531,9 @@
 #define X86_FEATURE_IBPB_EXIT_TO_USER  (21*32+14) /* Use IBPB on exit-to-userspace, see VMSCAPE bug */
 
 #define X86_FEATURE_SDCIAE		(21*32+18) /* L3 Smart Data Cache Injection Allocation Enforcement */
+
+/* Zhaoxin/Centaur-defined CPU features, CPUID level 0xC0000006, word 23 */
+#define X86_FEATURE_PAUSEOPT		(23*32 + 0) /* ZHAOXIN PAUSEOPT */
 
 /*
  * BUG word(s)

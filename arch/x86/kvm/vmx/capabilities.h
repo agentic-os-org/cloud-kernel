@@ -140,6 +140,11 @@ static inline bool cpu_has_tertiary_exec_ctrls(void)
 		CPU_BASED_ACTIVATE_TERTIARY_CONTROLS;
 }
 
+static inline bool cpu_has_zx_tertiary_exec_ctrls(void)
+{
+	return vmcs_config.zx_cpu_based_3rd_exec_ctrl;
+}
+
 static inline bool cpu_has_vmx_virtualize_apic_accesses(void)
 {
 	return vmcs_config.cpu_based_2nd_exec_ctrl &
@@ -257,10 +262,10 @@ static inline bool cpu_has_vmx_xsaves(void)
 		SECONDARY_EXEC_ENABLE_XSAVES;
 }
 
-static inline bool cpu_has_vmx_zxpause(void)
+static inline bool cpu_has_vmx_pauseopt(void)
 {
 	return vmcs_config.zx_cpu_based_3rd_exec_ctrl &
-		ZX_TERTIARY_EXEC_GUEST_ZXPAUSE;
+		ZX_TERTIARY_EXEC_GUEST_PAUSEOPT;
 }
 
 static inline bool cpu_has_vmx_waitpkg(void)
