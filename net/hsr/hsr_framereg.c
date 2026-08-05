@@ -44,10 +44,8 @@ bool hsr_addr_is_self(struct hsr_priv *hsr, unsigned char *addr)
 
 	node = list_first_or_null_rcu(&hsr->self_node_db, struct hsr_node,
 				      mac_list);
-	if (!node) {
-		WARN_ONCE(1, "HSR: No self node\n");
+	if (!node)
 		return false;
-	}
 
 	if (ether_addr_equal(addr, node->macaddress_A))
 		return true;
@@ -433,11 +431,11 @@ static struct hsr_port *get_late_port(struct hsr_priv *hsr,
 
 	if (time_after(node->time_in[HSR_PT_SLAVE_B],
 		       node->time_in[HSR_PT_SLAVE_A] +
-					msecs_to_jiffies(MAX_SLAVE_DIFF)))
+				msecs_to_jiffies(MAX_SLAVE_DIFF)))
 		return hsr_port_get_hsr(hsr, HSR_PT_SLAVE_A);
 	if (time_after(node->time_in[HSR_PT_SLAVE_A],
 		       node->time_in[HSR_PT_SLAVE_B] +
-					msecs_to_jiffies(MAX_SLAVE_DIFF)))
+				msecs_to_jiffies(MAX_SLAVE_DIFF)))
 		return hsr_port_get_hsr(hsr, HSR_PT_SLAVE_B);
 
 	return NULL;
