@@ -1916,6 +1916,14 @@ static void __virtnet_add_dim_command(struct virtnet_info *vi,
 
 err_ret:
 	if (ret < 0) {
+		u16 qnum = le16_to_cpu(ctrl->coal_vqs.vqn) / 2;
+
+		/* The command is not delivered, so nobody will reset the
+		 * state for us. Leaving it as DIM_APPLY_NEW_PROFILE would
+		 * stall the dim of this queue forever.
+		 */
+		vi->rq[qnum].dim.state = DIM_START_MEASURE;
+
 		mutex_lock(&vi->coal_free_lock);
 		list_add(&ctrl->list, &vi->coal_free_list);
 		mutex_unlock(&vi->coal_free_lock);
@@ -4214,14 +4222,14 @@ static void virtnet_rx_dim_work(struct work_struct *work)
 	struct virtnet_coal_node *avail_coal;
 	struct dim_cq_moder update_moder;
 
+	update_moder = net_dim_get_rx_irq_moder(vi->dev, dim);
+
 	if (!rq->dim_enabled ||
 	    (update_moder.usec == rq->intr_coal.max_usecs &&
 	     update_moder.pkts == rq->intr_coal.max_packets)) {
 		rq->dim.state = DIM_START_MEASURE;
 		return;
 	}
-
-	update_moder = net_dim_get_rx_irq_moder(vi->dev, dim);
 
 	avail_coal = virtnet_wait_space(vi);
 	avail_coal->coal_vqs.vqn = cpu_to_le16(rxq2vq(rq - vi->rq));
@@ -5931,8 +5939,9 @@ static int virtnet_probe(struct virtio_device *vdev)
 	if (err)
 		goto free;
 
-	if (virtnet_init_coal_list(vi))
-		goto free;
+	err = virtnet_init_coal_list(vi);
+	if (err)
+		goto free_vqs;
 
 	if (virtio_has_feature(vi->vdev, VIRTIO_NET_F_NOTF_COAL)) {
 		vi->intr_coal_rx.max_usecs = 0;
@@ -5946,6 +5955,20 @@ static int virtnet_probe(struct virtio_device *vdev)
 			vi->intr_coal_tx.max_packets = 1;
 		else
 			vi->intr_coal_tx.max_packets = 0;
+	}
+
+	if (virtio_has_feature(vi->vdev, VIRTIO_NET_F_VQ_NOTF_COAL)) {
+		/* The reason is the same as VIRTIO_NET_F_NOTF_COAL. */
+		for (i = 0; i < vi->max_queue_pairs; i++)
+			if (vi->sq[i].napi.weight)
+				vi->sq[i].intr_coal.max_packets = 1;
+
+		/* The dim work of each rxq must be initialized before the
+		 * device becomes live.
+		 */
+		err = virtnet_init_irq_moder(vi);
+		if (err)
+			goto free_vqs;
 	}
 
 #ifdef CONFIG_SYSFS
@@ -6028,15 +6051,6 @@ static int virtnet_probe(struct virtio_device *vdev)
 	virtnet_set_queues(vi, vi->curr_queue_pairs);
 
 	if (virtio_has_feature(vi->vdev, VIRTIO_NET_F_VQ_NOTF_COAL)) {
-		/* The reason is the same as VIRTIO_NET_F_NOTF_COAL. */
-		for (i = 0; i < vi->max_queue_pairs; i++)
-			if (vi->sq[i].napi.weight)
-				vi->sq[i].intr_coal.max_packets = 1;
-
-		err = virtnet_init_irq_moder(vi);
-		if (err)
-			goto free;
-
 		/* Getting the initial irq values from the first rxq
 		 * and txq. Even if it fails, the probe should continue.
 		 */
@@ -6074,6 +6088,10 @@ free_unregister_netdev:
 free_failover:
 	net_failover_destroy(vi->failover);
 free_vqs:
+	disable_get_cvq_work(vi);
+	flush_delayed_work(&vi->get_cvq);
+	virtnet_del_coal_free_list(vi);
+	virtnet_free_irq_moder(vi);
 	cancel_delayed_work_sync(&vi->refill);
 	free_receive_page_frags(vi);
 	virtnet_del_vqs(vi);
