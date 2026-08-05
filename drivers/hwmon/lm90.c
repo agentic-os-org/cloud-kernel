@@ -1979,11 +1979,13 @@ static void lm90_alert(struct i2c_client *client, enum i2c_alert_protocol type,
 		 */
 		struct lm90_data *data = i2c_get_clientdata(client);
 
+		mutex_lock(&data->update_lock);
 		if ((data->flags & LM90_HAVE_BROKEN_ALERT) &&
 		    (alarms & data->alert_alarms)) {
 			dev_dbg(&client->dev, "Disabling ALERT#\n");
 			lm90_update_confreg(data, data->config | 0x80);
 		}
+		mutex_unlock(&data->update_lock);
 	} else {
 		dev_info(&client->dev, "Everything OK\n");
 	}
