@@ -66,7 +66,7 @@
 
 /*
  * All values are in milliseconds;
- * For eDP, after power-up/power/down,
+ * For eDP, after power-up/power.down,
  * 300/500 msec max. delay from LCDVCC to black video generation
  */
 #define PANEL_POWER_UP_TIMEOUT 300
@@ -532,7 +532,7 @@ dce110_translate_regamma_to_hw_format(const struct dc_transfer_func *output_tf,
 
 	arr_points[0].y = y1_min;
 	arr_points[0].slope = dc_fixpt_div(arr_points[0].y,
-						 arr_points[0].x);
+					   arr_points[0].x);
 
 	y_r = rgb_resulted[hw_points - 1].red;
 	y_g = rgb_resulted[hw_points - 1].green;
@@ -697,6 +697,7 @@ void dce110_enable_stream(struct pipe_ctx *pipe_ctx)
 
 
 }
+
 
 static enum bp_result link_transmitter_control(
 		struct dc_bios *bios,
@@ -1041,7 +1042,7 @@ void dce110_enable_audio_stream(struct pipe_ctx *pipe_ctx)
 		/* un-mute audio */
 		/* TODO: audio should be per stream rather than per link */
 		pipe_ctx->stream_res.stream_enc->funcs->audio_mute_control(
-					pipe_ctx->stream_res.stream_enc, false);
+				pipe_ctx->stream_res.stream_enc, false);
 		if (pipe_ctx->stream_res.audio)
 			pipe_ctx->stream_res.audio->enabled = true;
 	}
@@ -1131,6 +1132,7 @@ void dce110_unblank_stream(struct pipe_ctx *pipe_ctx,
 	}
 }
 
+
 void dce110_blank_stream(struct pipe_ctx *pipe_ctx)
 {
 	struct dc_stream_state *stream = pipe_ctx->stream;
@@ -1158,8 +1160,27 @@ void dce110_blank_stream(struct pipe_ctx *pipe_ctx)
 
 void dce110_set_avmute(struct pipe_ctx *pipe_ctx, bool enable)
 {
-	if (pipe_ctx != NULL && pipe_ctx->stream_res.stream_enc != NULL)
+	if (pipe_ctx != NULL && pipe_ctx->stream_res.stream_enc != NULL) {
 		pipe_ctx->stream_res.stream_enc->funcs->set_avmute(pipe_ctx->stream_res.stream_enc, enable);
+
+		/* Wait for three frames to make sure AV mute is sent out.
+		 * Some HDMI sinks need additional GCP packets to properly
+		 * process the mute state, especially after link re-establishment
+		 * with HDMI 2.0 scrambling enabled.
+		 */
+		if (enable && pipe_ctx->stream_res.tg &&
+		    pipe_ctx->stream_res.tg->funcs->is_tg_enabled &&
+		    pipe_ctx->stream_res.tg->funcs->wait_for_state &&
+		    pipe_ctx->stream_res.tg->funcs->is_tg_enabled(pipe_ctx->stream_res.tg)) {
+			int i;
+
+			pipe_ctx->stream_res.tg->funcs->wait_for_state(pipe_ctx->stream_res.tg, CRTC_STATE_VACTIVE);
+			for (i = 0; i < 3; i++) {
+				pipe_ctx->stream_res.tg->funcs->wait_for_state(pipe_ctx->stream_res.tg, CRTC_STATE_VBLANK);
+				pipe_ctx->stream_res.tg->funcs->wait_for_state(pipe_ctx->stream_res.tg, CRTC_STATE_VACTIVE);
+			}
+		}
+	}
 }
 
 static enum audio_dto_source translate_to_dto_source(enum controller_id crtc_id)
@@ -1482,9 +1503,9 @@ static enum dc_status apply_single_controller_ctx_to_hw(
 				stream->signal);
 
 		odm_pipe->stream_res.opp->funcs->opp_program_fmt(
-				odm_pipe->stream_res.opp,
-				&stream->bit_depth_params,
-				&stream->clamping);
+			odm_pipe->stream_res.opp,
+			&stream->bit_depth_params,
+			&stream->clamping);
 		odm_pipe = odm_pipe->next_odm_pipe;
 	}
 
@@ -1509,7 +1530,7 @@ static void power_down_encoders(struct dc *dc)
 	 */
 	for (i = 0; i < dc->res_pool->stream_enc_count; i++) {
 		dc->res_pool->stream_enc[i]->funcs->dp_blank(
-					dc->res_pool->stream_enc[i]);
+				dc->res_pool->stream_enc[i]);
 	}
 
 	for (i = 0; i < dc->link_count; i++) {
@@ -1582,7 +1603,7 @@ static void disable_vga_and_power_gate_all_controllers(
 	}
 	for (i = 0; i < dc->res_pool->pipe_count; i++) {
 		/* Enable CLOCK gating for each pipe BEFORE controller
-		 * powergating. */
+		* powergating. */
 		enable_display_pipe_clock_gating(ctx,
 				true);
 
@@ -1985,7 +2006,7 @@ static void dce110_reset_hw_ctx_wrap(
 						/*we have to dynamic arbitrate the audio endpoints*/
 						/*we free the resource, need reset is_audio_acquired*/
 						update_audio_usage(&dc->current_state->res_ctx, dc->res_pool,
-								pipe_ctx_old->stream_res.audio, false);
+									pipe_ctx_old->stream_res.audio, false);
 						pipe_ctx_old->stream_res.audio = NULL;
 					}
 				}
@@ -2461,7 +2482,6 @@ static void init_hw(struct dc *dc)
 	for (i = 0; i < dc->link_count; i++) {
 		/****************************************/
 		/* Power up AND update implementation according to the
-		 * required signal (which may be different from the
 		 * default signal on connector). */
 		struct dc_link *link = dc->links[i];
 
@@ -2704,7 +2724,7 @@ static void dce110_power_down_fe(struct dc *dc, struct pipe_ctx *pipe_ctx)
 		dc, fe_idx, dc->ctx->dc_bios, PIPE_GATING_CONTROL_ENABLE);
 
 	dc->res_pool->transforms[fe_idx]->funcs->transform_reset(
-				dc->res_pool->transforms[fe_idx]);
+					dc->res_pool->transforms[fe_idx]);
 }
 
 static void dce110_wait_for_mpcc_disconnect(
@@ -2920,4 +2940,3 @@ void dce110_hw_sequencer_construct(struct dc *dc)
 	dc->hwss = dce110_funcs;
 	dc->hwseq->funcs = dce110_private_funcs;
 }
-
