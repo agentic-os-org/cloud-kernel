@@ -198,10 +198,10 @@ EXPORT_SYMBOL(of_device_alloc);
  * registered.  Unavailable devices will not get registered.
  */
 static struct platform_device *of_platform_device_create_pdata(
-					struct device_node *np,
-					const char *bus_id,
-					void *platform_data,
-					struct device *parent)
+				struct device_node *np,
+				const char *bus_id,
+				void *platform_data,
+				struct device *parent)
 {
 	struct platform_device *dev;
 
