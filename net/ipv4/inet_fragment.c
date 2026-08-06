@@ -335,6 +335,17 @@ void inet_frag_queue_flush(struct inet_frag_queue *q,
 }
 EXPORT_SYMBOL(inet_frag_queue_flush);
 
+void inet_frag_queue_flush(struct inet_frag_queue *q,
+			   enum skb_drop_reason reason)
+{
+	unsigned int sum;
+
+	reason = reason ?: SKB_DROP_REASON_FRAG_REASM_TIMEOUT;
+	sum = inet_frag_rbtree_purge(&q->rb_fragments, reason);
+	sub_frag_mem_limit(q->fqdir, sum);
+}
+EXPORT_SYMBOL(inet_frag_queue_flush);
+
 void inet_frag_destroy(struct inet_frag_queue *q)
 {
 	unsigned int sum, sum_truesize = 0;

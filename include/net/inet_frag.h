@@ -133,6 +133,9 @@ struct inet_frag_queue *inet_frag_find(struct fqdir *fqdir, void *key);
 void inet_frag_queue_flush(struct inet_frag_queue *q,
 			   enum skb_drop_reason reason);
 
+void inet_frag_queue_flush(struct inet_frag_queue *q,
+			   enum skb_drop_reason reason);
+
 static inline void inet_frag_put(struct inet_frag_queue *q)
 {
 	if (refcount_dec_and_test(&q->refcnt))
