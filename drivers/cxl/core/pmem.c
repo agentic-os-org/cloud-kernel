@@ -120,6 +120,15 @@ static void unregister_nvb(void *_cxl_nvb)
 	device_unregister(&cxl_nvb->dev);
 }
 
+static bool cxl_nvdimm_bridge_failed_attach(struct cxl_nvdimm_bridge *cxl_nvb)
+{
+	struct device *dev = &cxl_nvb->dev;
+
+	guard(device)(dev);
+	/* If the device has no driver, then it failed to attach. */
+	return dev->driver == NULL;
+}
+
 /**
  * devm_cxl_add_nvdimm_bridge() - add the root of a LIBNVDIMM topology
  * @host: platform firmware root device
@@ -149,6 +158,11 @@ struct cxl_nvdimm_bridge *devm_cxl_add_nvdimm_bridge(struct device *host,
 	rc = device_add(dev);
 	if (rc)
 		goto err;
+
+	if (cxl_nvdimm_bridge_failed_attach(cxl_nvb)) {
+		unregister_nvb(cxl_nvb);
+		return ERR_PTR(-ENODEV);
+	}
 
 	rc = devm_add_action_or_reset(host, unregister_nvb, cxl_nvb);
 	if (rc)
@@ -256,6 +270,21 @@ int devm_cxl_add_nvdimm(struct cxl_memdev *cxlmd)
 	cxl_nvb = cxl_find_nvdimm_bridge(cxlmd);
 	if (!cxl_nvb)
 		return -ENODEV;
+
+	/*
+	 * Take the uport_dev lock to guard against race of nvdimm_bus object.
+	 * cxl_acpi_probe() registers the nvdimm_bus and is done under the
+	 * root port uport_dev lock.
+	 *
+	 * Take the cxl_nvb device lock to ensure that cxl_nvb driver is in a
+	 * consistent state. And the driver registers nvdimm_bus.
+	 */
+	guard(device)(cxl_nvb->port->uport_dev);
+	guard(device)(&cxl_nvb->dev);
+	if (!cxl_nvb->nvdimm_bus) {
+		rc = -ENODEV;
+		goto err_alloc;
+	}
 
 	cxl_nvd = cxl_nvdimm_alloc(cxl_nvb, cxlmd);
 	if (IS_ERR(cxl_nvd)) {
