@@ -58,6 +58,8 @@
 					 BIT(IRQ_VS_TIMER) | \
 					 BIT(IRQ_VS_EXT))
 
+#define KVM_HAVE_MMU_RWLOCK
+
 #define KVM_DIRTY_LOG_MANUAL_CAPS	(KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE | \
 					 KVM_DIRTY_LOG_INITIALLY_SET)
 
@@ -93,6 +95,7 @@ struct kvm_arch {
 	/* G-stage page table */
 	pgd_t *pgd;
 	phys_addr_t pgd_phys;
+	unsigned long pgd_levels;
 
 	/* Guest Timer */
 	struct kvm_guest_timer timer;
