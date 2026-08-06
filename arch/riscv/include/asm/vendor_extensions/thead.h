@@ -10,6 +10,7 @@
  * Extension keys must be strictly less than RISCV_ISA_VENDOR_EXT_MAX.
  */
 #define RISCV_ISA_VENDOR_EXT_XTHEADVECTOR		0
+#define RISCV_ISA_VENDOR_EXT_XUANTIE_SSDTSO		1
 
 extern struct riscv_isa_vendor_ext_data_list riscv_isa_vendor_ext_list_thead;
 

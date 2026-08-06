@@ -360,6 +360,9 @@ The following keys are defined:
         extension is supported in the T-Head ISA extensions spec starting from
 	commit a18c801634 ("Add T-Head VECTOR vendor extension. ").
 
+    * :c:macro:`RISCV_HWPROBE_VENDOR_EXT_XUANTIE_SSDTSO`: The Ssdtso extension is
+        supported, as in version v1.0-draft3 of the corresponding extension.
+
 * :c:macro:`RISCV_HWPROBE_KEY_ZICBOM_BLOCK_SIZE`: An unsigned int which
   represents the size of the Zicbom block in bytes.
 
@@ -383,5 +386,3 @@ The following keys are defined:
 * :c:macro:`RISCV_HWPROBE_KEY_IMA_EXT_1`: A bitmask containing additional
   extensions that are compatible with the
   :c:macro:`RISCV_HWPROBE_BASE_BEHAVIOR_IMA`: base system behavior.
-  * :c:macro:`RISCV_HWPROBE_EXT_SSDTSO`: The Ssdtso extension is supported, as
-       in version v1.0-draft3 of the corresponding extension.
