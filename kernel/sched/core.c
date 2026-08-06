@@ -9106,6 +9106,39 @@ void ia64_set_curr_task(int cpu, struct task_struct *p)
 
 #endif
 
+static atomic_t sched_simplified_proxy_exec_count;
+static DEFINE_MUTEX(sched_simplified_proxy_exec_mutex);
+DEFINE_STATIC_KEY_FALSE(__sched_simplified_proxy_exec_enabled);
+EXPORT_SYMBOL_GPL(__sched_simplified_proxy_exec_enabled);
+
+void sched_simplified_proxy_exec_get(void)
+{
+	if (atomic_inc_not_zero(&sched_simplified_proxy_exec_count))
+		return;
+
+	mutex_lock(&sched_simplified_proxy_exec_mutex);
+	if (!atomic_read(&sched_simplified_proxy_exec_count))
+		static_branch_enable(&__sched_simplified_proxy_exec_enabled);
+
+	/* Ensure the static branch is enabled before publishing the count. */
+	smp_mb__before_atomic();
+	atomic_inc(&sched_simplified_proxy_exec_count);
+	mutex_unlock(&sched_simplified_proxy_exec_mutex);
+}
+EXPORT_SYMBOL_GPL(sched_simplified_proxy_exec_get);
+
+void sched_simplified_proxy_exec_put(void)
+{
+	atomic_t *count = &sched_simplified_proxy_exec_count;
+	struct mutex *lock = &sched_simplified_proxy_exec_mutex;
+
+	if (atomic_dec_and_mutex_lock(count, lock)) {
+		static_branch_disable(&__sched_simplified_proxy_exec_enabled);
+		mutex_unlock(lock);
+	}
+}
+EXPORT_SYMBOL_GPL(sched_simplified_proxy_exec_put);
+
 #ifdef CONFIG_CGROUP_SCHED
 /* task_group_lock serializes the addition/removal of task groups */
 static DEFINE_SPINLOCK(task_group_lock);
@@ -9276,13 +9309,9 @@ void sched_release_group(struct task_group *tg)
 	spin_unlock_irqrestore(&task_group_lock, flags);
 }
 
-/*
- * Proxy exec only supports jbd2 lock currently, and when other locks supported, we'll
- * add the judgement into proxy_exec_enabled().
- */
 static inline bool proxy_exec_enabled(void)
 {
-	return !jbd2_proxy_exec_disabled();
+	return !sched_simplified_proxy_exec_disabled();
 }
 
 static void sched_change_group(struct task_struct *tsk)
@@ -9383,6 +9412,7 @@ void sched_move_task_to_root_task_group(struct task_struct *tsk, bool proxy_exec
 	tsk->proxy_exec = true;
 	sched_move_task(tsk, false);
 }
+EXPORT_SYMBOL_GPL(sched_move_task_to_root_task_group);
 
 void sched_move_task_to_origin_task_group(struct task_struct *tsk)
 {
@@ -9399,6 +9429,7 @@ void sched_move_task_to_origin_task_group(struct task_struct *tsk)
 	if (orig_tg != tsk->sched_task_group)
 		sched_move_task(tsk, false);
 }
+EXPORT_SYMBOL_GPL(sched_move_task_to_origin_task_group);
 
 static struct cgroup_subsys_state *
 cpu_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
@@ -11530,6 +11561,16 @@ struct cgroup_subsys cpu_cgrp_subsys = {
 	.threaded	= true,
 };
 
+#else /* CONFIG_CGROUP_SCHED */
+void sched_move_task_to_root_task_group(struct task_struct *tsk, bool proxy_exec_for_highclass)
+{
+}
+EXPORT_SYMBOL_GPL(sched_move_task_to_root_task_group);
+
+void sched_move_task_to_origin_task_group(struct task_struct *tsk)
+{
+}
+EXPORT_SYMBOL_GPL(sched_move_task_to_origin_task_group);
 #endif	/* CONFIG_CGROUP_SCHED */
 
 void dump_cpu_task(int cpu)

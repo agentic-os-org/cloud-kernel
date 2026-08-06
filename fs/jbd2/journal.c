@@ -1498,11 +1498,10 @@ static const struct proc_ops jbd2_stall_thresh_proc_ops = {
 
 static atomic_t jbd2_proxy_exec_count;
 static DEFINE_MUTEX(jbd2_proxy_exec_mutex);
-DEFINE_STATIC_KEY_FALSE(__jbd2_proxy_exec_enabled);
 
 /*
  * When we enable proxy exec for journal, we call jbd2_proxy_exec_get().
- * If we are the first one to enable, we'll also enable __jbd2_proxy_exec_enabled.
+ * If we are the first jbd2 user to enable it, we'll also enable scheduler proxy exec.
  */
 void jbd2_proxy_exec_get(journal_t *journal)
 {
@@ -1513,9 +1512,9 @@ void jbd2_proxy_exec_get(journal_t *journal)
 
 	mutex_lock(&jbd2_proxy_exec_mutex);
 	if (!atomic_read(&jbd2_proxy_exec_count))
-		static_branch_enable(&__jbd2_proxy_exec_enabled);
+		sched_simplified_proxy_exec_get();
 
-	/* Ensure the static branch is enabled before we increase jbd2_proxy_exec_count. */
+	/* Ensure scheduler proxy exec is enabled before we increase jbd2_proxy_exec_count. */
 	smp_mb__before_atomic();
 	atomic_inc(&jbd2_proxy_exec_count);
 	mutex_unlock(&jbd2_proxy_exec_mutex);
@@ -1523,7 +1522,7 @@ void jbd2_proxy_exec_get(journal_t *journal)
 
 /*
  * When we disable proxy exec for journal or release lock, we call jbd2_proxy_exec_put().
- * If we are the last one to disable proxy exec, we'll also disable __jbd2_proxy_exec_enabled.
+ * If we are the last jbd2 user to disable it, we'll also disable scheduler proxy exec.
  */
 void jbd2_proxy_exec_put(journal_t *journal)
 {
@@ -1531,7 +1530,7 @@ void jbd2_proxy_exec_put(journal_t *journal)
 		return;
 
 	if (atomic_dec_and_mutex_lock(&jbd2_proxy_exec_count, &jbd2_proxy_exec_mutex)) {
-		static_branch_disable(&__jbd2_proxy_exec_enabled);
+		sched_simplified_proxy_exec_put();
 		mutex_unlock(&jbd2_proxy_exec_mutex);
 	}
 }
