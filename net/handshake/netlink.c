@@ -112,17 +112,22 @@ int handshake_nl_accept_doit(struct sk_buff *skb, struct genl_info *info)
 	sock = req->hr_sk->sk_socket;
 	fd = get_unused_fd_flags(O_CLOEXEC);
 	if (fd < 0) {
+		fput(sock->file); /* drop ref from handshake_req_next() */
 		err = fd;
 		goto out_complete;
 	}
 
 	err = req->hr_proto->hp_accept(req, info, fd);
 	if (err) {
+		fput(sock->file); /* drop ref from handshake_req_next() */
 		put_unused_fd(fd);
 		goto out_complete;
 	}
 
-	fd_install(fd, get_file(sock->file));
+	/* fd_install() consumes the reference taken by
+	 * handshake_req_next().
+	 */
+	fd_install(fd, sock->file);
 
 	trace_handshake_cmd_accept(net, req, req->hr_sk, fd);
 	return 0;
