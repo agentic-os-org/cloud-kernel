@@ -87,6 +87,7 @@ struct at91wdt {
 	u32 mr_mask;
 	unsigned long heartbeat;	/* WDT heartbeat in jiffies */
 	bool nowayout;
+	bool stopped;
 	unsigned int irq;
 	struct clk *sclk;
 };
@@ -120,6 +121,9 @@ static inline void at91_wdt_reset(struct at91wdt *wdt)
 static void at91_ping(struct timer_list *t)
 {
 	struct at91wdt *wdt = from_timer(wdt, t, timer);
+
+	if (wdt->stopped)
+		return;
 	if (time_before(jiffies, wdt->next_heartbeat) ||
 	    !watchdog_active(&wdt->wdd)) {
 		at91_wdt_reset(wdt);
@@ -243,7 +247,8 @@ static int at91_wdt_init(struct platform_device *pdev, struct at91wdt *wdt)
 	return 0;
 
 out_stop_timer:
-	del_timer(&wdt->timer);
+	wdt->stopped = true;
+	del_timer_sync(&wdt->timer);
 	return err;
 }
 
@@ -388,7 +393,8 @@ static int __exit at91wdt_remove(struct platform_device *pdev)
 	watchdog_unregister_device(&wdt->wdd);
 
 	pr_warn("I quit now, hardware will probably reboot!\n");
-	del_timer(&wdt->timer);
+	wdt->stopped = true;
+	del_timer_sync(&wdt->timer);
 	clk_disable_unprepare(wdt->sclk);
 
 	return 0;
