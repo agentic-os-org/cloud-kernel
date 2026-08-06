@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <errno.h>
 
+#include <asm/vendor/thead.h>
 #include "../hwprobe/hwprobe.h"
 #include "../../kselftest_harness.h"
 
@@ -42,11 +43,11 @@ TEST(dtso)
 		ssdtso_configured = true;
 	}
 
-	pair.key = RISCV_HWPROBE_KEY_IMA_EXT_0;
+	pair.key = RISCV_HWPROBE_KEY_VENDOR_EXT_THEAD_0;
 	ret = riscv_hwprobe(&pair, 1, 0, NULL, 0);
 	ASSERT_GE(ret, 0);
-	ASSERT_EQ(pair.key, RISCV_HWPROBE_KEY_IMA_EXT_0);
-	ssdtso_available = !!(pair.value & RISCV_HWPROBE_EXT_SSDTSO);
+	ASSERT_EQ(pair.key, RISCV_HWPROBE_KEY_VENDOR_EXT_THEAD_0);
+	ssdtso_available = !!(pair.value & RISCV_HWPROBE_VENDOR_EXT_XUANTIE_SSDTSO);
 
 	if (ssdtso_configured) {
 		/* Read out current model. */

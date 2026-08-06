@@ -6,30 +6,26 @@
 #ifndef __ASM_RISCV_DTSO_H
 #define __ASM_RISCV_DTSO_H
 
-#define RISCV_MEMORY_CONSISTENCY_MODEL_WMO     0
-#define RISCV_MEMORY_CONSISTENCY_MODEL_TSO     1
-
-#ifdef CONFIG_RISCV_ISA_SSDTSO
+#ifdef CONFIG_RISCV_ISA_XUANTIE_SSDTSO
 
 #include <asm/cpufeature.h>
 #include <asm/csr.h>
 #include <asm/switch_to.h>
+#include <asm/vendorid_list.h>
+#include <asm/vendor_extensions/thead.h>
+
+#define RISCV_MEMORY_CONSISTENCY_MODEL_WMO     0
+#define RISCV_MEMORY_CONSISTENCY_MODEL_TSO     1
 
 static __always_inline bool has_dtso(void)
 {
-	return riscv_has_extension_unlikely(RISCV_ISA_EXT_SSDTSO);
+	return riscv_has_vendor_extension_unlikely(THEAD_VENDOR_ID,
+						   RISCV_ISA_VENDOR_EXT_XUANTIE_SSDTSO);
 }
 
 static __always_inline bool has_ztso(void)
 {
 	return riscv_has_extension_unlikely(RISCV_ISA_EXT_ZTSO);
-}
-
-static inline bool dtso_is_enabled(void)
-{
-	if (has_dtso())
-		return csr_read(CSR_SENVCFG) & ENVCFG_DTSO;
-	return 0;
 }
 
 static inline void dtso_disable(struct task_struct *task)
@@ -79,15 +75,14 @@ static inline void __switch_to_dtso(struct task_struct *prev,
 	dtso_restore(next);
 }
 
-#else /* ! CONFIG_RISCV_ISA_SSDTSO */
+#else /* ! CONFIG_RISCV_ISA_XUANTIE_SSDTSO */
 
 static __always_inline bool has_dtso(void) { return false; }
-static __always_inline bool dtso_is_enabled(void) { return false; }
 #define dtso_disable(task) do { } while (0)
 #define dtso_enable(task) do { } while (0)
 #define dtso_restore(task) do { } while (0)
 #define __switch_to_dtso(prev, next) do { } while (0)
 
-#endif /* CONFIG_RISCV_ISA_SSDTSO */
+#endif /* CONFIG_RISCV_ISA_XUANTIE_SSDTSO */
 
 #endif /* ! __ASM_RISCV_DTSO_H */

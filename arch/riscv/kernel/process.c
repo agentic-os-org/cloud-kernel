@@ -198,7 +198,7 @@ void flush_thread(void)
 	if (riscv_has_extension_unlikely(RISCV_ISA_EXT_SUPM))
 		envcfg_update_bits(current, ENVCFG_PMM, ENVCFG_PMM_PMLEN_0);
 #endif
-#ifdef CONFIG_DYNAMIC_MEMORY_CONSISTENCY_MODEL
+#ifdef CONFIG_RISCV_ISA_XUANTIE_SSDTSO
 	/*
 	 * Reset the memory consistency model on exec so that a stronger
 	 * model cannot leak across the exec boundary (e.g. into a

@@ -11,6 +11,9 @@
 /* All T-Head vendor extensions supported in Linux */
 static const struct riscv_isa_ext_data riscv_isa_vendor_ext_thead[] = {
 	__RISCV_ISA_EXT_DATA(xtheadvector, RISCV_ISA_VENDOR_EXT_XTHEADVECTOR),
+#ifdef CONFIG_RISCV_ISA_XUANTIE_SSDTSO
+	__RISCV_ISA_EXT_DATA(xtheadssdtso, RISCV_ISA_VENDOR_EXT_XUANTIE_SSDTSO),
+#endif
 };
 
 struct riscv_isa_vendor_ext_data_list riscv_isa_vendor_ext_list_thead = {
