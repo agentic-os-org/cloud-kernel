@@ -146,7 +146,7 @@ static int amdgpu_cs_parser_init(struct amdgpu_cs_parser *p, union drm_amdgpu_cs
 
 	p->nchunks = cs->in.num_chunks;
 	p->chunks = kmalloc_array(p->nchunks, sizeof(struct amdgpu_cs_chunk),
-			    GFP_KERNEL);
+				    GFP_KERNEL);
 	if (!p->chunks) {
 		ret = -ENOMEM;
 		goto free_chunk;
@@ -168,7 +168,7 @@ static int amdgpu_cs_parser_init(struct amdgpu_cs_parser *p, union drm_amdgpu_cs
 		p->chunks[i].length_dw = user_chunk.length_dw;
 
 		size = p->chunks[i].length_dw;
-		cdata = u64_to_user_ptr(user_chunk.chunk_data);
+		cdata = u64_to_user_ptr(chunk_array[i]);
 
 		p->chunks[i].kdata = kvmalloc_array(size, sizeof(uint32_t), GFP_KERNEL);
 		if (p->chunks[i].kdata == NULL) {
@@ -473,7 +473,7 @@ static int amdgpu_cs_validate(void *param, struct amdgpu_bo *bo)
 }
 
 static int amdgpu_cs_list_validate(struct amdgpu_cs_parser *p,
-			    struct list_head *validated)
+				    struct list_head *validated)
 {
 	struct ttm_operation_ctx ctx = { true, false };
 	struct amdgpu_bo_list_entry *lobj;
@@ -562,8 +562,8 @@ static int amdgpu_cs_parser_bos(struct amdgpu_cs_parser *p,
 		int i;
 
 		e->user_pages = kvmalloc_array(bo->tbo.ttm->num_pages,
-					sizeof(struct page *),
-					GFP_KERNEL | __GFP_ZERO);
+						sizeof(struct page *),
+						GFP_KERNEL | __GFP_ZERO);
 		if (!e->user_pages) {
 			DRM_ERROR("calloc failure\n");
 			return -ENOMEM;
