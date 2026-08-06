@@ -1863,6 +1863,7 @@ static bool keep_feat(int feat)
 	case HEADER_CLOCK_DATA:
 	case HEADER_HYBRID_TOPOLOGY:
 	case HEADER_PMU_CAPS:
+	case HEADER_CPU_DOMAIN_INFO:
 		return true;
 	/* Information that can be updated */
 	case HEADER_BUILD_ID:
@@ -2200,6 +2201,8 @@ int cmd_inject(int argc, const char **argv)
 			.finished_init	= perf_event__repipe_op2_synth,
 			.compressed	= perf_event__repipe_op4_synth,
 			.auxtrace	= perf_event__repipe_auxtrace,
+			.schedstat_cpu   = perf_event__repipe_op2_synth,
+			.schedstat_domain    = perf_event__repipe_op2_synth,
 			.dont_split_sample_group = true,
 		},
 		.input_name  = "-",
