@@ -1064,6 +1064,8 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 {
 	int target_nid = next_demotion_node(pgdat->node_id);
 	unsigned int nr_succeeded;
+	enum vm_event_item item;
+	struct mem_cgroup *memcg;
 	nodemask_t allowed_mask;
 
 	struct migration_target_control mtc = {
@@ -1087,12 +1089,26 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
 
 	node_get_allowed_targets(pgdat, &allowed_mask);
 
+	/*
+	 * All folios reaching demote_folio_list() are isolated from a single
+	 * lruvec, hence belong to a single memcg: both shrink_inactive_list()
+	 * and the MGLRU evict_folios() path isolate one lruvec at a time, and
+	 * the only mixed-memcg caller, reclaim_folio_list(), sets
+	 * sc->no_demotion so its folios never reach here. Capture that memcg
+	 * before migrate_pages() consumes the list, then attribute the
+	 * demotion to it once below.
+	 */
+	memcg = folio_memcg(list_first_entry(demote_folios, struct folio, lru));
+
 	/* Demotion ignores all cpuset and mempolicy settings */
 	migrate_pages(demote_folios, alloc_demote_folio, NULL,
 		      (unsigned long)&mtc, MIGRATE_ASYNC, MR_DEMOTION,
 		      &nr_succeeded);
 
-	__count_vm_events(PGDEMOTE_KSWAPD + reclaimer_offset(), nr_succeeded);
+	item = PGDEMOTE_KSWAPD + reclaimer_offset();
+	__count_vm_events(item, nr_succeeded);
+	if (memcg)
+		count_memcg_events(memcg, item, nr_succeeded);
 
 	return nr_succeeded;
 }
