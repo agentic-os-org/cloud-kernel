@@ -287,7 +287,8 @@ static int ioam6_do_encap(struct net *net, struct sk_buff *skb,
 
 static int ioam6_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
-	struct dst_entry *dst = skb_dst(skb);
+	struct dst_entry *orig_dst = skb_dst(skb);
+	struct dst_entry *dst = orig_dst;
 	struct in6_addr orig_daddr;
 	struct ioam6_lwt *ilwt;
 	int err = -EINVAL;
@@ -365,9 +366,12 @@ do_encap:
 				goto drop;
 			}
 
-			local_bh_disable();
-			dst_cache_set_ip6(&ilwt->cache, dst, &fl6.saddr);
-			local_bh_enable();
+			/* cache only if we don't create a dst reference loop */
+			if (orig_dst->lwtstate != dst->lwtstate) {
+				local_bh_disable();
+				dst_cache_set_ip6(&ilwt->cache, dst, &fl6.saddr);
+				local_bh_enable();
+			}
 		}
 
 		skb_dst_drop(skb);
