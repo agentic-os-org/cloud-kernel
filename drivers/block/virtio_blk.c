@@ -2471,7 +2471,7 @@ static int virtblk_map_user_bidirectional(struct request *req, uintptr_t ubuffer
 }
 static int virtblk_map_user_request(struct request *req, uintptr_t ubuffer,
 		unsigned int bufflen, struct io_uring_cmd *ioucmd,
-		bool vec, unsigned int num)
+		unsigned int issue_flags, bool vec, unsigned int num)
 {
 	struct request_queue *q = req->q;
 	struct virtblk_req *vbr = blk_mq_rq_to_pdu(req);
@@ -2488,13 +2488,20 @@ static int virtblk_map_user_request(struct request *req, uintptr_t ubuffer,
 	if (ioucmd && (ioucmd->flags & IORING_URING_CMD_FIXED)) {
 		struct iov_iter iter;
 
-		/* fixedbufs is only for non-vectored io */
 		if (vec) {
-			ret = -EINVAL;
-			goto out;
+			/* bufflen is the iovec count for vectored commands */
+			if (!bufflen || bufflen > UIO_MAXIOV) {
+				ret = -EINVAL;
+				goto out;
+			}
+			ret = io_uring_cmd_import_fixed_vec(ioucmd,
+					(const struct iovec __user *)ubuffer,
+					bufflen, rq_data_dir(req), &iter,
+					issue_flags);
+		} else {
+			ret = io_uring_cmd_import_fixed(ubuffer, bufflen,
+					rq_data_dir(req), &iter, ioucmd);
 		}
-		ret = io_uring_cmd_import_fixed(ubuffer, bufflen,
-				rq_data_dir(req), &iter, ioucmd);
 		if (ret < 0)
 			goto out;
 		ret = blk_rq_map_user_iov(q, req, NULL, &iter, GFP_KERNEL);
@@ -2563,7 +2570,7 @@ static int virtblk_uring_cmd_io(struct virtio_blk *vblk,
 
 	if (data && data_len) {
 		ret = virtblk_map_user_request(req, data, data_len, ioucmd,
-					       vec, write_iov_count);
+					       issue_flags, vec, write_iov_count);
 		if (ret)
 			return ret;
 	} else {
