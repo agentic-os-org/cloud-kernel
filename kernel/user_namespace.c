@@ -35,7 +35,7 @@ int unprivileged_userns_clone = 1;
 int userns_max_level = 33;
 int userns_max_level_max = 33;
 
-static struct kmem_cache *user_ns_cachep __read_mostly;
+static struct kmem_cache *user_ns_cachep __ro_after_init;
 static DEFINE_MUTEX(userns_state_mutex);
 
 static bool new_idmap_permitted(const struct file *file,
