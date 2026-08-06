@@ -1750,11 +1750,11 @@ static int __write_node_page(struct page *page, bool atomic, bool do_fsync,
 			fio.op_flags |= REQ_PREFLUSH | REQ_FUA;
 	}
 
-	set_dentry_mark(page, 0);
-	set_fsync_mark(page, do_fsync);
 	if (IS_INODE(page) && (atomic || is_fsync_dnode(page)))
 		set_dentry_mark(page,
-			f2fs_need_dentry_mark(sbi, ino_of_node(page)));
+				f2fs_need_dentry_mark(sbi, ino_of_node(page)));
+
+	set_fsync_mark(page, do_fsync);
 
 	/* should add to global list before clearing PAGECACHE status */
 	if (f2fs_in_warm_node_list(sbi, page)) {
