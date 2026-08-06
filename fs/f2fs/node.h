@@ -217,7 +217,7 @@ static inline pgoff_t current_nat_addr(struct f2fs_sb_info *sbi, nid_t start)
 }
 
 static inline pgoff_t next_nat_addr(struct f2fs_sb_info *sbi,
-						pgoff_t block_addr)
+					pgoff_t block_addr)
 {
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
 
