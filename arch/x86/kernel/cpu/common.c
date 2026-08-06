@@ -2308,3 +2308,13 @@ void arch_smt_update(void)
 	/* Check whether IPI broadcasting can be enabled */
 	apic_smt_update();
 }
+
+/* Control TLB flushing methods */
+static int __init tlbi_setup(char *str)
+{
+	if (!strcmp(str, "ipi"))
+		setup_clear_cpu_cap(X86_FEATURE_INVLPGB);
+
+	return 1;
+}
+__setup("tlbi=", tlbi_setup);
