@@ -1432,6 +1432,7 @@ static void thread_common_ops(struct test_spec *test, struct ifobject *ifobject)
 	u64 umem_sz = ifobject->umem->num_frames * ifobject->umem->frame_size;
 	int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE;
 	LIBBPF_OPTS(bpf_xdp_query_opts, opts);
+	u64 mmap_sz;
 	void *bufs;
 	int ret;
 
@@ -1441,9 +1442,14 @@ static void thread_common_ops(struct test_spec *test, struct ifobject *ifobject)
 	if (ifobject->shared_umem)
 		umem_sz *= 2;
 
-	bufs = mmap(NULL, umem_sz, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
+	mmap_sz = ifobject->umem->unaligned_mode ?
+		ALIGN(umem_sz, HUGEPAGE_SIZE) : umem_sz;
+
+	bufs = mmap(NULL, mmap_sz, PROT_READ | PROT_WRITE, mmap_flags, -1, 0);
 	if (bufs == MAP_FAILED)
 		exit_with_error(errno);
+
+	ifobject->umem->mmap_size = mmap_sz;
 
 	ret = xsk_configure_umem(ifobject, ifobject->umem, bufs, umem_sz);
 	if (ret)
@@ -1528,14 +1534,10 @@ static u64 ceil_u64(u64 a, u64 b)
 
 static void testapp_clean_xsk_umem(struct ifobject *ifobj)
 {
-	u64 umem_sz = ifobj->umem->num_frames * ifobj->umem->frame_size;
+	struct xsk_umem_info *umem = ifobj->umem;
 
-	if (ifobj->shared_umem)
-		umem_sz *= 2;
-
-	umem_sz = ceil_u64(umem_sz, HUGEPAGE_SIZE) * HUGEPAGE_SIZE;
-	xsk_umem__delete(ifobj->umem->umem);
-	munmap(ifobj->umem->buffer, umem_sz);
+	xsk_umem__delete(umem->umem);
+	munmap(umem->buffer, umem->mmap_size);
 }
 
 static void handler(int signum)
