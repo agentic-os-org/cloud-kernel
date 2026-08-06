@@ -12690,6 +12690,12 @@ F:	drivers/i2c/busses/i2c-lrw-core.h
 F:	drivers/i2c/busses/i2c-lrw-master.c
 F:	drivers/i2c/busses/i2c-lrw-platdrv.c
 
+LRW CORE PERF PMU EVENTS (RISC-V)
+M:	Yilin He <he.yilin@zte.com.cn>
+R:	Qingtao Liu <liu.qingtao2@zte.com.cn>
+S:	Maintained
+F:	tools/perf/pmu-events/arch/riscv/lrw/
+
 M68K ARCHITECTURE
 M:	Geert Uytterhoeven <geert@linux-m68k.org>
 L:	linux-m68k@lists.linux-m68k.org
