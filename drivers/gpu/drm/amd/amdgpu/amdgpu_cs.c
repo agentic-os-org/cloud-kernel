@@ -194,6 +194,10 @@ static int amdgpu_cs_parser_init(struct amdgpu_cs_parser *p, union drm_amdgpu_cs
 				goto free_partial_kdata;
 			}
 
+			/* Only a single user fence is allowed to simplify handling. */
+			if (p->uf_entry.tv.bo)
+				goto free_partial_kdata;
+
 			ret = amdgpu_cs_user_fence_chunk(p, p->chunks[i].kdata,
 							 &uf_offset);
 			if (ret)
