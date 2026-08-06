@@ -66,6 +66,13 @@ enum {
 	LIMIT_CNT,
 };
 
+/*
+ * Per-cgroup IO completion-latency histogram. Bucket i (1..NR-2) holds
+ * completions whose end-to-end latency falls in [2^(i+10), 2^(i+11)) ns;
+ * bucket 0 is "< ~1us" and the last bucket saturates (>= ~34s).
+ */
+#define THROTL_LAT_NR_BUCKETS	26
+
 struct throtl_grp {
 	/* must be the first member */
 	struct blkg_policy_data pd;
@@ -162,6 +169,12 @@ struct throtl_grp {
 	struct blkg_rwstat total_bytes_queued;
 	/* total IOs throttled */
 	struct blkg_rwstat total_io_queued;
+	/*
+	 * End-to-end IO completion-latency histogram, [READ/WRITE].
+	 * Updated lock-free from the completion path on arbitrary CPUs,
+	 * hence atomic64_t. Read-only export via io.lat_hist.
+	 */
+	atomic64_t lat_hist[2][THROTL_LAT_NR_BUCKETS];
 };
 
 extern struct blkcg_policy blkcg_policy_throtl;
