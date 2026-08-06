@@ -5659,6 +5659,10 @@
 			Force threading of all interrupt handlers except those
 			marked explicitly IRQF_NO_THREAD.
 
+	tlbi=		[X86-64]
+			Format: {ipi}
+			ipi: switch to IPI-based TLB flushing
+
 	topology=	[S390]
 			Format: {off | on}
 			Specify if the kernel should make use of the cpu
