@@ -9,6 +9,12 @@
 #define SIFIVE_VENDOR_ID	0x489
 #define THEAD_VENDOR_ID		0x5b7
 
+#define QEMU_VIRT_VENDOR_ID		0x000
+#define QEMU_VIRT_IMPL_ID		0x000
+#define QEMU_VIRT_ARCH_ID		0x000
+/* Newer Qemu reports the spec-allocated marchid 0x2a (42) for non-vendor CPUs */
+#define QEMU_VIRT_ARCH_ID_SPEC		0x2a
+
 #ifdef CONFIG_ERRATA_ANDES
 #define ERRATA_ANDES_NO_IOCP 0
 #define ERRATA_ANDES_NUMBER 1
