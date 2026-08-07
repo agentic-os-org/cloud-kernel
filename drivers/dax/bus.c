@@ -1489,6 +1489,63 @@ static bool adjust_ok(struct dev_dax *dev_dax, struct resource *res)
 	return true;
 }
 
+/* Online grow: append free region spans, each with a live pgmap. */
+static int dev_dax_grow_online(struct dev_dax *dev_dax, resource_size_t to_alloc)
+{
+	struct dax_region *dax_region = dev_dax->region;
+	struct resource *region_res = &dax_region->res;
+	struct device *dev = &dev_dax->dev;
+	struct resource *res, *first;
+	resource_size_t alloc = 0;
+	int rc;
+
+	if (!to_alloc)
+		return 0;
+	if (dev_WARN_ONCE(dev, !alloc_is_aligned(dev_dax, to_alloc),
+			"online grow of %pa misaligned\n", &to_alloc))
+		return -ENXIO;
+
+retry:
+	first = region_res->child;
+	if (!first)
+		return dev_dax_extend_range(dev_dax, dax_region->res.start,
+					    to_alloc);
+
+	rc = -ENOSPC;
+	for (res = first; res; res = res->sibling) {
+		struct resource *next = res->sibling;
+
+		/* space at the beginning of the region */
+		if (res == first && res->start > dax_region->res.start) {
+			alloc = min(res->start - dax_region->res.start, to_alloc);
+			rc = dev_dax_extend_range(dev_dax,
+						  dax_region->res.start, alloc);
+			break;
+		}
+
+		alloc = 0;
+		/* space between allocations */
+		if (next && next->start > res->end + 1)
+			alloc = min(next->start - (res->end + 1), to_alloc);
+
+		/* space at the end of the region */
+		if (!alloc && !next && res->end < region_res->end)
+			alloc = min(region_res->end - res->end, to_alloc);
+
+		if (!alloc)
+			continue;
+
+		rc = dev_dax_extend_range(dev_dax, res->end + 1, alloc);
+		break;
+	}
+	if (rc)
+		return rc;
+	to_alloc -= alloc;
+	if (to_alloc)
+		goto retry;
+	return 0;
+}
+
 static ssize_t dev_dax_resize(struct dax_region *dax_region,
 		struct dev_dax *dev_dax, resource_size_t size)
 {
@@ -1498,16 +1555,26 @@ static ssize_t dev_dax_resize(struct dax_region *dax_region,
 	struct device *dev = &dev_dax->dev;
 	struct resource *res, *first;
 	resource_size_t alloc = 0;
+	bool active = dev->driver != NULL;
 	int rc;
 
-	if (dev->driver)
-		return -EBUSY;
 	if (size == dev_size)
 		return 0;
 	if (size > dev_size && size - dev_size > avail)
 		return -ENOSPC;
-	if (size < dev_size)
+	if (size < dev_size) {
+		/* shrink requires the device_dax driver to be unbound */
+		if (active)
+			return -EBUSY;
 		return dev_dax_shrink(dev_dax, size);
+	}
+
+	/* grow: online (driver bound) needs a capable growable region */
+	if (active) {
+		if (!dev_dax_online_resize_capable(dev_dax))
+			return -EBUSY;
+		return dev_dax_grow_online(dev_dax, size - dev_size);
+	}
 
 	to_alloc = size - dev_size;
 	if (dev_WARN_ONCE(dev, !alloc_is_aligned(dev_dax, to_alloc),
@@ -1569,6 +1636,7 @@ static ssize_t size_store(struct device *dev, struct device_attribute *attr,
 	unsigned long long val;
 	struct dev_dax *dev_dax = to_dev_dax(dev);
 	struct dax_region *dax_region = dev_dax->region;
+	resource_size_t old_size, new_size;
 
 	rc = kstrtoull(buf, 0, &val);
 	if (rc)
@@ -1585,9 +1653,21 @@ static ssize_t size_store(struct device *dev, struct device_attribute *attr,
 		return -ENXIO;
 	}
 	device_lock(dev);
+	old_size = dev_dax_size(dev_dax);
 	rc = dev_dax_resize(dax_region, dev_dax, val);
+	new_size = dev_dax_size(dev_dax);
 	device_unlock(dev);
 	device_unlock(dax_region->dev);
+
+	/*
+	 * A multi-span grow keeps spans it already committed when a later one
+	 * fails, so the size may change even when rc < 0: notify on any actual
+	 * change so udev can re-read 'size' without polling.
+	 */
+	if (rc == 0 || new_size != old_size) {
+		sysfs_notify(&dev->kobj, NULL, "size");
+		kobject_uevent(&dev->kobj, KOBJ_CHANGE);
+	}
 
 	return rc == 0 ? len : rc;
 }
