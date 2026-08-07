@@ -1464,6 +1464,195 @@ static int dev_dax_shrink(struct dev_dax *dev_dax, resource_size_t size)
 }
 
 /*
+ * Online shrink reclaims whole tail mappings of a bound growable dev_dax in
+ * three phases: dev_dax_plan_shrink() counts the ranges and runs every check
+ * that can still fail, dev_dax_apply_shrink_publish() narrows the snapshot
+ * (the last fallible step, run under i_mmap_lock_write), then
+ * dev_dax_apply_shrink_teardown() commits the rest with no rollback path.
+ *
+ * Ranges are ordered by pgoff and the pgoff space is their concatenation, so
+ * a reclaimed suffix is one contiguous window: a single publish, srcu drain
+ * and unmap_mapping_range() cover it. Physical spans may be discontiguous,
+ * so pgmap teardown and region release stay per range.
+ */
+struct dax_shrink_plan {
+	int nr_drop;		/* tail ranges to reclaim */
+	unsigned long pgoff;	/* first pgoff of the reclaimed window */
+	resource_size_t total;	/* bytes reclaimed */
+};
+
+/*
+ * Phase 1: count the tail ranges needed to reach @size, with no side effects.
+ * A @size that would cut a mapping is rejected here, before any teardown.
+ */
+static int dev_dax_plan_shrink(struct dev_dax *dev_dax, resource_size_t size,
+			       struct dax_shrink_plan *plan)
+{
+	resource_size_t drop = dev_dax_size(dev_dax) - size;
+	struct device *dev = &dev_dax->dev;
+	resource_size_t total = 0;
+	int nr_drop = 0;
+	int i;
+
+	plan->nr_drop = 0;
+
+	for (i = dev_dax->nr_range - 1; i >= 0 && total < drop; i--) {
+		struct dev_dax_range *dax_range = &dev_dax->ranges[i];
+		struct dev_dax_pgmap *dxp;
+		bool have_pgmap = false;
+
+		/* refuse ranges not managed by a per-range pgmap (e.g. kmem) */
+		list_for_each_entry(dxp, &dev_dax->pgmaps, node)
+			if (dxp->start == dax_range->range.start) {
+				have_pgmap = true;
+				break;
+			}
+		if (!have_pgmap) {
+			dev_dbg(dev,
+				"online shrink: no per-range pgmap for %#llx\n",
+				dax_range->range.start);
+			return -EBUSY;
+		}
+
+		total += range_len(&dax_range->range);
+		nr_drop++;
+	}
+
+	/* the reclaim quantum is one mapping: no in-range cut is attempted */
+	if (total != drop) {
+		dev_dbg(dev,
+			"online shrink to %pa would cut a mapping\n", &size);
+		return -EINVAL;
+	}
+	if (!nr_drop)
+		return 0;
+
+	plan->nr_drop = nr_drop;
+	plan->pgoff = dev_dax->ranges[dev_dax->nr_range - nr_drop].pgoff;
+	plan->total = total;
+	return 0;
+}
+
+/*
+ * Phase 2a: hide the reclaimed window from the fault path by publishing the
+ * narrowed snapshot. This is the only fallible step of the commit; it runs
+ * before any teardown so -ENOMEM simply rolls nr_range back and leaves the
+ * previous snapshot in place.
+ *
+ * Must be called under i_mmap_lock_write together with the mapping_mapped()
+ * check in dev_dax_shrink_online(): holding the write lock across both stops
+ * a concurrent mmap() from installing a VMA (and thus a FOLL_LONGTERM pin)
+ * into the window between the pin check and the publish. Once the snapshot is
+ * narrowed a fault to a reclaimed pgoff fails with SIGBUS regardless of VMA
+ * state, so the lock can be dropped before teardown.
+ */
+static int dev_dax_apply_shrink_publish(struct dev_dax *dev_dax,
+					const struct dax_shrink_plan *plan)
+{
+	int first = dev_dax->nr_range - plan->nr_drop;
+	int nr_range = dev_dax->nr_range;
+	int rc;
+
+	device_lock_assert(dev_dax->region->dev);
+	device_lock_assert(&dev_dax->dev);
+
+	dev_dax->nr_range = first;
+	rc = dev_dax_publish_ranges(dev_dax);
+	if (rc) {
+		dev_dax->nr_range = nr_range;
+		return rc;
+	}
+
+	return 0;
+}
+
+/*
+ * Phase 2b: commit the teardown, mirroring the unbind path: unregister
+ * mappings -> srcu drain -> zap -> memunmap. Runs after i_mmap_lock_write has
+ * been dropped. It is infallible: the narrowed snapshot published by
+ * dev_dax_apply_shrink_publish() already makes every fault into the reclaimed
+ * window fail, so no new pin can appear.
+ */
+static void dev_dax_apply_shrink_teardown(struct dev_dax *dev_dax,
+					  const struct dax_shrink_plan *plan)
+{
+	struct dax_region *dax_region = dev_dax->region;
+	struct device *dev = &dev_dax->dev;
+	/* nr_range was already narrowed by the publish; the ranges[] entries
+	 * for the reclaimed window are still present past it.
+	 */
+	int first = dev_dax->nr_range;
+	int nr_range = first + plan->nr_drop;
+	struct inode *inode;
+	int i;
+
+	device_lock_assert(dax_region->dev);
+	device_lock_assert(dev);
+
+	/* step 2: remove the sysfs mappingN children */
+	for (i = first; i < nr_range; i++) {
+		struct dax_mapping *mapping = dev_dax->ranges[i].mapping;
+
+		if (mapping)
+			devm_release_action(dax_region->dev,
+					    unregister_dax_mapping,
+					    &mapping->dev);
+	}
+
+	/* step 3: let in-flight faults finish inserting before we zap */
+	dax_drain_faults();
+
+	/* step 4: one zap covers the contiguous reclaimed pgoff window */
+	inode = dax_inode(dev_dax->dax_dev);
+	unmap_mapping_range(inode->i_mapping, (loff_t)plan->pgoff << PAGE_SHIFT,
+			    plan->total, 1);
+
+	/* step 5: drop struct pages, then return each span to the region */
+	for (i = first; i < nr_range; i++) {
+		struct range *range = &dev_dax->ranges[i].range;
+
+		dev_dax_remove_pgmap(dev_dax, range->start);
+		__release_region(&dax_region->res, range->start,
+				 range_len(range));
+		dev_dbg(dev, "online shrink range[%d]: %#llx-%#llx\n", i,
+			range->start, range->end);
+	}
+
+	if (dev_dax->nr_range == 0) {
+		kfree(dev_dax->ranges);
+		dev_dax->ranges = NULL;
+	}
+}
+
+/* Shrink a bound growable dev_dax to @size, which must be boundary-aligned. */
+static int dev_dax_shrink_online(struct dev_dax *dev_dax, resource_size_t size)
+{
+	struct address_space *mapping = dax_inode(dev_dax->dax_dev)->i_mapping;
+	struct dax_shrink_plan plan;
+	int rc;
+
+	rc = dev_dax_plan_shrink(dev_dax, size, &plan);
+	if (rc || !plan.nr_drop)
+		return rc;
+
+	i_mmap_lock_write(mapping);
+	if (mapping_mapped(mapping)) {
+		i_mmap_unlock_write(mapping);
+		dev_dbg(&dev_dax->dev,
+			"online shrink: device has active mappings\n");
+		return -EBUSY;
+	}
+
+	rc = dev_dax_apply_shrink_publish(dev_dax, &plan);
+	i_mmap_unlock_write(mapping);
+	if (rc)
+		return rc;
+
+	dev_dax_apply_shrink_teardown(dev_dax, &plan);
+	return 0;
+}
+
+/*
  * Only allow adjustments that preserve the relative pgoff of existing
  * allocations. I.e. the dev_dax->ranges array is ordered by increasing pgoff.
  */
@@ -1487,6 +1676,17 @@ static bool adjust_ok(struct dev_dax *dev_dax, struct resource *res)
 	}
 
 	return true;
+}
+
+/*
+ * Unbound only: append a range without a pgmap, dev_dax_probe() brings them
+ * up later. The bound path uses dev_dax_grow_online() or mapping_store() ->
+ * dev_dax_extend_range(), giving each new range a live pgmap first.
+ */
+static int dev_dax_add_range(struct dev_dax *dev_dax, u64 start,
+		resource_size_t size)
+{
+	return alloc_dev_dax_range(dev_dax, start, size);
 }
 
 /* Online grow: append free region spans, each with a live pgmap. */
@@ -1546,6 +1746,22 @@ retry:
 	return 0;
 }
 
+/*
+ * Single online-resize entry: picks a direction. Grow quantises to the device
+ * align in dev_dax_grow_online(); shrink validates its mapping boundary in
+ * dev_dax_plan_shrink().
+ */
+static int dev_dax_resize_online(struct dev_dax *dev_dax, resource_size_t size)
+{
+	resource_size_t dev_size = dev_dax_size(dev_dax);
+
+	if (size == dev_size)
+		return 0;
+	if (size < dev_size)
+		return dev_dax_shrink_online(dev_dax, size);
+	return dev_dax_grow_online(dev_dax, size - dev_size);
+}
+
 static ssize_t dev_dax_resize(struct dax_region *dax_region,
 		struct dev_dax *dev_dax, resource_size_t size)
 {
@@ -1563,9 +1779,12 @@ static ssize_t dev_dax_resize(struct dax_region *dax_region,
 	if (size > dev_size && size - dev_size > avail)
 		return -ENOSPC;
 	if (size < dev_size) {
-		/* shrink requires the device_dax driver to be unbound */
-		if (active)
-			return -EBUSY;
+		/* online shrink only on a growable region bound to device_dax */
+		if (active) {
+			if (!dev_dax_online_resize_capable(dev_dax))
+				return -EBUSY;
+			return dev_dax_resize_online(dev_dax, size);
+		}
 		return dev_dax_shrink(dev_dax, size);
 	}
 
@@ -1573,7 +1792,7 @@ static ssize_t dev_dax_resize(struct dax_region *dax_region,
 	if (active) {
 		if (!dev_dax_online_resize_capable(dev_dax))
 			return -EBUSY;
-		return dev_dax_grow_online(dev_dax, size - dev_size);
+		return dev_dax_resize_online(dev_dax, size);
 	}
 
 	to_alloc = size - dev_size;
@@ -1589,7 +1808,8 @@ static ssize_t dev_dax_resize(struct dax_region *dax_region,
 retry:
 	first = region_res->child;
 	if (!first)
-		return alloc_dev_dax_range(dev_dax, dax_region->res.start, to_alloc);
+		return dev_dax_add_range(dev_dax, dax_region->res.start,
+					 to_alloc);
 
 	rc = -ENOSPC;
 	for (res = first; res; res = res->sibling) {
@@ -1598,7 +1818,8 @@ retry:
 		/* space at the beginning of the region */
 		if (res == first && res->start > dax_region->res.start) {
 			alloc = min(res->start - dax_region->res.start, to_alloc);
-			rc = alloc_dev_dax_range(dev_dax, dax_region->res.start, alloc);
+			rc = dev_dax_add_range(dev_dax, dax_region->res.start,
+					       alloc);
 			break;
 		}
 
@@ -1614,11 +1835,12 @@ retry:
 		if (!alloc)
 			continue;
 
+		/* in-place extension would skip pgmap setup; offline only */
 		if (adjust_ok(dev_dax, res)) {
 			rc = adjust_dev_dax_range(dev_dax, res, resource_size(res) + alloc);
 			break;
 		}
-		rc = alloc_dev_dax_range(dev_dax, res->end + 1, alloc);
+		rc = dev_dax_add_range(dev_dax, res->end + 1, alloc);
 		break;
 	}
 	if (rc)
