@@ -348,9 +348,11 @@ static ssize_t ahci_read_em_buffer(struct device *dev,
 static void __iomem *zx_led_get_mmio(struct ata_port *ap, struct ahci_host_priv *hpriv)
 {
 #ifdef CONFIG_X86
-	if (hpriv->has_p0_p1 && hpriv->px_index == 0) {
-		if (hpriv->p1_mmio)
-			return hpriv->p1_mmio;
+	struct zx_led_quirk *zq = hpriv->plat_data;
+
+	if (zq && zq->has_p0_p1 && zq->px_index == 0) {
+		if (zq->p1_mmio)
+			return zq->p1_mmio;
 		dev_warn_ratelimited(ap->host->dev, "P1 removed, LED mode unavailable\n");
 	}
 #endif

@@ -376,12 +376,17 @@ struct ahci_host_priv {
 	/* only required for per-port MSI(-X) support */
 	int			(*get_irq_vector)(struct ata_host *host,
 						  int port);
-	/* fix zhaoxin Enclosure Management quirk */
-	void __iomem *p1_mmio;
-	u8 sx_index;
-	u8 px_index;
-	bool has_p0_p1;
 };
+
+#ifdef CONFIG_X86
+/* Fix Zhaoxin Enclosure Management quirk.  */
+struct zx_led_quirk {
+	void __iomem *p1_mmio;	/* P1's MMIO for P0 LED redirection */
+	u8 sx_index;		/* socket index from MSR */
+	u8 px_index;		/* 0=P0, 1=P1 */
+	bool has_p0_p1;		/* paired P0+P1 present */
+};
+#endif
 
 extern int ahci_ignore_sss;
 

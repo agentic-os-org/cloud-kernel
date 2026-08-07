@@ -1687,51 +1687,65 @@ static void ahci_intel_pcs_quirk(struct pci_dev *pdev, struct ahci_host_priv *hp
 #ifdef CONFIG_X86
 static void ahci_zx_led_remove_quirk(struct pci_dev *pdev)
 {
-	struct ata_host *host = pci_get_drvdata(pdev);
-	struct ahci_host_priv *hpriv = host->private_data;
 	struct pci_dev *sata_pdev = NULL;
+	struct ata_host *host = pci_get_drvdata(pdev);
 	struct ata_host *sata_host = NULL;
+	struct ahci_host_priv *hpriv = host->private_data;
 	struct ahci_host_priv *sata_hpriv = NULL;
+	struct zx_led_quirk *zq = hpriv->plat_data;
+	struct zx_led_quirk *target_zq = NULL, *sata_zq = NULL;
 	void __iomem *p1_mmio_tmp = NULL;
-	struct pci_dev *target_p0_dev = NULL;
 
-	if (!hpriv->px_index || !hpriv->has_p0_p1)
-		return;
+	if (!zq || zq->px_index != 0 || !zq->has_p0_p1)
+		goto free_plat;
 
+	/*
+	 * If we are a paired P0 controller, clear the p1_mmio reference
+	 * on the remaining P0 before our MMIO is unmapped.
+	 */
 	while ((sata_pdev = pci_get_device(PCI_VENDOR_ID_ZHAOXIN, 0x9083, sata_pdev)) != NULL) {
 		sata_host = pci_get_drvdata(sata_pdev);
 		sata_hpriv = sata_host ? sata_host->private_data : NULL;
-		if (!sata_hpriv)
-			continue;
-		if (sata_hpriv->sx_index == hpriv->sx_index) {
-			if (sata_hpriv->px_index == 1 &&
-			    PCI_FUNC(pdev->devfn) != PCI_FUNC(sata_pdev->devfn))
-				p1_mmio_tmp = sata_hpriv->mmio;
-			else if (sata_hpriv->px_index == 0)
-				target_p0_dev = sata_pdev;
-		}
+		sata_zq = sata_hpriv ? sata_hpriv->plat_data : NULL;
 
-		if (target_p0_dev && p1_mmio_tmp)
+		if (!sata_zq)
+			continue;
+
+		if (sata_zq->sx_index != zq->sx_index)
+			continue;
+
+		if (sata_zq->px_index == 1 && PCI_FUNC(pdev->devfn) != PCI_FUNC(sata_pdev->devfn))
+			p1_mmio_tmp = sata_hpriv->mmio;
+		else if (sata_zq->px_index == 0)
+			target_zq = sata_zq;
+
+		if (target_zq && p1_mmio_tmp)
 			break;
 	}
-	if (target_p0_dev) {
-		sata_host = pci_get_drvdata(target_p0_dev);
-		sata_hpriv = sata_host ? sata_host->private_data : NULL;
-		if (sata_hpriv)
-			sata_hpriv->p1_mmio = p1_mmio_tmp;
-	}
+
+	if (sata_pdev)
+		pci_dev_put(sata_pdev);
+
+	if (target_zq)
+		target_zq->p1_mmio = p1_mmio_tmp;
+
+free_plat:
+	kfree(hpriv->plat_data);
+	hpriv->plat_data = NULL;
 }
 
 static void ahci_zx_led_init_quirk(struct pci_dev *pdev, struct ahci_host_priv *hpriv)
 {
-	int i, err;
-	u8 p0_bus_number, p1_bus_number, target_px_index;
-	u64 val;
 	struct pci_dev *sata_pdev = NULL;
 	struct ata_host *sata_host = NULL;
 	struct ahci_host_priv *sata_hpriv = NULL;
+	struct zx_led_quirk *zq = NULL, *sata_zq = NULL;
+	u64 val;
+	u8 p0_bus_number, p1_bus_number, target_px_index;
+	int i, err;
 
-	if (pdev->vendor != PCI_VENDOR_ID_ZHAOXIN || pdev->device != 0x9083 ||
+	if (pdev->vendor != PCI_VENDOR_ID_ZHAOXIN ||
+	    pdev->device != 0x9083 ||
 	    pdev->revision != 0x40)
 		return;
 
@@ -1739,47 +1753,65 @@ static void ahci_zx_led_init_quirk(struct pci_dev *pdev, struct ahci_host_priv *
 	if (err) /* MSR read failed */
 		return;
 
-	hpriv->sx_index = 0xFF;
-	hpriv->px_index = 0xFF;
-	hpriv->p1_mmio = NULL;
-	hpriv->has_p0_p1 = false;
+	dev_warn(&pdev->dev, "zx led quirk init\n");
+
+	zq = kzalloc(sizeof(*zq), GFP_KERNEL);
+	if (!zq)
+		return;
+
+	zq->sx_index = 0xFF;
+	zq->px_index = 0xFF;
+	zq->p1_mmio = NULL;
+	zq->has_p0_p1 = false;
+
+	hpriv->plat_data = zq;
+
 	for (i = 0; i < 4; i++) {
 		p0_bus_number = val & 0xFF;
 		p1_bus_number = (val >> 8) & 0xFF;
+
 		if (pdev->bus->number == p0_bus_number) {
-			hpriv->sx_index = i;
-			hpriv->px_index = 0;
+			zq->sx_index = i;
+			zq->px_index = 0;
 			break;
 		}
 		if (pdev->bus->number == p1_bus_number) {
-			hpriv->sx_index = i;
-			hpriv->px_index = 1;
+			zq->sx_index = i;
+			zq->px_index = 1;
 			break;
 		}
 		val >>= 16;
 	}
+
 	/* Exit if no matching bus number found */
-	if (hpriv->px_index == 0xFF || hpriv->sx_index == 0xFF)
+	if (zq->px_index == 0xFF || zq->sx_index == 0xFF)
 		return;
 
-	target_px_index = !hpriv->px_index;
+	target_px_index = !zq->px_index;
 	while ((sata_pdev = pci_get_device(PCI_VENDOR_ID_ZHAOXIN, 0x9083, sata_pdev)) != NULL) {
 		sata_host = pci_get_drvdata(sata_pdev);
 		sata_hpriv = sata_host ? sata_host->private_data : NULL;
-		if (!sata_hpriv)
+		sata_zq = sata_hpriv ? sata_hpriv->plat_data : NULL;
+
+		if (!sata_hpriv || !sata_hpriv->plat_data)
 			continue;
 
-		if (sata_hpriv->sx_index == hpriv->sx_index &&
-		    sata_hpriv->px_index == target_px_index) {
-			if (hpriv->px_index == 0)
-				hpriv->p1_mmio = sata_hpriv->mmio;
+		sata_zq = sata_hpriv->plat_data;
+
+		if (sata_zq->sx_index == zq->sx_index && sata_zq->px_index == target_px_index) {
+			if (zq->px_index == 0)
+				zq->p1_mmio = sata_hpriv->mmio;
 			else
-				sata_hpriv->p1_mmio = hpriv->mmio;
-			hpriv->has_p0_p1 = true;
-			sata_hpriv->has_p0_p1 = true;
+				sata_zq->p1_mmio = hpriv->mmio;
+
+			zq->has_p0_p1 = true;
+			sata_zq->has_p0_p1 = true;
 			break;
 		}
 	}
+
+	if (sata_pdev)
+		pci_dev_put(sata_pdev);
 }
 #else
 static inline void ahci_zx_led_remove_quirk(struct pci_dev *pdev) { }
