@@ -24,7 +24,7 @@ static int dax_hmem_probe(struct platform_device *pdev)
 	 * default.
 	 */
 	if (region_idle)
-		flags = 0;
+		flags = IORESOURCE_DAX_GROWABLE;
 
 	mri = dev->platform_data;
 	dax_region = alloc_dax_region(dev, pdev->id, &mri->range,
