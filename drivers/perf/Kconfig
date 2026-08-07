@@ -90,7 +90,7 @@ config RISCV_PMU_LEGACY
 
 config RISCV_PMU_SBI
 	depends on RISCV_PMU && RISCV_SBI
-	bool "RISC-V PMU based on SBI PMU extension"
+	bool "RISC-V PMU based on SBI PMU extension and/or counter delegation"
 	default y
 	help
 	  Say y if you want to use the CPU performance monitor
