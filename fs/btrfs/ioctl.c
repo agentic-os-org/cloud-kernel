@@ -687,6 +687,8 @@ static noinline int create_subvol(struct inode *dir,
 	ret = btrfs_insert_root(trans, fs_info->tree_root, &key,
 				root_item);
 	if (ret) {
+		int ret2;
+
 		/*
 		 * Since we don't abort the transaction in this case, free the
 		 * tree block so that we don't leak space and leave the
@@ -695,7 +697,9 @@ static noinline int create_subvol(struct inode *dir,
 		 * the tree block locked since it is not in any tree at this
 		 * point, so no other task can find it and use it.
 		 */
-		btrfs_free_tree_block(trans, root, leaf, 0, 1);
+		ret2 = btrfs_free_tree_block(trans, root, leaf, 0, 1);
+		if (ret2 < 0)
+			btrfs_abort_transaction(trans, ret2);
 		free_extent_buffer(leaf);
 		goto fail;
 	}
