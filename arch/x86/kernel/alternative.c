@@ -19,6 +19,7 @@
 #include <linux/bsearch.h>
 #include <linux/sync_core.h>
 #include <linux/moduleloader.h>
+#include <linux/execmem.h>
 #include <linux/cleanup.h>
 #include <asm/text-patching.h>
 #include <asm/alternative.h>
@@ -185,16 +186,16 @@ void its_free_mod(struct module *mod)
 
 	for (int i = 0; i < mod->its_num_pages; i++) {
 		void *page = mod->its_page_array[i];
-		module_memfree(page);
+		execmem_free(page);
 	}
 	kfree(mod->its_page_array);
 }
 
-DEFINE_FREE(its_execmem, void *, if (_T) module_memfree(_T));
+DEFINE_FREE(its_execmem, void *, if (_T) execmem_free(_T));
 
 static void *its_alloc(void)
 {
-	void *page __free(its_execmem) = module_alloc(PAGE_SIZE);
+	void *page __free(its_execmem) = execmem_alloc(EXECMEM_MODULE_TEXT, PAGE_SIZE);
 
 	if (!page)
 		return NULL;
