@@ -705,7 +705,7 @@ fault:
 	return -EIO;
 }
 
-static void vmx_emergency_disable(void)
+void vmx_emergency_disable_virtualization_cpu(void)
 {
 	int cpu = raw_smp_processor_id();
 	struct loaded_vmcs *v;
@@ -2711,7 +2711,7 @@ static int setup_vmcs_config(struct vmcs_config *vmcs_conf,
 #endif
 
 	/* Require Write-Back (WB) memory type for VMCS accesses. */
-	if (((vmx_msr_high >> 18) & 15) != 6)
+	if (((vmx_msr_high >> 18) & 15) != X86_MEMTYPE_WB)
 		return -EIO;
 
 	rdmsrl(MSR_IA32_VMX_MISC, misc_msr);
@@ -2812,7 +2812,7 @@ fault:
 	return -EFAULT;
 }
 
-int vmx_hardware_enable(void)
+int vmx_enable_virtualization_cpu(void)
 {
 	int cpu = raw_smp_processor_id();
 	u64 phys_addr = __pa(per_cpu(vmxarea, cpu));
@@ -2852,7 +2852,7 @@ static void vmclear_local_loaded_vmcss(void)
 		__loaded_vmcs_clear(v);
 }
 
-void vmx_hardware_disable(void)
+void vmx_disable_virtualization_cpu(void)
 {
 	vmclear_local_loaded_vmcss();
 
@@ -5869,8 +5869,9 @@ static int handle_ept_violation(struct kvm_vcpu *vcpu)
 	error_code |= (exit_qualification & EPT_VIOLATION_RWX_MASK)
 		      ? PFERR_PRESENT_MASK : 0;
 
-	error_code |= (exit_qualification & EPT_VIOLATION_GVA_TRANSLATED) != 0 ?
-	       PFERR_GUEST_FINAL_MASK : PFERR_GUEST_PAGE_MASK;
+	if (exit_qualification & EPT_VIOLATION_GVA_IS_VALID)
+		error_code |= (exit_qualification & EPT_VIOLATION_GVA_TRANSLATED) ?
+			      PFERR_GUEST_FINAL_MASK : PFERR_GUEST_PAGE_MASK;
 
 	/*
 	 * Check that the GPA doesn't exceed physical memory limits, as that is
@@ -8737,8 +8738,6 @@ static void __vmx_exit(void)
 {
 	allow_smaller_maxphyaddr = false;
 
-	cpu_emergency_unregister_virt_callback(vmx_emergency_disable);
-
 	vmx_cleanup_l1d_flush();
 }
 
@@ -8791,8 +8790,6 @@ static int __init vmx_init(void)
 
 		pi_init_cpu(cpu);
 	}
-
-	cpu_emergency_register_virt_callback(vmx_emergency_disable);
 
 	vmx_check_vmcs12_offsets();
 

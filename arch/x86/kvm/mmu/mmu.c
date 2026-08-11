@@ -180,7 +180,6 @@ struct kvm_shadow_walk_iterator {
 
 static struct kmem_cache *pte_list_desc_cache;
 struct kmem_cache *mmu_page_header_cache;
-static struct percpu_counter kvm_total_used_mmu_pages;
 
 static void mmu_spte_set(u64 *sptep, u64 spte);
 static int mmu_page_zap_pte(struct kvm *kvm, struct kvm_mmu_page *sp,
@@ -492,11 +491,12 @@ static void mmu_spte_set(u64 *sptep, u64 new_spte)
 	__set_spte(sptep, new_spte);
 }
 
-/*
- * Update the SPTE (excluding the PFN), but do not track changes in its
- * accessed/dirty status.
+/* Rules for using mmu_spte_update:
+ * Update the state bits, it means the mapped pfn is not changed.
+ *
+ * Returns true if the TLB needs to be flushed
  */
-static u64 mmu_spte_update_no_track(u64 *sptep, u64 new_spte)
+static bool mmu_spte_update(u64 *sptep, u64 new_spte)
 {
 	u64 old_spte = *sptep;
 
@@ -505,7 +505,7 @@ static u64 mmu_spte_update_no_track(u64 *sptep, u64 new_spte)
 
 	if (!is_shadow_present_pte(old_spte)) {
 		mmu_spte_set(sptep, new_spte);
-		return old_spte;
+		return false;
 	}
 
 	if (!spte_has_volatile_bits(old_spte))
@@ -513,53 +513,10 @@ static u64 mmu_spte_update_no_track(u64 *sptep, u64 new_spte)
 	else
 		old_spte = __update_clear_spte_slow(sptep, new_spte);
 
-	WARN_ON_ONCE(spte_to_pfn(old_spte) != spte_to_pfn(new_spte));
+	WARN_ON_ONCE(!is_shadow_present_pte(old_spte) ||
+		     spte_to_pfn(old_spte) != spte_to_pfn(new_spte));
 
-	return old_spte;
-}
-
-/* Rules for using mmu_spte_update:
- * Update the state bits, it means the mapped pfn is not changed.
- *
- * Whenever an MMU-writable SPTE is overwritten with a read-only SPTE, remote
- * TLBs must be flushed. Otherwise rmap_write_protect will find a read-only
- * spte, even though the writable spte might be cached on a CPU's TLB.
- *
- * Returns true if the TLB needs to be flushed
- */
-static bool mmu_spte_update(u64 *sptep, u64 new_spte)
-{
-	bool flush = false;
-	u64 old_spte = mmu_spte_update_no_track(sptep, new_spte);
-
-	if (!is_shadow_present_pte(old_spte))
-		return false;
-
-	/*
-	 * For the spte updated out of mmu-lock is safe, since
-	 * we always atomically update it, see the comments in
-	 * spte_has_volatile_bits().
-	 */
-	if (is_mmu_writable_spte(old_spte) &&
-	      !is_writable_pte(new_spte))
-		flush = true;
-
-	/*
-	 * Flush TLB when accessed/dirty states are changed in the page tables,
-	 * to guarantee consistency between TLB and page tables.
-	 */
-
-	if (is_accessed_spte(old_spte) && !is_accessed_spte(new_spte)) {
-		flush = true;
-		kvm_set_pfn_accessed(spte_to_pfn(old_spte));
-	}
-
-	if (is_dirty_spte(old_spte) && !is_dirty_spte(new_spte)) {
-		flush = true;
-		kvm_set_pfn_dirty(spte_to_pfn(old_spte));
-	}
-
-	return flush;
+	return leaf_spte_change_needs_tlb_flush(old_spte, new_spte);
 }
 
 /*
@@ -600,9 +557,6 @@ static u64 mmu_spte_clear_track_bits(struct kvm *kvm, u64 *sptep)
 	if (is_accessed_spte(old_spte))
 		kvm_set_pfn_accessed(pfn);
 
-	if (is_dirty_spte(old_spte))
-		kvm_set_pfn_dirty(pfn);
-
 	return old_spte;
 }
 
@@ -619,32 +573,6 @@ static void mmu_spte_clear_no_track(u64 *sptep)
 static u64 mmu_spte_get_lockless(u64 *sptep)
 {
 	return __get_spte_lockless(sptep);
-}
-
-/* Returns the Accessed status of the PTE and resets it at the same time. */
-static bool mmu_spte_age(u64 *sptep)
-{
-	u64 spte = mmu_spte_get_lockless(sptep);
-
-	if (!is_accessed_spte(spte))
-		return false;
-
-	if (spte_ad_enabled(spte)) {
-		clear_bit((ffs(shadow_accessed_mask) - 1),
-			  (unsigned long *)sptep);
-	} else {
-		/*
-		 * Capture the dirty status of the page, so that it doesn't get
-		 * lost when the SPTE is marked for access tracking.
-		 */
-		if (is_writable_pte(spte))
-			kvm_set_pfn_dirty(spte_to_pfn(spte));
-
-		spte = mark_spte_for_access_track(spte);
-		mmu_spte_update_no_track(sptep, spte);
-	}
-
-	return true;
 }
 
 static inline bool is_tdp_mmu_active(struct kvm_vcpu *vcpu)
@@ -945,6 +873,7 @@ static struct kvm_memory_slot *gfn_to_memslot_dirty_bitmap(struct kvm_vcpu *vcpu
  * in this rmap chain. Otherwise, (rmap_head->val & ~1) points to a struct
  * pte_list_desc containing more mappings.
  */
+#define KVM_RMAP_MANY	BIT(0)
 
 /*
  * Returns the number of pointers in the rmap chain, not counting the new one.
@@ -957,16 +886,16 @@ static int pte_list_add(struct kvm_mmu_memory_cache *cache, u64 *spte,
 
 	if (!rmap_head->val) {
 		rmap_head->val = (unsigned long)spte;
-	} else if (!(rmap_head->val & 1)) {
+	} else if (!(rmap_head->val & KVM_RMAP_MANY)) {
 		desc = kvm_mmu_memory_cache_alloc(cache);
 		desc->sptes[0] = (u64 *)rmap_head->val;
 		desc->sptes[1] = spte;
 		desc->spte_count = 2;
 		desc->tail_count = 0;
-		rmap_head->val = (unsigned long)desc | 1;
+		rmap_head->val = (unsigned long)desc | KVM_RMAP_MANY;
 		++count;
 	} else {
-		desc = (struct pte_list_desc *)(rmap_head->val & ~1ul);
+		desc = (struct pte_list_desc *)(rmap_head->val & ~KVM_RMAP_MANY);
 		count = desc->tail_count + desc->spte_count;
 
 		/*
@@ -975,10 +904,10 @@ static int pte_list_add(struct kvm_mmu_memory_cache *cache, u64 *spte,
 		 */
 		if (desc->spte_count == PTE_LIST_EXT) {
 			desc = kvm_mmu_memory_cache_alloc(cache);
-			desc->more = (struct pte_list_desc *)(rmap_head->val & ~1ul);
+			desc->more = (struct pte_list_desc *)(rmap_head->val & ~KVM_RMAP_MANY);
 			desc->spte_count = 0;
 			desc->tail_count = count;
-			rmap_head->val = (unsigned long)desc | 1;
+			rmap_head->val = (unsigned long)desc | KVM_RMAP_MANY;
 		}
 		desc->sptes[desc->spte_count++] = spte;
 	}
@@ -989,7 +918,7 @@ static void pte_list_desc_remove_entry(struct kvm *kvm,
 				       struct kvm_rmap_head *rmap_head,
 				       struct pte_list_desc *desc, int i)
 {
-	struct pte_list_desc *head_desc = (struct pte_list_desc *)(rmap_head->val & ~1ul);
+	struct pte_list_desc *head_desc = (struct pte_list_desc *)(rmap_head->val & ~KVM_RMAP_MANY);
 	int j = head_desc->spte_count - 1;
 
 	/*
@@ -1018,7 +947,7 @@ static void pte_list_desc_remove_entry(struct kvm *kvm,
 	if (!head_desc->more)
 		rmap_head->val = 0;
 	else
-		rmap_head->val = (unsigned long)head_desc->more | 1;
+		rmap_head->val = (unsigned long)head_desc->more | KVM_RMAP_MANY;
 	mmu_free_pte_list_desc(head_desc);
 }
 
@@ -1031,13 +960,13 @@ static void pte_list_remove(struct kvm *kvm, u64 *spte,
 	if (KVM_BUG_ON_DATA_CORRUPTION(!rmap_head->val, kvm))
 		return;
 
-	if (!(rmap_head->val & 1)) {
+	if (!(rmap_head->val & KVM_RMAP_MANY)) {
 		if (KVM_BUG_ON_DATA_CORRUPTION((u64 *)rmap_head->val != spte, kvm))
 			return;
 
 		rmap_head->val = 0;
 	} else {
-		desc = (struct pte_list_desc *)(rmap_head->val & ~1ul);
+		desc = (struct pte_list_desc *)(rmap_head->val & ~KVM_RMAP_MANY);
 		while (desc) {
 			for (i = 0; i < desc->spte_count; ++i) {
 				if (desc->sptes[i] == spte) {
@@ -1070,12 +999,12 @@ static bool kvm_zap_all_rmap_sptes(struct kvm *kvm,
 	if (!rmap_head->val)
 		return false;
 
-	if (!(rmap_head->val & 1)) {
+	if (!(rmap_head->val & KVM_RMAP_MANY)) {
 		mmu_spte_clear_track_bits(kvm, (u64 *)rmap_head->val);
 		goto out;
 	}
 
-	desc = (struct pte_list_desc *)(rmap_head->val & ~1ul);
+	desc = (struct pte_list_desc *)(rmap_head->val & ~KVM_RMAP_MANY);
 
 	for (; desc; desc = next) {
 		for (i = 0; i < desc->spte_count; i++)
@@ -1095,10 +1024,10 @@ unsigned int pte_list_count(struct kvm_rmap_head *rmap_head)
 
 	if (!rmap_head->val)
 		return 0;
-	else if (!(rmap_head->val & 1))
+	else if (!(rmap_head->val & KVM_RMAP_MANY))
 		return 1;
 
-	desc = (struct pte_list_desc *)(rmap_head->val & ~1ul);
+	desc = (struct pte_list_desc *)(rmap_head->val & ~KVM_RMAP_MANY);
 	return desc->tail_count + desc->spte_count;
 }
 
@@ -1160,13 +1089,13 @@ static u64 *rmap_get_first(struct kvm_rmap_head *rmap_head,
 	if (!rmap_head->val)
 		return NULL;
 
-	if (!(rmap_head->val & 1)) {
+	if (!(rmap_head->val & KVM_RMAP_MANY)) {
 		iter->desc = NULL;
 		sptep = (u64 *)rmap_head->val;
 		goto out;
 	}
 
-	iter->desc = (struct pte_list_desc *)(rmap_head->val & ~1ul);
+	iter->desc = (struct pte_list_desc *)(rmap_head->val & ~KVM_RMAP_MANY);
 	iter->pos = 0;
 	sptep = iter->desc->sptes[iter->pos];
 out:
@@ -1269,16 +1198,6 @@ static bool spte_clear_dirty(u64 *sptep)
 	return mmu_spte_update(sptep, spte);
 }
 
-static bool spte_wrprot_for_clear_dirty(u64 *sptep)
-{
-	bool was_writable = test_and_clear_bit(PT_WRITABLE_SHIFT,
-					       (unsigned long *)sptep);
-	if (was_writable && !spte_ad_enabled(*sptep))
-		kvm_set_pfn_dirty(spte_to_pfn(*sptep));
-
-	return was_writable;
-}
-
 /*
  * Gets the GFN ready for another round of dirty logging by clearing the
  *	- D bit on ad-enabled SPTEs, and
@@ -1294,7 +1213,8 @@ static bool __rmap_clear_dirty(struct kvm *kvm, struct kvm_rmap_head *rmap_head,
 
 	for_each_rmap_spte(rmap_head, &iter, sptep)
 		if (spte_ad_need_write_protect(*sptep))
-			flush |= spte_wrprot_for_clear_dirty(sptep);
+			flush |= test_and_clear_bit(PT_WRITABLE_SHIFT,
+						    (unsigned long *)sptep);
 		else
 			flush |= spte_clear_dirty(sptep);
 
@@ -1447,17 +1367,10 @@ static bool kvm_vcpu_write_protect_gfn(struct kvm_vcpu *vcpu, u64 gfn)
 	return kvm_mmu_slot_gfn_write_protect(vcpu->kvm, slot, gfn, PG_LEVEL_4K);
 }
 
-static bool __kvm_zap_rmap(struct kvm *kvm, struct kvm_rmap_head *rmap_head,
-			   const struct kvm_memory_slot *slot)
+static bool kvm_zap_rmap(struct kvm *kvm, struct kvm_rmap_head *rmap_head,
+			 const struct kvm_memory_slot *slot)
 {
 	return kvm_zap_all_rmap_sptes(kvm, rmap_head);
-}
-
-static bool kvm_zap_rmap(struct kvm *kvm, struct kvm_rmap_head *rmap_head,
-			 struct kvm_memory_slot *slot, gfn_t gfn, int level,
-			 pte_t unused)
-{
-	return __kvm_zap_rmap(kvm, rmap_head, slot);
 }
 
 static bool kvm_set_pte_rmap(struct kvm *kvm, struct kvm_rmap_head *rmap_head,
@@ -1545,7 +1458,7 @@ static bool slot_rmap_walk_okay(struct slot_rmap_walk_iterator *iterator)
 static void slot_rmap_walk_next(struct slot_rmap_walk_iterator *iterator)
 {
 	while (++iterator->rmap <= iterator->end_rmap) {
-		iterator->gfn += (1UL << KVM_HPAGE_GFN_SHIFT(iterator->level));
+		iterator->gfn += KVM_PAGES_PER_HPAGE(iterator->level);
 
 		if (iterator->rmap->val)
 			return;
@@ -1565,6 +1478,73 @@ static void slot_rmap_walk_next(struct slot_rmap_walk_iterator *iterator)
 				 _end_level_, _start_gfn, _end_gfn);	\
 	     slot_rmap_walk_okay(_iter_);				\
 	     slot_rmap_walk_next(_iter_))
+
+/* The return value indicates if tlb flush on all vcpus is needed. */
+typedef bool (*slot_rmaps_handler) (struct kvm *kvm,
+				    struct kvm_rmap_head *rmap_head,
+				    const struct kvm_memory_slot *slot);
+
+static __always_inline bool __walk_slot_rmaps(struct kvm *kvm,
+					      const struct kvm_memory_slot *slot,
+					      slot_rmaps_handler fn,
+					      int start_level, int end_level,
+					      gfn_t start_gfn, gfn_t end_gfn,
+					      bool can_yield, bool flush_on_yield,
+					      bool flush)
+{
+	struct slot_rmap_walk_iterator iterator;
+
+	lockdep_assert_held_write(&kvm->mmu_lock);
+
+	for_each_slot_rmap_range(slot, start_level, end_level, start_gfn,
+			end_gfn, &iterator) {
+		if (iterator.rmap)
+			flush |= fn(kvm, iterator.rmap, slot);
+
+		if (!can_yield)
+			continue;
+
+		if (need_resched() || rwlock_needbreak(&kvm->mmu_lock)) {
+			if (flush && flush_on_yield) {
+				kvm_flush_remote_tlbs_range(kvm, start_gfn,
+							    iterator.gfn - start_gfn + 1);
+				flush = false;
+			}
+			cond_resched_rwlock_write(&kvm->mmu_lock);
+		}
+	}
+
+	return flush;
+}
+
+static __always_inline bool walk_slot_rmaps(struct kvm *kvm,
+					    const struct kvm_memory_slot *slot,
+					    slot_rmaps_handler fn,
+					    int start_level, int end_level,
+					    bool flush_on_yield)
+{
+	return __walk_slot_rmaps(kvm, slot, fn, start_level, end_level,
+				 slot->base_gfn, slot->base_gfn + slot->npages - 1,
+				 true, flush_on_yield, false);
+}
+
+static __always_inline bool walk_slot_rmaps_4k(struct kvm *kvm,
+					       const struct kvm_memory_slot *slot,
+					       slot_rmaps_handler fn,
+					       bool flush_on_yield)
+{
+	return walk_slot_rmaps(kvm, slot, fn, PG_LEVEL_4K, PG_LEVEL_4K, flush_on_yield);
+}
+
+static bool __kvm_rmap_zap_gfn_range(struct kvm *kvm,
+				     const struct kvm_memory_slot *slot,
+				     gfn_t start, gfn_t end, bool can_yield,
+				     bool flush)
+{
+	return __walk_slot_rmaps(kvm, slot, kvm_zap_rmap,
+				 PG_LEVEL_4K, KVM_MAX_HUGEPAGE_LEVEL,
+				 start, end - 1, can_yield, true, flush);
+}
 
 typedef bool (*rmap_handler_t)(struct kvm *kvm, struct kvm_rmap_head *rmap_head,
 			       struct kvm_memory_slot *slot, gfn_t gfn,
@@ -1589,8 +1569,21 @@ bool kvm_unmap_gfn_range(struct kvm *kvm, struct kvm_gfn_range *range)
 {
 	bool flush = false;
 
+	/*
+	 * To prevent races with vCPUs faulting in a gfn using stale data,
+	 * zapping a gfn range must be protected by mmu_invalidate_in_progress
+	 * (and mmu_invalidate_seq).  The only exception is memslot deletion;
+	 * in that case, SRCU synchronization ensures that SPTEs are zapped
+	 * after all vCPUs have unlocked SRCU, guaranteeing that vCPUs see the
+	 * invalid slot.
+	 */
+	lockdep_assert_once(kvm->mmu_invalidate_in_progress ||
+			    lockdep_is_held(&kvm->slots_lock));
+
 	if (kvm_memslots_have_rmaps(kvm))
-		flush = kvm_handle_gfn_range(kvm, range, kvm_zap_rmap);
+		flush = __kvm_rmap_zap_gfn_range(kvm, range->slot,
+						 range->start, range->end,
+						 range->may_block, flush);
 
 	if (tdp_mmu_enabled)
 		flush = kvm_tdp_mmu_unmap_gfn_range(kvm, range, flush);
@@ -1613,33 +1606,6 @@ bool kvm_set_spte_gfn(struct kvm *kvm, struct kvm_gfn_range *range)
 		flush |= kvm_tdp_mmu_set_spte_gfn(kvm, range);
 
 	return flush;
-}
-
-static bool kvm_age_rmap(struct kvm *kvm, struct kvm_rmap_head *rmap_head,
-			 struct kvm_memory_slot *slot, gfn_t gfn, int level,
-			 pte_t unused)
-{
-	u64 *sptep;
-	struct rmap_iterator iter;
-	int young = 0;
-
-	for_each_rmap_spte(rmap_head, &iter, sptep)
-		young |= mmu_spte_age(sptep);
-
-	return young;
-}
-
-static bool kvm_test_age_rmap(struct kvm *kvm, struct kvm_rmap_head *rmap_head,
-			      struct kvm_memory_slot *slot, gfn_t gfn,
-			      int level, pte_t unused)
-{
-	u64 *sptep;
-	struct rmap_iterator iter;
-
-	for_each_rmap_spte(rmap_head, &iter, sptep)
-		if (is_accessed_spte(*sptep))
-			return true;
-	return false;
 }
 
 #define RMAP_RECYCLE_THRESHOLD 1000
@@ -1676,12 +1642,49 @@ static void rmap_add(struct kvm_vcpu *vcpu, const struct kvm_memory_slot *slot,
 	__rmap_add(vcpu->kvm, cache, slot, spte, gfn, access);
 }
 
+static bool kvm_rmap_age_gfn_range(struct kvm *kvm,
+				   struct kvm_gfn_range *range, bool test_only)
+{
+	struct slot_rmap_walk_iterator iterator;
+	struct rmap_iterator iter;
+	bool young = false;
+	u64 *sptep;
+
+	for_each_slot_rmap_range(range->slot, PG_LEVEL_4K, KVM_MAX_HUGEPAGE_LEVEL,
+				 range->start, range->end - 1, &iterator) {
+		for_each_rmap_spte(iterator.rmap, &iter, sptep) {
+			u64 spte = *sptep;
+
+			if (!is_accessed_spte(spte))
+				continue;
+
+			if (test_only)
+				return true;
+
+			if (spte_ad_enabled(spte)) {
+				clear_bit((ffs(shadow_accessed_mask) - 1),
+					(unsigned long *)sptep);
+			} else {
+				/*
+				 * WARN if mmu_spte_update() signals the need
+				 * for a TLB flush, as Access tracking a SPTE
+				 * should never trigger an _immediate_ flush.
+				 */
+				spte = mark_spte_for_access_track(spte);
+				WARN_ON_ONCE(mmu_spte_update(sptep, spte));
+			}
+			young = true;
+		}
+	}
+	return young;
+}
+
 bool kvm_age_gfn(struct kvm *kvm, struct kvm_gfn_range *range)
 {
 	bool young = false;
 
 	if (kvm_memslots_have_rmaps(kvm))
-		young = kvm_handle_gfn_range(kvm, range, kvm_age_rmap);
+		young = kvm_rmap_age_gfn_range(kvm, range, false);
 
 	if (tdp_mmu_enabled)
 		young |= kvm_tdp_mmu_age_gfn_range(kvm, range);
@@ -1694,7 +1697,7 @@ bool kvm_test_age_gfn(struct kvm *kvm, struct kvm_gfn_range *range)
 	bool young = false;
 
 	if (kvm_memslots_have_rmaps(kvm))
-		young = kvm_handle_gfn_range(kvm, range, kvm_test_age_rmap);
+		young = kvm_rmap_age_gfn_range(kvm, range, true);
 
 	if (tdp_mmu_enabled)
 		young |= kvm_tdp_mmu_test_age_gfn(kvm, range);
@@ -1716,27 +1719,15 @@ static void kvm_mmu_check_sptes_at_free(struct kvm_mmu_page *sp)
 #endif
 }
 
-/*
- * This value is the sum of all of the kvm instances's
- * kvm->arch.n_used_mmu_pages values.  We need a global,
- * aggregate version in order to make the slab shrinker
- * faster
- */
-static inline void kvm_mod_used_mmu_pages(struct kvm *kvm, long nr)
-{
-	kvm->arch.n_used_mmu_pages += nr;
-	percpu_counter_add(&kvm_total_used_mmu_pages, nr);
-}
-
 static void kvm_account_mmu_page(struct kvm *kvm, struct kvm_mmu_page *sp)
 {
-	kvm_mod_used_mmu_pages(kvm, +1);
+	kvm->arch.n_used_mmu_pages++;
 	kvm_account_pgtable_pages((void *)sp->spt, +1);
 }
 
 static void kvm_unaccount_mmu_page(struct kvm *kvm, struct kvm_mmu_page *sp)
 {
-	kvm_mod_used_mmu_pages(kvm, -1);
+	kvm->arch.n_used_mmu_pages--;
 	kvm_account_pgtable_pages((void *)sp->spt, -1);
 }
 
@@ -2767,36 +2758,49 @@ void kvm_mmu_change_mmu_pages(struct kvm *kvm, unsigned long goal_nr_mmu_pages)
 	write_unlock(&kvm->mmu_lock);
 }
 
-int kvm_mmu_unprotect_page(struct kvm *kvm, gfn_t gfn)
+bool __kvm_mmu_unprotect_gfn_and_retry(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
+				       bool always_retry)
 {
-	struct kvm_mmu_page *sp;
+	struct kvm *kvm = vcpu->kvm;
 	LIST_HEAD(invalid_list);
-	int r;
+	struct kvm_mmu_page *sp;
+	gpa_t gpa = cr2_or_gpa;
+	bool r = false;
 
-	r = 0;
-	write_lock(&kvm->mmu_lock);
-	for_each_gfn_valid_sp_with_gptes(kvm, sp, gfn) {
-		r = 1;
-		kvm_mmu_prepare_zap_page(kvm, sp, &invalid_list);
+	/*
+	 * Bail early if there aren't any write-protected shadow pages to avoid
+	 * unnecessarily taking mmu_lock lock, e.g. if the gfn is write-tracked
+	 * by a third party.  Reading indirect_shadow_pages without holding
+	 * mmu_lock is safe, as this is purely an optimization, i.e. a false
+	 * positive is benign, and a false negative will simply result in KVM
+	 * skipping the unprotect+retry path, which is also an optimization.
+	 */
+	if (!READ_ONCE(kvm->arch.indirect_shadow_pages))
+		goto out;
+
+	if (!vcpu->arch.mmu->root_role.direct) {
+		gpa = kvm_mmu_gva_to_gpa_write(vcpu, cr2_or_gpa, NULL);
+		if (gpa == INVALID_GPA)
+			goto out;
 	}
+
+	write_lock(&kvm->mmu_lock);
+	for_each_gfn_valid_sp_with_gptes(kvm, sp, gpa_to_gfn(gpa))
+		kvm_mmu_prepare_zap_page(kvm, sp, &invalid_list);
+
+	/*
+	 * Snapshot the result before zapping, as zapping will remove all list
+	 * entries, i.e. checking the list later would yield a false negative.
+	 */
+	r = !list_empty(&invalid_list);
 	kvm_mmu_commit_zap_page(kvm, &invalid_list);
 	write_unlock(&kvm->mmu_lock);
 
-	return r;
-}
-
-static int kvm_mmu_unprotect_page_virt(struct kvm_vcpu *vcpu, gva_t gva)
-{
-	gpa_t gpa;
-	int r;
-
-	if (vcpu->arch.mmu->root_role.direct)
-		return 0;
-
-	gpa = kvm_mmu_gva_to_gpa_read(vcpu, gva, NULL);
-
-	r = kvm_mmu_unprotect_page(vcpu->kvm, gpa >> PAGE_SHIFT);
-
+out:
+	if (r || always_retry) {
+		vcpu->arch.last_retry_eip = kvm_rip_read(vcpu);
+		vcpu->arch.last_retry_addr = cr2_or_gpa;
+	}
 	return r;
 }
 
@@ -2816,7 +2820,7 @@ static void kvm_unsync_page(struct kvm *kvm, struct kvm_mmu_page *sp)
  * be write-protected.
  */
 int mmu_try_to_unsync_pages(struct kvm *kvm, const struct kvm_memory_slot *slot,
-			    gfn_t gfn, bool can_unsync, bool prefetch)
+			    gfn_t gfn, bool synchronizing, bool prefetch)
 {
 	struct kvm_mmu_page *sp;
 	bool locked = false;
@@ -2831,12 +2835,12 @@ int mmu_try_to_unsync_pages(struct kvm *kvm, const struct kvm_memory_slot *slot,
 
 	/*
 	 * The page is not write-tracked, mark existing shadow pages unsync
-	 * unless KVM is synchronizing an unsync SP (can_unsync = false).  In
-	 * that case, KVM must complete emulation of the guest TLB flush before
-	 * allowing shadow pages to become unsync (writable by the guest).
+	 * unless KVM is synchronizing an unsync SP.  In that case, KVM must
+	 * complete emulation of the guest TLB flush before allowing shadow
+	 * pages to become unsync (writable by the guest).
 	 */
 	for_each_gfn_valid_sp_with_gptes(kvm, sp, gfn) {
-		if (!can_unsync)
+		if (synchronizing)
 			return -EPERM;
 
 		if (sp->unsync)
@@ -2934,6 +2938,9 @@ static int mmu_set_spte(struct kvm_vcpu *vcpu, struct kvm_memory_slot *slot,
 	bool write_fault = fault && fault->write;
 
 	if (is_shadow_present_pte(*sptep)) {
+		if (prefetch)
+			return RET_PF_SPURIOUS;
+
 		/*
 		 * If we overwrite a PTE page pointer with a 2MB PMD, unlink
 		 * the parent of the now unreachable PTE.
@@ -2961,7 +2968,7 @@ static int mmu_set_spte(struct kvm_vcpu *vcpu, struct kvm_memory_slot *slot,
 	}
 
 	wrprot = make_spte(vcpu, sp, slot, pte_access, gfn, pfn, *sptep, prefetch,
-			   true, host_writable, &spte);
+			   false, host_writable, &spte);
 
 	if (*sptep == spte) {
 		ret = RET_PF_SPURIOUS;
@@ -2970,10 +2977,8 @@ static int mmu_set_spte(struct kvm_vcpu *vcpu, struct kvm_memory_slot *slot,
 		trace_kvm_mmu_set_spte(level, gfn, sptep);
 	}
 
-	if (wrprot) {
-		if (write_fault)
-			ret = RET_PF_EMULATE;
-	}
+	if (wrprot && write_fault)
+		ret = RET_PF_WRITE_PROTECTED;
 
 	if (flush)
 		kvm_flush_remote_tlbs_gfn(vcpu->kvm, gfn, level);
@@ -2989,32 +2994,51 @@ static int mmu_set_spte(struct kvm_vcpu *vcpu, struct kvm_memory_slot *slot,
 	return ret;
 }
 
-static int direct_pte_prefetch_many(struct kvm_vcpu *vcpu,
-				    struct kvm_mmu_page *sp,
-				    u64 *start, u64 *end)
+static bool kvm_mmu_prefetch_sptes(struct kvm_vcpu *vcpu, gfn_t gfn, u64 *sptep,
+				   int nr_pages, unsigned int access)
 {
 	struct page *pages[PTE_PREFETCH_NUM];
 	struct kvm_memory_slot *slot;
-	unsigned int access = sp->role.access;
-	int i, ret;
-	gfn_t gfn;
+	int i;
 
-	gfn = kvm_mmu_page_get_gfn(sp, spte_index(start));
+	if (WARN_ON_ONCE(nr_pages > PTE_PREFETCH_NUM))
+		return false;
+
 	slot = gfn_to_memslot_dirty_bitmap(vcpu, gfn, access & ACC_WRITE_MASK);
 	if (!slot)
-		return -1;
+		return false;
 
-	ret = gfn_to_page_many_atomic(slot, gfn, pages, end - start);
-	if (ret <= 0)
-		return -1;
+	nr_pages = kvm_prefetch_pages(slot, gfn, pages, nr_pages);
+	if (nr_pages <= 0)
+		return false;
 
-	for (i = 0; i < ret; i++, gfn++, start++) {
-		mmu_set_spte(vcpu, slot, start, access, gfn,
+	for (i = 0; i < nr_pages; i++, gfn++, sptep++) {
+		mmu_set_spte(vcpu, slot, sptep, access, gfn,
 			     page_to_pfn(pages[i]), NULL);
-		put_page(pages[i]);
+
+		/*
+		 * KVM always prefetches writable pages from the primary MMU,
+		 * and KVM can make its SPTE writable in the fast page handler,
+		 * without notifying the primary MMU.  Mark pages/folios dirty
+		 * now to ensure file data is written back if it ends up being
+		 * written by the guest.  Because KVM's prefetching GUPs
+		 * writable PTEs, the probability of unnecessary writeback is
+		 * extremely low.
+		 */
+		kvm_release_page_dirty(pages[i]);
 	}
 
-	return 0;
+	return true;
+}
+
+static bool direct_pte_prefetch_many(struct kvm_vcpu *vcpu,
+				     struct kvm_mmu_page *sp,
+				     u64 *start, u64 *end)
+{
+	gfn_t gfn = kvm_mmu_page_get_gfn(sp, spte_index(start));
+	unsigned int access = sp->role.access;
+
+	return kvm_mmu_prefetch_sptes(vcpu, gfn, start, end - start, access);
 }
 
 static void __direct_pte_prefetch(struct kvm_vcpu *vcpu,
@@ -3032,8 +3056,9 @@ static void __direct_pte_prefetch(struct kvm_vcpu *vcpu,
 		if (is_shadow_present_pte(*spte) || spte == sptep) {
 			if (!start)
 				continue;
-			if (direct_pte_prefetch_many(vcpu, sp, start, spte) < 0)
+			if (!direct_pte_prefetch_many(vcpu, sp, start, spte))
 				return;
+
 			start = NULL;
 		} else if (!start)
 			start = spte;
@@ -3183,13 +3208,12 @@ static int __kvm_mmu_max_mapping_level(struct kvm *kvm,
 }
 
 int kvm_mmu_max_mapping_level(struct kvm *kvm,
-			      const struct kvm_memory_slot *slot, gfn_t gfn,
-			      int max_level)
+			      const struct kvm_memory_slot *slot, gfn_t gfn)
 {
 	bool is_private = kvm_slot_can_be_private(slot) &&
 			  kvm_mem_is_private(kvm, gfn);
 
-	return __kvm_mmu_max_mapping_level(kvm, slot, gfn, max_level, is_private);
+	return __kvm_mmu_max_mapping_level(kvm, slot, gfn, PG_LEVEL_NUM, is_private);
 }
 
 void kvm_mmu_hugepage_adjust(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
@@ -3340,7 +3364,6 @@ static int kvm_handle_noslot_fault(struct kvm_vcpu *vcpu,
 	fault->slot = NULL;
 	fault->pfn = KVM_PFN_NOSLOT;
 	fault->map_writable = false;
-	fault->hva = KVM_HVA_ERR_BAD;
 
 	/*
 	 * If MMIO caching is disabled, emulate immediately without
@@ -3410,7 +3433,7 @@ static bool page_fault_can_be_fast(struct kvm *kvm, struct kvm_page_fault *fault
 	 *    by setting the Writable bit, which can be done out of mmu_lock.
 	 */
 	if (!fault->present)
-		return !kvm_ad_enabled();
+		return !kvm_ad_enabled;
 
 	/*
 	 * Note, instruction fetches and writes are mutually exclusive, ignore
@@ -3437,7 +3460,7 @@ static bool fast_pf_fix_direct_spte(struct kvm_vcpu *vcpu,
 	 * harm. This also avoids the TLB flush needed after setting dirty bit
 	 * so non-PML cases won't be impacted.
 	 *
-	 * Compare with set_spte where instead shadow_dirty_mask is set.
+	 * Compare with make_spte() where instead shadow_dirty_mask is set.
 	 */
 	if (!try_cmpxchg64(sptep, &old_spte, new_spte))
 		return false;
@@ -3446,18 +3469,6 @@ static bool fast_pf_fix_direct_spte(struct kvm_vcpu *vcpu,
 		mark_page_dirty_in_slot(vcpu->kvm, fault->slot, fault->gfn);
 
 	return true;
-}
-
-static bool is_access_allowed(struct kvm_page_fault *fault, u64 spte)
-{
-	if (fault->exec)
-		return is_executable_pte(spte);
-
-	if (fault->write)
-		return is_writable_pte(spte);
-
-	/* Fault was on Read access */
-	return spte & PT_PRESENT_MASK;
 }
 
 /*
@@ -3545,8 +3556,9 @@ static int fast_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
 		 * uses A/D bits for non-nested MMUs.  Thus, if A/D bits are
 		 * enabled, the SPTE can't be an access-tracked SPTE.
 		 */
-		if (unlikely(!kvm_ad_enabled()) && is_access_track_spte(spte))
-			new_spte = restore_acc_track_spte(new_spte);
+		if (unlikely(!kvm_ad_enabled) && is_access_track_spte(spte))
+			new_spte = restore_acc_track_spte(new_spte) |
+				   shadow_accessed_mask;
 
 		/*
 		 * To keep things simple, only SPTEs that are MMU-writable can
@@ -4394,8 +4406,35 @@ static u8 kvm_max_private_mapping_level(struct kvm *kvm, kvm_pfn_t pfn,
 	return max_level;
 }
 
-static int kvm_faultin_pfn_private(struct kvm_vcpu *vcpu,
-				   struct kvm_page_fault *fault)
+static void kvm_mmu_finish_page_fault(struct kvm_vcpu *vcpu,
+				      struct kvm_page_fault *fault, int r)
+{
+	lockdep_assert_once(lockdep_is_held(&vcpu->kvm->mmu_lock) ||
+			    r == RET_PF_RETRY);
+
+	if (!fault->refcounted_page)
+		return;
+
+	/*
+	 * If the page that KVM got from the *primary MMU* is writable, and KVM
+	 * installed or reused a SPTE, mark the page/folio dirty.  Note, this
+	 * may mark a folio dirty even if KVM created a read-only SPTE, e.g. if
+	 * the GFN is write-protected.  Folios can't be safely marked dirty
+	 * outside of mmu_lock as doing so could race with writeback on the
+	 * folio.  As a result, KVM can't mark folios dirty in the fast page
+	 * fault handler, and so KVM must (somewhat) speculatively mark the
+	 * folio dirty if KVM could locklessly make the SPTE writable.
+	 */
+	if (r == RET_PF_RETRY)
+		kvm_release_page_unused(fault->refcounted_page);
+	else if (!fault->map_writable)
+		kvm_release_page_clean(fault->refcounted_page);
+	else
+		kvm_release_page_dirty(fault->refcounted_page);
+}
+
+static int kvm_mmu_faultin_pfn_private(struct kvm_vcpu *vcpu,
+				       struct kvm_page_fault *fault)
 {
 	int max_order, r;
 
@@ -4405,7 +4444,7 @@ static int kvm_faultin_pfn_private(struct kvm_vcpu *vcpu,
 	}
 
 	r = kvm_gmem_get_pfn(vcpu->kvm, fault->slot, fault->gfn, &fault->pfn,
-			     &max_order);
+			     &fault->refcounted_page, &max_order);
 	if (r) {
 		kvm_mmu_prepare_memory_fault_exit(vcpu, fault);
 		return r;
@@ -4418,19 +4457,26 @@ static int kvm_faultin_pfn_private(struct kvm_vcpu *vcpu,
 	return RET_PF_CONTINUE;
 }
 
-static int __kvm_faultin_pfn(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
+static int __kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
+				 struct kvm_page_fault *fault)
 {
-	bool async;
+	unsigned int foll = fault->write ? FOLL_WRITE : 0;
 
 	if (fault->is_private)
-		return kvm_faultin_pfn_private(vcpu, fault);
+		return kvm_mmu_faultin_pfn_private(vcpu, fault);
 
-	async = false;
-	fault->pfn = __gfn_to_pfn_memslot(fault->slot, fault->gfn, false, false,
-					  &async, fault->write,
-					  &fault->map_writable, &fault->hva);
-	if (!async)
-		return RET_PF_CONTINUE; /* *pfn has correct page already */
+	foll |= FOLL_NOWAIT;
+	fault->pfn = __kvm_faultin_pfn(fault->slot, fault->gfn, foll,
+				       &fault->map_writable, &fault->refcounted_page);
+
+	/*
+	 * If resolving the page failed because I/O is needed to fault-in the
+	 * page, then either set up an asynchronous #PF to do the I/O, or if
+	 * doing an async #PF isn't possible, retry with I/O allowed.  All
+	 * other failures are terminal, i.e. retrying won't help.
+	 */
+	if (fault->pfn != KVM_PFN_ERR_NEEDS_IO)
+		return RET_PF_CONTINUE;
 
 	if (!fault->prefetch && kvm_can_do_async_pf(vcpu)) {
 		trace_kvm_try_async_get_page(fault->addr, fault->gfn);
@@ -4448,14 +4494,16 @@ static int __kvm_faultin_pfn(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault
 	 * to wait for IO.  Note, gup always bails if it is unable to quickly
 	 * get a page and a fatal signal, i.e. SIGKILL, is pending.
 	 */
-	fault->pfn = __gfn_to_pfn_memslot(fault->slot, fault->gfn, false, true,
-					  NULL, fault->write,
-					  &fault->map_writable, &fault->hva);
+	foll |= FOLL_INTERRUPTIBLE;
+	foll &= ~FOLL_NOWAIT;
+	fault->pfn = __kvm_faultin_pfn(fault->slot, fault->gfn, foll,
+				       &fault->map_writable, &fault->refcounted_page);
+
 	return RET_PF_CONTINUE;
 }
 
-static int kvm_faultin_pfn(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault,
-			   unsigned int access)
+static int kvm_mmu_faultin_pfn(struct kvm_vcpu *vcpu,
+			       struct kvm_page_fault *fault, unsigned int access)
 {
 	struct kvm_memory_slot *slot = fault->slot;
 	int ret;
@@ -4538,7 +4586,7 @@ static int kvm_faultin_pfn(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault,
 	if (mmu_invalidate_retry_gfn_unsafe(vcpu->kvm, fault->mmu_seq, fault->gfn))
 		return RET_PF_RETRY;
 
-	ret = __kvm_faultin_pfn(vcpu, fault);
+	ret = __kvm_mmu_faultin_pfn(vcpu, fault);
 	if (ret != RET_PF_CONTINUE)
 		return ret;
 
@@ -4556,7 +4604,7 @@ static int kvm_faultin_pfn(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault,
 	 * mmu_lock is acquired.
 	 */
 	if (mmu_invalidate_retry_gfn_unsafe(vcpu->kvm, fault->mmu_seq, fault->gfn)) {
-		kvm_release_pfn_clean(fault->pfn);
+		kvm_mmu_finish_page_fault(vcpu, fault, RET_PF_RETRY);
 		return RET_PF_RETRY;
 	}
 
@@ -4598,7 +4646,6 @@ static bool is_page_fault_stale(struct kvm_vcpu *vcpu,
 
 static int direct_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
 {
-	kvm_pfn_t orig_pfn;
 	int r;
 
 	/* Dummy roots are used only for shadowing bad guest roots. */
@@ -4606,7 +4653,7 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault
 		return RET_PF_RETRY;
 
 	if (page_fault_handle_page_track(vcpu, fault))
-		return RET_PF_EMULATE;
+		return RET_PF_WRITE_PROTECTED;
 
 	r = fast_page_fault(vcpu, fault);
 	if (r != RET_PF_INVALID)
@@ -4616,11 +4663,9 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault
 	if (r)
 		return r;
 
-	r = kvm_faultin_pfn(vcpu, fault, ACC_ALL);
+	r = kvm_mmu_faultin_pfn(vcpu, fault, ACC_ALL);
 	if (r != RET_PF_CONTINUE)
 		return r;
-
-	orig_pfn = fault->pfn;
 
 	r = RET_PF_RETRY;
 	write_lock(&vcpu->kvm->mmu_lock);
@@ -4635,8 +4680,8 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault
 	r = direct_map(vcpu, fault);
 
 out_unlock:
+	kvm_mmu_finish_page_fault(vcpu, fault, r);
 	write_unlock(&vcpu->kvm->mmu_lock);
-	kvm_release_pfn_clean(orig_pfn);
 	return r;
 }
 
@@ -4674,8 +4719,6 @@ int kvm_handle_page_fault(struct kvm_vcpu *vcpu, u64 error_code,
 	if (!flags) {
 		trace_kvm_page_fault(vcpu, fault_address, error_code);
 
-		if (kvm_event_needs_reinjection(vcpu))
-			kvm_mmu_unprotect_page_virt(vcpu, fault_address);
 		r = kvm_mmu_page_fault(vcpu, fault_address, error_code, insn,
 				insn_len);
 	} else if (flags & KVM_PV_REASON_PAGE_NOT_PRESENT) {
@@ -4695,11 +4738,10 @@ EXPORT_SYMBOL_GPL(kvm_handle_page_fault);
 static int kvm_tdp_mmu_page_fault(struct kvm_vcpu *vcpu,
 				  struct kvm_page_fault *fault)
 {
-	kvm_pfn_t orig_pfn;
 	int r;
 
 	if (page_fault_handle_page_track(vcpu, fault))
-		return RET_PF_EMULATE;
+		return RET_PF_WRITE_PROTECTED;
 
 	r = fast_page_fault(vcpu, fault);
 	if (r != RET_PF_INVALID)
@@ -4709,11 +4751,9 @@ static int kvm_tdp_mmu_page_fault(struct kvm_vcpu *vcpu,
 	if (r)
 		return r;
 
-	r = kvm_faultin_pfn(vcpu, fault, ACC_ALL);
+	r = kvm_mmu_faultin_pfn(vcpu, fault, ACC_ALL);
 	if (r != RET_PF_CONTINUE)
 		return r;
-
-	orig_pfn = fault->pfn;
 
 	r = RET_PF_RETRY;
 	read_lock(&vcpu->kvm->mmu_lock);
@@ -4724,8 +4764,8 @@ static int kvm_tdp_mmu_page_fault(struct kvm_vcpu *vcpu,
 	r = kvm_tdp_mmu_map(vcpu, fault);
 
 out_unlock:
+	kvm_mmu_finish_page_fault(vcpu, fault, r);
 	read_unlock(&vcpu->kvm->mmu_lock);
-	kvm_release_pfn_clean(orig_pfn);
 	return r;
 }
 #endif
@@ -4778,6 +4818,7 @@ static int kvm_tdp_map_page(struct kvm_vcpu *vcpu, gpa_t gpa, u64 error_code,
 	switch (r) {
 	case RET_PF_FIXED:
 	case RET_PF_SPURIOUS:
+	case RET_PF_WRITE_PROTECTED:
 		return 0;
 
 	case RET_PF_EMULATE:
@@ -5510,7 +5551,7 @@ kvm_calc_tdp_mmu_root_page_role(struct kvm_vcpu *vcpu,
 	role.efer_nx = true;
 	role.smm = cpu_role.base.smm;
 	role.guest_mode = cpu_role.base.guest_mode;
-	role.ad_disabled = !kvm_ad_enabled();
+	role.ad_disabled = !kvm_ad_enabled;
 	role.level = kvm_mmu_get_tdp_level(vcpu);
 	role.direct = true;
 	role.has_4_byte_gpte = false;
@@ -6023,6 +6064,106 @@ void kvm_mmu_track_write(struct kvm_vcpu *vcpu, gpa_t gpa, const u8 *new,
 	write_unlock(&vcpu->kvm->mmu_lock);
 }
 
+static bool is_write_to_guest_page_table(u64 error_code)
+{
+	const u64 mask = PFERR_GUEST_PAGE_MASK | PFERR_WRITE_MASK | PFERR_PRESENT_MASK;
+
+	return (error_code & mask) == mask;
+}
+
+static int kvm_mmu_write_protect_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
+				       u64 error_code, int *emulation_type)
+{
+	bool direct = vcpu->arch.mmu->root_role.direct;
+
+	/*
+	 * Do not try to unprotect and retry if the vCPU re-faulted on the same
+	 * RIP with the same address that was previously unprotected, as doing
+	 * so will likely put the vCPU into an infinite.  E.g. if the vCPU uses
+	 * a non-page-table modifying instruction on the PDE that points to the
+	 * instruction, then unprotecting the gfn will unmap the instruction's
+	 * code, i.e. make it impossible for the instruction to ever complete.
+	 */
+	if (vcpu->arch.last_retry_eip == kvm_rip_read(vcpu) &&
+	    vcpu->arch.last_retry_addr == cr2_or_gpa)
+		return RET_PF_EMULATE;
+
+	/*
+	 * Reset the unprotect+retry values that guard against infinite loops.
+	 * The values will be refreshed if KVM explicitly unprotects a gfn and
+	 * retries, in all other cases it's safe to retry in the future even if
+	 * the next page fault happens on the same RIP+address.
+	 */
+	vcpu->arch.last_retry_eip = 0;
+	vcpu->arch.last_retry_addr = 0;
+
+	/*
+	 * It should be impossible to reach this point with an MMIO cache hit,
+	 * as RET_PF_WRITE_PROTECTED is returned if and only if there's a valid,
+	 * writable memslot, and creating a memslot should invalidate the MMIO
+	 * cache by way of changing the memslot generation.  WARN and disallow
+	 * retry if MMIO is detected, as retrying MMIO emulation is pointless
+	 * and could put the vCPU into an infinite loop because the processor
+	 * will keep faulting on the non-existent MMIO address.
+	 */
+	if (WARN_ON_ONCE(mmio_info_in_cache(vcpu, cr2_or_gpa, direct)))
+		return RET_PF_EMULATE;
+
+	/*
+	 * Before emulating the instruction, check to see if the access was due
+	 * to a read-only violation while the CPU was walking non-nested NPT
+	 * page tables, i.e. for a direct MMU, for _guest_ page tables in L1.
+	 * If L1 is sharing (a subset of) its page tables with L2, e.g. by
+	 * having nCR3 share lower level page tables with hCR3, then when KVM
+	 * (L0) write-protects the nested NPTs, i.e. npt12 entries, KVM is also
+	 * unknowingly write-protecting L1's guest page tables, which KVM isn't
+	 * shadowing.
+	 *
+	 * Because the CPU (by default) walks NPT page tables using a write
+	 * access (to ensure the CPU can do A/D updates), page walks in L1 can
+	 * trigger write faults for the above case even when L1 isn't modifying
+	 * PTEs.  As a result, KVM will unnecessarily emulate (or at least, try
+	 * to emulate) an excessive number of L1 instructions; because L1's MMU
+	 * isn't shadowed by KVM, there is no need to write-protect L1's gPTEs
+	 * and thus no need to emulate in order to guarantee forward progress.
+	 *
+	 * Try to unprotect the gfn, i.e. zap any shadow pages, so that L1 can
+	 * proceed without triggering emulation.  If one or more shadow pages
+	 * was zapped, skip emulation and resume L1 to let it natively execute
+	 * the instruction.  If no shadow pages were zapped, then the write-
+	 * fault is due to something else entirely, i.e. KVM needs to emulate,
+	 * as resuming the guest will put it into an infinite loop.
+	 *
+	 * Note, this code also applies to Intel CPUs, even though it is *very*
+	 * unlikely that an L1 will share its page tables (IA32/PAE/paging64
+	 * format) with L2's page tables (EPT format).
+	 *
+	 * For indirect MMUs, i.e. if KVM is shadowing the current MMU, try to
+	 * unprotect the gfn and retry if an event is awaiting reinjection.  If
+	 * KVM emulates multiple instructions before completing event injection,
+	 * the event could be delayed beyond what is architecturally allowed,
+	 * e.g. KVM could inject an IRQ after the TPR has been raised.
+	 */
+	if (((direct && is_write_to_guest_page_table(error_code)) ||
+	     (!direct && kvm_event_needs_reinjection(vcpu))) &&
+	    kvm_mmu_unprotect_gfn_and_retry(vcpu, cr2_or_gpa))
+		return RET_PF_RETRY;
+
+	/*
+	 * The gfn is write-protected, but if KVM detects its emulating an
+	 * instruction that is unlikely to be used to modify page tables, or if
+	 * emulation fails, KVM can try to unprotect the gfn and let the CPU
+	 * re-execute the instruction that caused the page fault.  Do not allow
+	 * retrying an instruction from a nested guest as KVM is only explicitly
+	 * shadowing L1's page tables, i.e. unprotecting something for L1 isn't
+	 * going to magically fix whatever issue caused L2 to fail.
+	 */
+	if (!is_guest_mode(vcpu))
+		*emulation_type |= EMULTYPE_ALLOW_RETRY_PF;
+
+	return RET_PF_EMULATE;
+}
+
 int noinline kvm_mmu_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa, u64 error_code,
 		       void *insn, int insn_len)
 {
@@ -6068,6 +6209,10 @@ int noinline kvm_mmu_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa, u64 err
 	if (r < 0)
 		return r;
 
+	if (r == RET_PF_WRITE_PROTECTED)
+		r = kvm_mmu_write_protect_fault(vcpu, cr2_or_gpa, error_code,
+						&emulation_type);
+
 	if (r == RET_PF_FIXED)
 		vcpu->stat.pf_fixed++;
 	else if (r == RET_PF_EMULATE)
@@ -6078,32 +6223,6 @@ int noinline kvm_mmu_page_fault(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa, u64 err
 	if (r != RET_PF_EMULATE)
 		return 1;
 
-	/*
-	 * Before emulating the instruction, check if the error code
-	 * was due to a RO violation while translating the guest page.
-	 * This can occur when using nested virtualization with nested
-	 * paging in both guests. If true, we simply unprotect the page
-	 * and resume the guest.
-	 */
-	if (vcpu->arch.mmu->root_role.direct &&
-	    (error_code & PFERR_NESTED_GUEST_PAGE) == PFERR_NESTED_GUEST_PAGE) {
-		kvm_mmu_unprotect_page(vcpu->kvm, gpa_to_gfn(cr2_or_gpa));
-		return 1;
-	}
-
-	/*
-	 * vcpu->arch.mmu.page_fault returned RET_PF_EMULATE, but we can still
-	 * optimistically try to just unprotect the page and let the processor
-	 * re-execute the instruction that caused the page fault.  Do not allow
-	 * retrying MMIO emulation, as it's not only pointless but could also
-	 * cause us to enter an infinite loop because the processor will keep
-	 * faulting on the non-existent MMIO address.  Retrying an instruction
-	 * from a nested guest is also pointless and dangerous as we are only
-	 * explicitly shadowing L1's page tables, i.e. unprotecting something
-	 * for L1 isn't going to magically fix whatever issue cause L2 to fail.
-	 */
-	if (!mmio_info_in_cache(vcpu, cr2_or_gpa, direct) && !is_guest_mode(vcpu))
-		emulation_type |= EMULTYPE_ALLOW_RETRY_PF;
 emulate:
 	return x86_emulate_instruction(vcpu, cr2_or_gpa, emulation_type, insn,
 				       insn_len);
@@ -6262,59 +6381,6 @@ void kvm_configure_mmu(bool enable_tdp, int tdp_forced_root_level,
 }
 EXPORT_SYMBOL_GPL(kvm_configure_mmu);
 
-/* The return value indicates if tlb flush on all vcpus is needed. */
-typedef bool (*slot_rmaps_handler) (struct kvm *kvm,
-				    struct kvm_rmap_head *rmap_head,
-				    const struct kvm_memory_slot *slot);
-
-static __always_inline bool __walk_slot_rmaps(struct kvm *kvm,
-					      const struct kvm_memory_slot *slot,
-					      slot_rmaps_handler fn,
-					      int start_level, int end_level,
-					      gfn_t start_gfn, gfn_t end_gfn,
-					      bool flush_on_yield, bool flush)
-{
-	struct slot_rmap_walk_iterator iterator;
-
-	lockdep_assert_held_write(&kvm->mmu_lock);
-
-	for_each_slot_rmap_range(slot, start_level, end_level, start_gfn,
-			end_gfn, &iterator) {
-		if (iterator.rmap)
-			flush |= fn(kvm, iterator.rmap, slot);
-
-		if (need_resched() || rwlock_needbreak(&kvm->mmu_lock)) {
-			if (flush && flush_on_yield) {
-				kvm_flush_remote_tlbs_range(kvm, start_gfn,
-							    iterator.gfn - start_gfn + 1);
-				flush = false;
-			}
-			cond_resched_rwlock_write(&kvm->mmu_lock);
-		}
-	}
-
-	return flush;
-}
-
-static __always_inline bool walk_slot_rmaps(struct kvm *kvm,
-					    const struct kvm_memory_slot *slot,
-					    slot_rmaps_handler fn,
-					    int start_level, int end_level,
-					    bool flush_on_yield)
-{
-	return __walk_slot_rmaps(kvm, slot, fn, start_level, end_level,
-				 slot->base_gfn, slot->base_gfn + slot->npages - 1,
-				 flush_on_yield, false);
-}
-
-static __always_inline bool walk_slot_rmaps_4k(struct kvm *kvm,
-					       const struct kvm_memory_slot *slot,
-					       slot_rmaps_handler fn,
-					       bool flush_on_yield)
-{
-	return walk_slot_rmaps(kvm, slot, fn, PG_LEVEL_4K, PG_LEVEL_4K, flush_on_yield);
-}
-
 static void free_mmu_pages(struct kvm_mmu *mmu)
 {
 	if (!tdp_enabled && mmu->pae_root)
@@ -6414,7 +6480,10 @@ static void kvm_zap_obsolete_pages(struct kvm *kvm)
 {
 	struct kvm_mmu_page *sp, *node;
 	int nr_zapped, batch = 0;
+	LIST_HEAD(invalid_list);
 	bool unstable;
+
+	lockdep_assert_held(&kvm->slots_lock);
 
 restart:
 	list_for_each_entry_safe_reverse(sp, node,
@@ -6447,7 +6516,7 @@ restart:
 		}
 
 		unstable = __kvm_mmu_prepare_zap_page(kvm, sp,
-				&kvm->arch.zapped_obsolete_pages, &nr_zapped);
+				&invalid_list, &nr_zapped);
 		batch += nr_zapped;
 
 		if (unstable)
@@ -6463,7 +6532,7 @@ restart:
 	 * kvm_mmu_load()), and the reload in the caller ensure no vCPUs are
 	 * running with an obsolete MMU.
 	 */
-	kvm_mmu_commit_zap_page(kvm, &kvm->arch.zapped_obsolete_pages);
+	kvm_mmu_commit_zap_page(kvm, &invalid_list);
 }
 
 /*
@@ -6526,16 +6595,10 @@ static void kvm_mmu_zap_all_fast(struct kvm *kvm)
 		kvm_tdp_mmu_zap_invalidated_roots(kvm);
 }
 
-static bool kvm_has_zapped_obsolete_pages(struct kvm *kvm)
-{
-	return unlikely(!list_empty_careful(&kvm->arch.zapped_obsolete_pages));
-}
-
 void kvm_mmu_init_vm(struct kvm *kvm)
 {
 	kvm->arch.shadow_mmio_value = shadow_mmio_value;
 	INIT_LIST_HEAD(&kvm->arch.active_mmu_pages);
-	INIT_LIST_HEAD(&kvm->arch.zapped_obsolete_pages);
 	INIT_LIST_HEAD(&kvm->arch.possible_nx_huge_pages);
 	spin_lock_init(&kvm->arch.mmu_unsync_pages_lock);
 
@@ -6588,9 +6651,8 @@ static bool kvm_rmap_zap_gfn_range(struct kvm *kvm, gfn_t gfn_start, gfn_t gfn_e
 			if (WARN_ON_ONCE(start >= end))
 				continue;
 
-			flush = __walk_slot_rmaps(kvm, memslot, __kvm_zap_rmap,
-						  PG_LEVEL_4K, KVM_MAX_HUGEPAGE_LEVEL,
-						  start, end - 1, true, flush);
+			flush = __kvm_rmap_zap_gfn_range(kvm, memslot, start,
+							 end, true, flush);
 		}
 	}
 
@@ -6770,7 +6832,7 @@ static void shadow_mmu_split_huge_page(struct kvm *kvm,
 			continue;
 		}
 
-		spte = make_huge_page_split_spte(kvm, huge_spte, sp->role, index);
+		spte = make_small_spte(kvm, huge_spte, sp->role, index);
 		mmu_spte_set(sptep, spte);
 		__rmap_add(kvm, cache, slot, sptep, gfn, sp->role.access);
 	}
@@ -6878,7 +6940,7 @@ static void kvm_shadow_mmu_try_split_huge_pages(struct kvm *kvm,
 	 */
 	for (level = KVM_MAX_HUGEPAGE_LEVEL; level > target_level; level--)
 		__walk_slot_rmaps(kvm, slot, shadow_mmu_try_split_huge_pages,
-				  level, level, start, end - 1, true, false);
+				  level, level, start, end - 1, true, true, false);
 }
 
 /* Must be called with the mmu_lock held in write-mode. */
@@ -6959,8 +7021,7 @@ restart:
 		 * pages are never collapsible.
 		 */
 		if (sp->role.direct && is_gfn_in_memslot(slot, sp->gfn) &&
-		    sp->role.level < kvm_mmu_max_mapping_level(kvm, slot, sp->gfn,
-							       PG_LEVEL_NUM)) {
+		    sp->role.level < kvm_mmu_max_mapping_level(kvm, slot, sp->gfn)) {
 			kvm_zap_one_rmap_spte(kvm, rmap_head, sptep);
 
 			if (kvm_available_flush_remote_tlbs_range())
@@ -6988,8 +7049,8 @@ static void kvm_rmap_zap_collapsible_sptes(struct kvm *kvm,
 		kvm_flush_remote_tlbs_memslot(kvm, slot);
 }
 
-void kvm_mmu_zap_collapsible_sptes(struct kvm *kvm,
-				   const struct kvm_memory_slot *slot)
+void kvm_mmu_recover_huge_pages(struct kvm *kvm,
+				const struct kvm_memory_slot *slot)
 {
 	if (kvm_memslots_have_rmaps(kvm)) {
 		write_lock(&kvm->mmu_lock);
@@ -6999,7 +7060,7 @@ void kvm_mmu_zap_collapsible_sptes(struct kvm *kvm,
 
 	if (tdp_mmu_enabled) {
 		read_lock(&kvm->mmu_lock);
-		kvm_tdp_mmu_zap_collapsible_sptes(kvm, slot);
+		kvm_tdp_mmu_recover_huge_pages(kvm, slot);
 		read_unlock(&kvm->mmu_lock);
 	}
 }
@@ -7063,10 +7124,71 @@ void kvm_arch_flush_shadow_all(struct kvm *kvm)
 	kvm_mmu_zap_all(kvm);
 }
 
+static void kvm_mmu_zap_memslot_pages_and_flush(struct kvm *kvm,
+						struct kvm_memory_slot *slot,
+						bool flush)
+{
+	LIST_HEAD(invalid_list);
+	unsigned long i;
+
+	if (list_empty(&kvm->arch.active_mmu_pages))
+		goto out_flush;
+
+	/*
+	 * Since accounting information is stored in struct kvm_arch_memory_slot,
+	 * all MMU pages that are shadowing guest PTEs must be zapped before the
+	 * memslot is deleted, as freeing such pages after the memslot is freed
+	 * will result in use-after-free, e.g. in unaccount_shadowed().
+	 */
+	for (i = 0; i < slot->npages; i++) {
+		struct kvm_mmu_page *sp;
+		gfn_t gfn = slot->base_gfn + i;
+
+		for_each_gfn_valid_sp_with_gptes(kvm, sp, gfn)
+			kvm_mmu_prepare_zap_page(kvm, sp, &invalid_list);
+
+		if (need_resched() || rwlock_needbreak(&kvm->mmu_lock)) {
+			kvm_mmu_remote_flush_or_zap(kvm, &invalid_list, flush);
+			flush = false;
+			cond_resched_rwlock_write(&kvm->mmu_lock);
+		}
+	}
+
+out_flush:
+	kvm_mmu_remote_flush_or_zap(kvm, &invalid_list, flush);
+}
+
+static void kvm_mmu_zap_memslot(struct kvm *kvm,
+				struct kvm_memory_slot *slot)
+{
+	struct kvm_gfn_range range = {
+		.slot = slot,
+		.start = slot->base_gfn,
+		.end = slot->base_gfn + slot->npages,
+		.may_block = true,
+	};
+	bool flush;
+
+	write_lock(&kvm->mmu_lock);
+
+	flush = kvm_unmap_gfn_range(kvm, &range);
+	kvm_mmu_zap_memslot_pages_and_flush(kvm, slot, flush);
+	write_unlock(&kvm->mmu_lock);
+}
+
+static inline bool kvm_memslot_flush_zap_all(struct kvm *kvm)
+{
+	return kvm->arch.vm_type == KVM_X86_DEFAULT_VM &&
+	       kvm_check_has_quirk(kvm, KVM_X86_QUIRK_SLOT_ZAP_ALL);
+}
+
 void kvm_arch_flush_shadow_memslot(struct kvm *kvm,
 				   struct kvm_memory_slot *slot)
 {
-	kvm_mmu_zap_all_fast(kvm);
+	if (kvm_memslot_flush_zap_all(kvm))
+		kvm_mmu_zap_all_fast(kvm);
+	else
+		kvm_mmu_zap_memslot(kvm, slot);
 }
 
 void kvm_mmu_invalidate_mmio_sptes(struct kvm *kvm, u64 gen)
@@ -7093,73 +7215,6 @@ void kvm_mmu_invalidate_mmio_sptes(struct kvm *kvm, u64 gen)
 		kvm_mmu_zap_all_fast(kvm);
 	}
 }
-
-static unsigned long mmu_shrink_scan(struct shrinker *shrink,
-				     struct shrink_control *sc)
-{
-	struct kvm *kvm;
-	int nr_to_scan = sc->nr_to_scan;
-	unsigned long freed = 0;
-
-	mutex_lock(&kvm_lock);
-
-	list_for_each_entry(kvm, &vm_list, vm_list) {
-		int idx;
-		LIST_HEAD(invalid_list);
-
-		/*
-		 * Never scan more than sc->nr_to_scan VM instances.
-		 * Will not hit this condition practically since we do not try
-		 * to shrink more than one VM and it is very unlikely to see
-		 * !n_used_mmu_pages so many times.
-		 */
-		if (!nr_to_scan--)
-			break;
-		/*
-		 * n_used_mmu_pages is accessed without holding kvm->mmu_lock
-		 * here. We may skip a VM instance errorneosly, but we do not
-		 * want to shrink a VM that only started to populate its MMU
-		 * anyway.
-		 */
-		if (!kvm->arch.n_used_mmu_pages &&
-		    !kvm_has_zapped_obsolete_pages(kvm))
-			continue;
-
-		idx = srcu_read_lock(&kvm->srcu);
-		write_lock(&kvm->mmu_lock);
-
-		if (kvm_has_zapped_obsolete_pages(kvm)) {
-			kvm_mmu_commit_zap_page(kvm,
-			      &kvm->arch.zapped_obsolete_pages);
-			goto unlock;
-		}
-
-		freed = kvm_mmu_zap_oldest_mmu_pages(kvm, sc->nr_to_scan);
-
-unlock:
-		write_unlock(&kvm->mmu_lock);
-		srcu_read_unlock(&kvm->srcu, idx);
-
-		/*
-		 * unfair on small ones
-		 * per-vm shrinkers cry out
-		 * sadness comes quickly
-		 */
-		list_move_tail(&kvm->vm_list, &vm_list);
-		break;
-	}
-
-	mutex_unlock(&kvm_lock);
-	return freed;
-}
-
-static unsigned long mmu_shrink_count(struct shrinker *shrink,
-				      struct shrink_control *sc)
-{
-	return percpu_counter_read_positive(&kvm_total_used_mmu_pages);
-}
-
-static struct shrinker *mmu_shrinker;
 
 static void mmu_destroy_caches(void)
 {
@@ -7289,23 +7344,8 @@ int kvm_mmu_vendor_module_init(void)
 	if (!mmu_page_header_cache)
 		goto out;
 
-	if (percpu_counter_init(&kvm_total_used_mmu_pages, 0, GFP_KERNEL))
-		goto out;
-
-	mmu_shrinker = shrinker_alloc(0, "x86-mmu");
-	if (!mmu_shrinker)
-		goto out_shrinker;
-
-	mmu_shrinker->count_objects = mmu_shrink_count;
-	mmu_shrinker->scan_objects = mmu_shrink_scan;
-	mmu_shrinker->seeks = DEFAULT_SEEKS * 10;
-
-	shrinker_register(mmu_shrinker);
-
 	return 0;
 
-out_shrinker:
-	percpu_counter_destroy(&kvm_total_used_mmu_pages);
 out:
 	mmu_destroy_caches();
 	return ret;
@@ -7322,8 +7362,6 @@ void kvm_mmu_destroy(struct kvm_vcpu *vcpu)
 void kvm_mmu_vendor_module_exit(void)
 {
 	mmu_destroy_caches();
-	percpu_counter_destroy(&kvm_total_used_mmu_pages);
-	shrinker_free(mmu_shrinker);
 }
 
 /*

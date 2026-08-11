@@ -8039,6 +8039,16 @@ KVM_X86_QUIRK_MWAIT_NEVER_UD_FAULTS By default, KVM emulates MONITOR/MWAIT (if
                                     guest CPUID on writes to MISC_ENABLE if
                                     KVM_X86_QUIRK_MISC_ENABLE_NO_MWAIT is
                                     disabled.
+
+KVM_X86_QUIRK_SLOT_ZAP_ALL          By default, for KVM_X86_DEFAULT_VM VMs, KVM
+                                    invalidates all SPTEs in all memslots and
+                                    address spaces when a memslot is deleted or
+                                    moved.  When this quirk is disabled (or the
+                                    VM type isn't KVM_X86_DEFAULT_VM), KVM only
+                                    ensures the backing memory of the deleted
+                                    or moved memslot isn't reachable, i.e KVM
+                                    _may_ invalidate only SPTEs related to the
+                                    memslot.
 =================================== ============================================
 
 7.32 KVM_CAP_MAX_VCPU_ID

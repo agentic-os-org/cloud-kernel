@@ -483,38 +483,6 @@ static void drop_user_return_notifiers(void)
 		kvm_on_user_return(&msrs->urn);
 }
 
-u64 kvm_get_apic_base(struct kvm_vcpu *vcpu)
-{
-	return vcpu->arch.apic_base;
-}
-
-enum lapic_mode kvm_get_apic_mode(struct kvm_vcpu *vcpu)
-{
-	return kvm_apic_mode(kvm_get_apic_base(vcpu));
-}
-EXPORT_SYMBOL_GPL(kvm_get_apic_mode);
-
-int kvm_set_apic_base(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
-{
-	enum lapic_mode old_mode = kvm_get_apic_mode(vcpu);
-	enum lapic_mode new_mode = kvm_apic_mode(msr_info->data);
-	u64 reserved_bits = kvm_vcpu_reserved_gpa_bits_raw(vcpu) | 0x2ff |
-		(guest_cpuid_has(vcpu, X86_FEATURE_X2APIC) ? 0 : X2APIC_ENABLE);
-
-	if ((msr_info->data & reserved_bits) != 0 || new_mode == LAPIC_MODE_INVALID)
-		return 1;
-	if (!msr_info->host_initiated) {
-		if (old_mode == LAPIC_MODE_X2APIC && new_mode == LAPIC_MODE_XAPIC)
-			return 1;
-		if (old_mode == LAPIC_MODE_DISABLED && new_mode == LAPIC_MODE_X2APIC)
-			return 1;
-	}
-
-	kvm_lapic_set_base(vcpu, msr_info->data);
-	kvm_recalculate_apic_map(vcpu->kvm);
-	return 0;
-}
-
 /*
  * Handle a fault on a hardware virtualization (VMX or SVM) instruction.
  *
@@ -3775,7 +3743,7 @@ int kvm_set_msr_common(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 	case MSR_MTRRdefType:
 		return kvm_mtrr_set_msr(vcpu, msr, data);
 	case MSR_IA32_APICBASE:
-		return kvm_set_apic_base(vcpu, msr_info);
+		return kvm_apic_set_base(vcpu, data, msr_info->host_initiated);
 	case APIC_BASE_MSR ... APIC_BASE_MSR + 0xff:
 		return kvm_x2apic_msr_write(vcpu, msr, data);
 	case MSR_IA32_TSC_DEADLINE:
@@ -4216,7 +4184,7 @@ int kvm_get_msr_common(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 		msr_info->data = 1 << 24;
 		break;
 	case MSR_IA32_APICBASE:
-		msr_info->data = kvm_get_apic_base(vcpu);
+		msr_info->data = vcpu->arch.apic_base;
 		break;
 	case APIC_BASE_MSR ... APIC_BASE_MSR + 0xff:
 		return kvm_x2apic_msr_read(vcpu, msr_info->index, &msr_info->data);
@@ -8836,59 +8804,12 @@ static int handle_emulation_failure(struct kvm_vcpu *vcpu, int emulation_type)
 	return 1;
 }
 
-static bool reexecute_instruction(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
-				  int emulation_type)
+static bool kvm_unprotect_and_retry_on_failure(struct kvm_vcpu *vcpu,
+					       gpa_t cr2_or_gpa,
+					       int emulation_type)
 {
-	gpa_t gpa = cr2_or_gpa;
-	kvm_pfn_t pfn;
-
 	if (!(emulation_type & EMULTYPE_ALLOW_RETRY_PF))
 		return false;
-
-	if (WARN_ON_ONCE(is_guest_mode(vcpu)) ||
-	    WARN_ON_ONCE(!(emulation_type & EMULTYPE_PF)))
-		return false;
-
-	if (!vcpu->arch.mmu->root_role.direct) {
-		/*
-		 * Write permission should be allowed since only
-		 * write access need to be emulated.
-		 */
-		gpa = kvm_mmu_gva_to_gpa_write(vcpu, cr2_or_gpa, NULL);
-
-		/*
-		 * If the mapping is invalid in guest, let cpu retry
-		 * it to generate fault.
-		 */
-		if (gpa == INVALID_GPA)
-			return true;
-	}
-
-	/*
-	 * Do not retry the unhandleable instruction if it faults on the
-	 * readonly host memory, otherwise it will goto a infinite loop:
-	 * retry instruction -> write #PF -> emulation fail -> retry
-	 * instruction -> ...
-	 */
-	pfn = gfn_to_pfn(vcpu->kvm, gpa_to_gfn(gpa));
-
-	/*
-	 * If the instruction failed on the error pfn, it can not be fixed,
-	 * report the error to userspace.
-	 */
-	if (is_error_noslot_pfn(pfn))
-		return false;
-
-	kvm_release_pfn_clean(pfn);
-
-	/*
-	 * If emulation may have been triggered by a write to a shadowed page
-	 * table, unprotect the gfn (zap any relevant SPTEs) and re-enter the
-	 * guest to let the CPU re-execute the instruction in the hope that the
-	 * CPU can cleanly execute the instruction that KVM failed to emulate.
-	 */
-	if (vcpu->kvm->arch.indirect_shadow_pages)
-		kvm_mmu_unprotect_page(vcpu->kvm, gpa_to_gfn(gpa));
 
 	/*
 	 * If the failed instruction faulted on an access to page tables that
@@ -8900,54 +8821,24 @@ static bool reexecute_instruction(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
 	 * then zap the SPTE to unprotect the gfn, and then do it all over
 	 * again.  Report the error to userspace.
 	 */
-	return !(emulation_type & EMULTYPE_WRITE_PF_TO_SP);
-}
-
-static bool retry_instruction(struct x86_emulate_ctxt *ctxt,
-			      gpa_t cr2_or_gpa,  int emulation_type)
-{
-	struct kvm_vcpu *vcpu = emul_to_vcpu(ctxt);
-	unsigned long last_retry_eip, last_retry_addr, gpa = cr2_or_gpa;
-
-	last_retry_eip = vcpu->arch.last_retry_eip;
-	last_retry_addr = vcpu->arch.last_retry_addr;
+	if (emulation_type & EMULTYPE_WRITE_PF_TO_SP)
+		return false;
 
 	/*
-	 * If the emulation is caused by #PF and it is non-page_table
-	 * writing instruction, it means the VM-EXIT is caused by shadow
-	 * page protected, we can zap the shadow page and retry this
-	 * instruction directly.
-	 *
-	 * Note: if the guest uses a non-page-table modifying instruction
-	 * on the PDE that points to the instruction, then we will unmap
-	 * the instruction and go to an infinite loop. So, we cache the
-	 * last retried eip and the last fault address, if we meet the eip
-	 * and the address again, we can break out of the potential infinite
-	 * loop.
+	 * If emulation may have been triggered by a write to a shadowed page
+	 * table, unprotect the gfn (zap any relevant SPTEs) and re-enter the
+	 * guest to let the CPU re-execute the instruction in the hope that the
+	 * CPU can cleanly execute the instruction that KVM failed to emulate.
 	 */
-	vcpu->arch.last_retry_eip = vcpu->arch.last_retry_addr = 0;
+	__kvm_mmu_unprotect_gfn_and_retry(vcpu, cr2_or_gpa, true);
 
-	if (!(emulation_type & EMULTYPE_ALLOW_RETRY_PF))
-		return false;
-
-	if (WARN_ON_ONCE(is_guest_mode(vcpu)) ||
-	    WARN_ON_ONCE(!(emulation_type & EMULTYPE_PF)))
-		return false;
-
-	if (x86_page_table_writing_insn(ctxt))
-		return false;
-
-	if (ctxt->eip == last_retry_eip && last_retry_addr == cr2_or_gpa)
-		return false;
-
-	vcpu->arch.last_retry_eip = ctxt->eip;
-	vcpu->arch.last_retry_addr = cr2_or_gpa;
-
-	if (!vcpu->arch.mmu->root_role.direct)
-		gpa = kvm_mmu_gva_to_gpa_write(vcpu, cr2_or_gpa, NULL);
-
-	kvm_mmu_unprotect_page(vcpu->kvm, gpa_to_gfn(gpa));
-
+	/*
+	 * Retry even if _this_ vCPU didn't unprotect the gfn, as it's possible
+	 * all SPTEs were already zapped by a different task.  The alternative
+	 * is to report the error to userspace and likely terminate the guest,
+	 * and the last_retry_{eip,addr} checks will prevent retrying the page
+	 * fault indefinitely, i.e. there's nothing to lose by retrying.
+	 */
 	return true;
 }
 
@@ -9166,6 +9057,11 @@ int x86_emulate_instruction(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
 	struct x86_emulate_ctxt *ctxt = vcpu->arch.emulate_ctxt;
 	bool writeback = true;
 
+	if ((emulation_type & EMULTYPE_ALLOW_RETRY_PF) &&
+	    (WARN_ON_ONCE(is_guest_mode(vcpu)) ||
+	     WARN_ON_ONCE(!(emulation_type & EMULTYPE_PF))))
+		emulation_type &= ~EMULTYPE_ALLOW_RETRY_PF;
+
 	if (unlikely(!kvm_can_emulate_insn(vcpu, emulation_type, insn, insn_len)))
 		return 1;
 
@@ -9190,8 +9086,8 @@ int x86_emulate_instruction(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
 				kvm_queue_exception(vcpu, UD_VECTOR);
 				return 1;
 			}
-			if (reexecute_instruction(vcpu, cr2_or_gpa,
-						  emulation_type))
+			if (kvm_unprotect_and_retry_on_failure(vcpu, cr2_or_gpa,
+							       emulation_type))
 				return 1;
 
 			if (ctxt->have_exception &&
@@ -9242,7 +9138,15 @@ int x86_emulate_instruction(struct kvm_vcpu *vcpu, gpa_t cr2_or_gpa,
 		return 1;
 	}
 
-	if (retry_instruction(ctxt, cr2_or_gpa, emulation_type))
+	/*
+	 * If emulation was caused by a write-protection #PF on a non-page_table
+	 * writing instruction, try to unprotect the gfn, i.e. zap shadow pages,
+	 * and retry the instruction, as the vCPU is likely no longer using the
+	 * gfn as a page table.
+	 */
+	if ((emulation_type & EMULTYPE_ALLOW_RETRY_PF) &&
+	    !x86_page_table_writing_insn(ctxt) &&
+	    kvm_mmu_unprotect_gfn_and_retry(vcpu, cr2_or_gpa))
 		return 1;
 
 	/* this is needed for vmware backdoor interface to work since it
@@ -9280,7 +9184,8 @@ restart:
 		return 1;
 
 	if (r == EMULATION_FAILED) {
-		if (reexecute_instruction(vcpu, cr2_or_gpa, emulation_type))
+		if (kvm_unprotect_and_retry_on_failure(vcpu, cr2_or_gpa,
+						       emulation_type))
 			return 1;
 
 		return handle_emulation_failure(vcpu, emulation_type);
@@ -9746,7 +9651,7 @@ static int __kvm_x86_vendor_init(struct kvm_x86_init_ops *ops)
 	u64 host_pat;
 	int r, cpu;
 
-	if (kvm_x86_ops.hardware_enable) {
+	if (kvm_x86_ops.enable_virtualization_cpu) {
 		pr_err("already loaded vendor module '%s'\n", kvm_x86_ops.name);
 		return -EEXIST;
 	}
@@ -9874,7 +9779,7 @@ static int __kvm_x86_vendor_init(struct kvm_x86_init_ops *ops)
 	return 0;
 
 out_unwind_ops:
-	kvm_x86_ops.hardware_enable = NULL;
+	kvm_x86_ops.enable_virtualization_cpu = NULL;
 	static_call(kvm_x86_hardware_unsetup)();
 out_mmu_exit:
 	kvm_mmu_vendor_module_exit();
@@ -9926,7 +9831,7 @@ void kvm_x86_vendor_exit(void)
 	WARN_ON(static_branch_unlikely(&kvm_xen_enabled.key));
 #endif
 	mutex_lock(&vendor_module_lock);
-	kvm_x86_ops.hardware_enable = NULL;
+	kvm_x86_ops.enable_virtualization_cpu = NULL;
 	mutex_unlock(&vendor_module_lock);
 }
 EXPORT_SYMBOL_GPL(kvm_x86_vendor_exit);
@@ -10302,7 +10207,7 @@ static void post_kvm_run_save(struct kvm_vcpu *vcpu)
 
 	kvm_run->if_flag = static_call(kvm_x86_get_if_flag)(vcpu);
 	kvm_run->cr8 = kvm_get_cr8(vcpu);
-	kvm_run->apic_base = kvm_get_apic_base(vcpu);
+	kvm_run->apic_base = vcpu->arch.apic_base;
 
 	kvm_run->ready_for_interrupt_injection =
 		pic_in_kernel(vcpu->kvm) ||
@@ -11765,7 +11670,7 @@ skip_protected_regs:
 	sregs->cr4 = kvm_read_cr4(vcpu);
 	sregs->cr8 = kvm_get_cr8(vcpu);
 	sregs->efer = vcpu->arch.efer;
-	sregs->apic_base = kvm_get_apic_base(vcpu);
+	sregs->apic_base = vcpu->arch.apic_base;
 }
 
 static void __get_sregs(struct kvm_vcpu *vcpu, struct kvm_sregs *sregs)
@@ -11942,16 +11847,13 @@ static bool kvm_is_valid_sregs(struct kvm_vcpu *vcpu, struct kvm_sregs *sregs)
 static int __set_sregs_common(struct kvm_vcpu *vcpu, struct kvm_sregs *sregs,
 		int *mmu_reset_needed, bool update_pdptrs)
 {
-	struct msr_data apic_base_msr;
 	int idx;
 	struct desc_ptr dt;
 
 	if (!kvm_is_valid_sregs(vcpu, sregs))
 		return -EINVAL;
 
-	apic_base_msr.data = sregs->apic_base;
-	apic_base_msr.host_initiated = true;
-	if (kvm_set_apic_base(vcpu, &apic_base_msr))
+	if (kvm_apic_set_base(vcpu, sregs->apic_base, true))
 		return -EINVAL;
 
 	if (vcpu->arch.guest_state_protected && !is_x86_vendor_hygon())
@@ -12654,6 +12556,16 @@ void kvm_vcpu_deliver_sipi_vector(struct kvm_vcpu *vcpu, u8 vector)
 }
 EXPORT_SYMBOL_GPL(kvm_vcpu_deliver_sipi_vector);
 
+void kvm_arch_enable_virtualization(void)
+{
+	cpu_emergency_register_virt_callback(kvm_x86_ops.emergency_disable_virtualization_cpu);
+}
+
+void kvm_arch_disable_virtualization(void)
+{
+	cpu_emergency_unregister_virt_callback(kvm_x86_ops.emergency_disable_virtualization_cpu);
+}
+
 int kvm_arch_enable_virtualization_cpu(void)
 {
 	struct kvm *kvm;
@@ -12670,7 +12582,7 @@ int kvm_arch_enable_virtualization_cpu(void)
 	if (ret)
 		return ret;
 
-	ret = static_call(kvm_x86_hardware_enable)();
+	ret = static_call(kvm_x86_enable_virtualization_cpu)();
 	if (ret != 0)
 		return ret;
 
@@ -12752,7 +12664,7 @@ int kvm_arch_enable_virtualization_cpu(void)
 
 void kvm_arch_disable_virtualization_cpu(void)
 {
-	static_call(kvm_x86_hardware_disable)();
+	static_call(kvm_x86_disable_virtualization_cpu)();
 	drop_user_return_notifiers();
 }
 
@@ -13215,19 +13127,15 @@ static void kvm_mmu_slot_apply_flags(struct kvm *kvm,
 
 	if (!log_dirty_pages) {
 		/*
-		 * Dirty logging tracks sptes in 4k granularity, meaning that
-		 * large sptes have to be split.  If live migration succeeds,
-		 * the guest in the source machine will be destroyed and large
-		 * sptes will be created in the destination.  However, if the
-		 * guest continues to run in the source machine (for example if
-		 * live migration fails), small sptes will remain around and
-		 * cause bad performance.
+		 * Recover huge page mappings in the slot now that dirty logging
+		 * is disabled, i.e. now that KVM does not have to track guest
+		 * writes at 4KiB granularity.
 		 *
-		 * Scan sptes if dirty logging has been stopped, dropping those
-		 * which can be collapsed into a single large-page spte.  Later
-		 * page faults will create the large-page sptes.
+		 * Dirty logging might be disabled by userspace if an ongoing VM
+		 * live migration is cancelled and the VM must continue running
+		 * on the source.
 		 */
-		kvm_mmu_zap_collapsible_sptes(kvm, new);
+		kvm_mmu_recover_huge_pages(kvm, new);
 	} else {
 		/*
 		 * Initially-all-set does not require write protecting any page,

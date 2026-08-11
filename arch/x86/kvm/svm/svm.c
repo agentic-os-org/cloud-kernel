@@ -525,14 +525,14 @@ static inline void kvm_cpu_svm_disable(void)
 	}
 }
 
-static void svm_emergency_disable(void)
+static void svm_emergency_disable_virtualization_cpu(void)
 {
 	kvm_rebooting = true;
 
 	kvm_cpu_svm_disable();
 }
 
-static void svm_hardware_disable(void)
+static void svm_disable_virtualization_cpu(void)
 {
 	/* Make sure we clean up behind us */
 	if (tsc_scaling)
@@ -543,7 +543,7 @@ static void svm_hardware_disable(void)
 	amd_pmu_disable_virt();
 }
 
-static int svm_hardware_enable(void)
+static int svm_enable_virtualization_cpu(void)
 {
 
 	struct svm_cpu_data *sd;
@@ -1467,7 +1467,7 @@ static void svm_prepare_switch_to_guest(struct kvm_vcpu *vcpu)
 	 * TSC_AUX is always virtualized for SEV-ES guests when the feature is
 	 * available. The user return MSR support is not required in this case
 	 * because TSC_AUX is restored on #VMEXIT from the host save area
-	 * (which has been initialized in svm_hardware_enable()).
+	 * (which has been initialized in svm_enable_virtualization_cpu()).
 	 */
 	if (likely(tsc_aux_uret_slot >= 0) &&
 	    (!boot_cpu_has(X86_FEATURE_V_TSC_AUX) || !sev_es_guest(vcpu->kvm)))
@@ -2235,7 +2235,7 @@ static int vmload_vmsave_interception(struct kvm_vcpu *vcpu, bool vmload)
 		svm_copy_vmloadsave_state(vmcb12, svm->vmcb01.ptr);
 	}
 
-	kvm_vcpu_unmap(vcpu, &map, true);
+	kvm_vcpu_unmap(vcpu, &map);
 
 	return ret;
 }
@@ -3098,7 +3098,7 @@ static int svm_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr)
 		 * feature is available. The user return MSR support is not
 		 * required in this case because TSC_AUX is restored on #VMEXIT
 		 * from the host save area (which has been initialized in
-		 * svm_hardware_enable()).
+		 * svm_enable_virtualization_cpu()).
 		 */
 		if (boot_cpu_has(X86_FEATURE_V_TSC_AUX) && sev_es_guest(vcpu->kvm))
 			break;
@@ -4776,7 +4776,7 @@ static int svm_enter_smm(struct kvm_vcpu *vcpu, union kvm_smram *smram)
 	svm_copy_vmrun_state(map_save.hva + 0x400,
 			     &svm->vmcb01.ptr->save);
 
-	kvm_vcpu_unmap(vcpu, &map_save, true);
+	kvm_vcpu_unmap(vcpu, &map_save);
 	return 0;
 }
 
@@ -4840,9 +4840,9 @@ static int svm_leave_smm(struct kvm_vcpu *vcpu, const union kvm_smram *smram)
 	svm->nested.nested_run_pending = 1;
 
 unmap_save:
-	kvm_vcpu_unmap(vcpu, &map_save, true);
+	kvm_vcpu_unmap(vcpu, &map_save);
 unmap_map:
-	kvm_vcpu_unmap(vcpu, &map, true);
+	kvm_vcpu_unmap(vcpu, &map);
 	return ret;
 }
 
@@ -5097,8 +5097,9 @@ static struct kvm_x86_ops svm_x86_ops __initdata = {
 	.check_processor_compatibility = svm_check_processor_compat,
 
 	.hardware_unsetup = svm_hardware_unsetup,
-	.hardware_enable = svm_hardware_enable,
-	.hardware_disable = svm_hardware_disable,
+	.enable_virtualization_cpu = svm_enable_virtualization_cpu,
+	.disable_virtualization_cpu = svm_disable_virtualization_cpu,
+	.emergency_disable_virtualization_cpu = svm_emergency_disable_virtualization_cpu,
 	.has_emulated_msr = svm_has_emulated_msr,
 
 	.vcpu_create = svm_vcpu_create,
@@ -5531,8 +5532,6 @@ static void __svm_exit(void)
 		csv_exit();
 
 	kvm_x86_vendor_exit();
-
-	cpu_emergency_unregister_virt_callback(svm_emergency_disable);
 }
 
 static int __init svm_init(void)
@@ -5559,8 +5558,6 @@ static int __init svm_init(void)
 
 		return r;
 	}
-
-	cpu_emergency_register_virt_callback(svm_emergency_disable);
 
 	/*
 	 * Common KVM initialization _must_ come last, after this, /dev/kvm is

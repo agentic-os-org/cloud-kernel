@@ -18,13 +18,12 @@ menuconfig VIRTUALIZATION
 
 if VIRTUALIZATION
 
-config KVM
-	tristate "Kernel-based Virtual Machine (KVM) support"
+config KVM_X86
+	def_tristate KVM if (KVM_INTEL != n || KVM_AMD != n)
 	depends on HAVE_KVM
-	depends on HIGH_RES_TIMERS
-	depends on X86_LOCAL_APIC
 	select PREEMPT_NOTIFIERS
 	select MMU_NOTIFIER
+	select KVM_ELIDE_TLB_FLUSH_IF_YOUNG
 	select HAVE_KVM_IRQCHIP
 	select HAVE_KVM_PFNCACHE
 	select HAVE_KVM_IRQFD
@@ -52,6 +51,11 @@ config KVM
 	select HAVE_KVM_PM_NOTIFIER if PM
 	select KVM_GENERIC_HARDWARE_ENABLING
 	select KVM_GENERIC_PRE_FAULT_MEMORY
+	select KVM_GENERIC_PRIVATE_MEM if KVM_SW_PROTECTED_VM
+
+config KVM
+	tristate "Kernel-based Virtual Machine (KVM) support"
+	depends on X86_LOCAL_APIC
 	help
 	  Support hosting fully virtualized guest machines using hardware
 	  virtualization extensions.  You will need a fairly recent
@@ -72,7 +76,7 @@ config KVM_WERROR
 	default y if X86_64 && !KASAN
 	# We use the dependency on !COMPILE_TEST to not be enabled
 	# blindly in allmodconfig or allyesconfig configurations
-	depends on KVM
+	depends on KVM_X86
 	depends on (X86_64 && !KASAN) || !COMPILE_TEST
 	depends on EXPERT
 	help
@@ -83,8 +87,7 @@ config KVM_WERROR
 config KVM_SW_PROTECTED_VM
 	bool "Enable support for KVM software-protected VMs"
 	depends on EXPERT
-	depends on X86_64
-	select KVM_GENERIC_PRIVATE_MEM
+	depends on KVM_X86 && X86_64
 	help
 	  Enable support for KVM software-protected VMs.  Currently, software-
 	  protected VMs are purely a development and testing vehicle for
@@ -159,7 +162,7 @@ config KVM_AMD_SEV
 config KVM_SMM
 	bool "System Management Mode emulation"
 	default y
-	depends on KVM
+	depends on KVM_X86
 	help
 	  Provides support for KVM to emulate System Management Mode (SMM)
 	  in virtual machines.  This can be used by the virtual machine
@@ -169,7 +172,7 @@ config KVM_SMM
 
 config KVM_HYPERV
 	bool "Support for Microsoft Hyper-V emulation"
-	depends on KVM
+	depends on KVM_X86
 	default y
 	help
 	  Provides KVM support for emulating Microsoft Hyper-V.  This allows KVM
@@ -183,7 +186,7 @@ config KVM_HYPERV
 
 config KVM_XEN
 	bool "Support for Xen hypercall interface"
-	depends on KVM
+	depends on KVM_X86
 	help
 	  Provides KVM support for the hosting Xen HVM guests and
 	  passing Xen hypercalls to userspace.
@@ -193,7 +196,7 @@ config KVM_XEN
 config KVM_PROVE_MMU
 	bool "Prove KVM MMU correctness"
 	depends on DEBUG_KERNEL
-	depends on KVM
+	depends on KVM_X86
 	depends on EXPERT
 	help
 	  Enables runtime assertions in KVM's MMU that are too costly to enable
