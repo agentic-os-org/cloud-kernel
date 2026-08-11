@@ -323,11 +323,18 @@ STATIC s32 sxe2_init_ddp_config(struct sxe2_adapter *adapter)
 	s32 err;
 
 	err = sxe2_request_fw(adapter, &firmware);
-	if (err)
-		return err;
+	if (!err) {
+		sxe2_load_pkg(firmware, adapter);
+		release_firmware(firmware);
+	}
 
-	sxe2_load_pkg(firmware, adapter);
-	release_firmware(firmware);
+	/* 文件缺失或加载失败（load_pkg 失败会清 ADVANCE_MODE）→ 内置静态 DDP 回退；
+	 * 静态数据也失败则维持 safe mode（行为同现状） */
+	if (sxe2_is_safe_mode(adapter)) {
+		if (!sxe2_ddp_static_load(adapter))
+			set_bit(SXE2_FLAG_ADVANCE_MODE, adapter->flags);
+	}
+
 	return err;
 }
 

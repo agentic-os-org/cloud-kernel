@@ -13,6 +13,7 @@
 #include "sxe2_log.h"
 #include "sxe2_cmd.h"
 #include "sxe2_ddp.h"
+#include "sxe2_ddp_static.h"
 #include "sxe2_sriov.h"
 #include "sxe2_fnav.h"
 #include "sxe2_rss.h"
@@ -314,6 +315,49 @@ void sxe2_free_seg(struct sxe2_adapter *adapter)
 		hw->pkg_copy = NULL;
 		hw->pkg_size = 0;
 	}
+}
+
+/**
+ * sxe2_ddp_static_load - 内置静态 DDP 数据回退加载
+ * @adapter: board private structure
+ *
+ * 系统 DDP 文件缺失或加载失败时调用。语义对齐 sxe2_copy_and_init_pkg：
+ * 成功则常驻 hw->pkg_copy/pkg_size（供复位重灌与本地解析），
+ * 失败不残留。内存操作全部使用 devm 托管接口。
+ */
+s32 sxe2_ddp_static_load(struct sxe2_adapter *adapter)
+{
+	struct sxe2_hw *hw = &adapter->hw;
+	struct device *dev = SXE2_ADAPTER_TO_DEV(adapter);
+	u16 drv_maj, drv_mnr, fw_maj, fw_mnr;
+	u32 total = 0;
+	u8 *img;
+	s32 err;
+
+	if (hw->pkg_copy)
+		return SXE2_DDP_PKG_SUCCESS;
+
+	img = sxe2_ddp_static_assemble(adapter, &total);
+	if (IS_ERR(img)) {
+		LOG_ERROR_BDF("assemble static ddp pkg failed.\n");
+		return -SXE2_DDP_PKG_ERR;
+	}
+
+	sxe2_ddp_static_ver_get(&drv_maj, &drv_mnr, &fw_maj, &fw_mnr);
+	LOG_DEV_INFO("load built-in static DDP pkg: drv_ver=%u.%u fw_ver=%u.%u, %u bytes\n",
+		     drv_maj, drv_mnr, fw_maj, fw_mnr, total);
+
+	err = sxe2_init_pkg(adapter, img, total);
+	if (!sxe2_is_init_pkg_successful(err)) {
+		devm_kfree(dev, img);
+		LOG_WARN_BDF("static ddp pkg init failed (err: %d)\n", err);
+		return err;
+	}
+
+	hw->pkg_copy = img;
+	hw->pkg_size = total;
+
+	return SXE2_DDP_PKG_SUCCESS;
 }
 
 s32 sxe2_ddp_rebuild(struct sxe2_adapter *adapter)
