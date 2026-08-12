@@ -55,6 +55,8 @@ s32 sxe2_init_pkg(struct sxe2_adapter *adapter, u8 *buff, u32 len);
 s32 sxe2_copy_and_init_pkg(struct sxe2_adapter *adapter, const u8 *buf,
 			   u32 len);
 
+s32 sxe2_ddp_static_load(struct sxe2_adapter *adapter);
+
 bool sxe2_is_init_pkg_successful(s32 state);
 
 void sxe2_free_seg(struct sxe2_adapter *adapter);
