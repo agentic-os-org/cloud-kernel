@@ -1042,8 +1042,13 @@ static void vc4_bo_cache_destroy(struct drm_device *dev, void *unused)
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	int i;
 
-	del_timer(&vc4->bo_cache.time_timer);
+	del_timer_sync(&vc4->bo_cache.time_timer);
 	cancel_work_sync(&vc4->bo_cache.time_work);
+	/* The work may have re-armed the timer before it was cancelled, and
+	 * this kernel has no timer_shutdown_sync() to make mod_timer() a NOP,
+	 * so drop the timer again once no work can rearm it.
+	 */
+	del_timer_sync(&vc4->bo_cache.time_timer);
 
 	vc4_bo_cache_purge(dev);
 
