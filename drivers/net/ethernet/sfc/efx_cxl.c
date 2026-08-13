@@ -47,7 +47,7 @@ int efx_cxl_init(struct efx_probe_data *probe_data)
 		return -ENOMEM;
 
 	rc = cxl_pci_setup_regs(pci_dev, CXL_REGLOC_RBI_COMPONENT,
-				&cxl->cxlds.reg_map);
+				&cxl->cxlds.reg_map, false);
 	if (rc) {
 		pci_err(pci_dev, "No component registers\n");
 		return rc;
