@@ -16,7 +16,7 @@
 #include <linux/pci.h>
 #include <linux/slab.h>
 
-#include <cxlpci.h>
+#include <cxl/pci.h>
 
 #include "cxl.h"
 #include "core.h"
@@ -851,6 +851,7 @@ int cxl_restore_hdm_after_pci_reset(struct pci_dev *pdev)
 
 	return cxl_reset_save_restored_state(pdev, command);
 }
+EXPORT_SYMBOL_NS_GPL(cxl_restore_hdm_after_pci_reset, "CXL");
 
 static void cxl_hdm_range_context_init(struct cxl_hdm_range_context *ctx)
 {
