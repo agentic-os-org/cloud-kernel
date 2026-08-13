@@ -3290,12 +3290,13 @@ static int folio_update_gen(struct folio *folio, int gen, unsigned long vm_flags
 }
 
 /* protect pages accessed multiple times through file descriptors */
-static int folio_inc_gen(struct lruvec *lruvec, struct folio *folio)
+static int folio_inc_gen(struct lruvec *lruvec, struct folio *folio, bool promote)
 {
 	int type = folio_is_file_lru(folio);
 	struct lru_gen_folio *lrugen = &lruvec->lrugen;
 	int new_gen, old_gen = lru_gen_from_seq(lrugen->min_seq[type]);
 	unsigned long new_flags, old_flags = READ_ONCE(folio->flags);
+	DEFINE_MAX_SEQ(lruvec);
 
 	VM_WARN_ON_ONCE_FOLIO(!(old_flags & LRU_GEN_MASK), folio);
 
@@ -3305,7 +3306,11 @@ static int folio_inc_gen(struct lruvec *lruvec, struct folio *folio)
 		if (new_gen >= 0 && new_gen != old_gen)
 			return new_gen;
 
-		new_gen = (old_gen + 1) % MAX_NR_GENS;
+		/* promote the hot folios into the active list if needed */
+		if (promote)
+			new_gen = lru_gen_from_seq(max_seq);
+		else
+			new_gen = (old_gen + 1) % MAX_NR_GENS;
 
 		new_flags = old_flags & ~(LRU_GEN_MASK | LRU_REFS_FLAGS);
 		new_flags |= (new_gen + 1UL) << LRU_GEN_PGOFF;
@@ -3314,6 +3319,20 @@ static int folio_inc_gen(struct lruvec *lruvec, struct folio *folio)
 	lru_gen_update_size(lruvec, folio, old_gen, new_gen);
 
 	return new_gen;
+}
+
+/*
+ * Promote file folios accessed at least this many times to the youngest
+ * generation. Accepted values are 0, which disables the promotion, and 2 to
+ * BIT(LRU_REFS_WIDTH).
+ */
+static unsigned int lru_gen_file_min_refs __read_mostly = 3;
+
+static bool should_promote_file_folio(int type, int refs)
+{
+	int min_refs = READ_ONCE(lru_gen_file_min_refs);
+
+	return min_refs && type == LRU_GEN_FILE && refs >= min_refs;
 }
 
 static void update_batch_size(struct lru_gen_mm_walk *walk, struct folio *folio,
@@ -3911,13 +3930,18 @@ static bool inc_min_seq(struct lruvec *lruvec, int type, int swappiness)
 			struct folio *folio = lru_to_folio(head);
 			int refs = folio_lru_refs(folio);
 			bool workingset = folio_test_workingset(folio);
+			bool promote = false;
 
 			VM_WARN_ON_ONCE_FOLIO(folio_test_unevictable(folio), folio);
 			VM_WARN_ON_ONCE_FOLIO(folio_test_active(folio), folio);
 			VM_WARN_ON_ONCE_FOLIO(folio_is_file_lru(folio) != type, folio);
 			VM_WARN_ON_ONCE_FOLIO(folio_zonenum(folio) != zone, folio);
 
-			new_gen = folio_inc_gen(lruvec, folio);
+			if (refs + workingset == BIT(LRU_REFS_WIDTH) + 1 ||
+			    should_promote_file_folio(type, refs))
+				promote = true;
+
+			new_gen = folio_inc_gen(lruvec, folio, promote);
 			list_move_tail(&folio->lru, &lrugen->folios[new_gen][type][zone]);
 
 			/* don't count the workingset being lazily promoted */
@@ -4735,8 +4759,9 @@ static bool sort_folio(struct lruvec *lruvec, struct folio *folio, struct scan_c
 	}
 
 	/* protected */
-	if (tier > tier_idx || refs + workingset == BIT(LRU_REFS_WIDTH) + 1) {
-		gen = folio_inc_gen(lruvec, folio);
+	if (tier > tier_idx || refs + workingset == BIT(LRU_REFS_WIDTH) + 1 ||
+	    should_promote_file_folio(type, refs)) {
+		gen = folio_inc_gen(lruvec, folio, true);
 		list_move(&folio->lru, &lrugen->folios[gen][type][zone]);
 
 		/* don't count the workingset being lazily promoted */
@@ -4751,7 +4776,7 @@ static bool sort_folio(struct lruvec *lruvec, struct folio *folio, struct scan_c
 
 	/* ineligible */
 	if (zone > sc->reclaim_idx) {
-		gen = folio_inc_gen(lruvec, folio);
+		gen = folio_inc_gen(lruvec, folio, false);
 		list_move_tail(&folio->lru, &lrugen->folios[gen][type][zone]);
 		return true;
 	}
@@ -5496,6 +5521,31 @@ static ssize_t min_ttl_ms_store(struct kobject *kobj, struct kobj_attribute *att
 
 static struct kobj_attribute lru_gen_min_ttl_attr = __ATTR_RW(min_ttl_ms);
 
+static ssize_t file_min_refs_show(struct kobject *kobj, struct kobj_attribute *attr,
+				  char *buf)
+{
+	return sysfs_emit(buf, "%u\n", READ_ONCE(lru_gen_file_min_refs));
+}
+
+static ssize_t file_min_refs_store(struct kobject *kobj, struct kobj_attribute *attr,
+				   const char *buf, size_t len)
+{
+	unsigned int refs;
+
+	if (kstrtouint(buf, 0, &refs))
+		return -EINVAL;
+
+	/* 0 disables the promotion, otherwise 2 to BIT(LRU_REFS_WIDTH) */
+	if (refs == 1 || refs > BIT(LRU_REFS_WIDTH))
+		return -EINVAL;
+
+	WRITE_ONCE(lru_gen_file_min_refs, refs);
+
+	return len;
+}
+
+static struct kobj_attribute lru_gen_file_min_refs_attr = __ATTR_RW(file_min_refs);
+
 static ssize_t enabled_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	unsigned int caps = 0;
@@ -5565,6 +5615,7 @@ static struct kobj_attribute lru_gen_enabled_attr = __ATTR_RW(enabled);
 
 static struct attribute *lru_gen_attrs[] = {
 	&lru_gen_min_ttl_attr.attr,
+	&lru_gen_file_min_refs_attr.attr,
 	&lru_gen_enabled_attr.attr,
 	NULL
 };
