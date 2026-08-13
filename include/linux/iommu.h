@@ -1322,4 +1322,14 @@ void iommu_debugfs_setup(void);
 static inline void iommu_debugfs_setup(void) {}
 #endif
 
+/*
+ * Upstream flushes IOMMU IOTLB entries covering freed kernel page tables via
+ * the ASYNC_KERNEL_PGTABLE_FREE work queue. That deferred kernel pgtable
+ * freeing infrastructure and the iommu_sva_mms tracking list it relies on do
+ * not exist in this tree, so there is no site that can observe stale kernel
+ * IOTLB entries. Keep the API surface only, as a no-op.
+ */
+static inline void iommu_sva_invalidate_kva_range(unsigned long start,
+						 unsigned long end) {}
+
 #endif /* __LINUX_IOMMU_H */
