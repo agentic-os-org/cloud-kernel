@@ -632,7 +632,7 @@ static void create_eir(struct hci_dev *hdev, u8 *data)
 	u8 *ptr = data;
 	size_t name_len;
 
-	name_len = strlen(hdev->dev_name);
+	name_len = strnlen(hdev->dev_name, sizeof(hdev->dev_name));
 
 	if (name_len > 0) {
 		/* EIR Data type */
@@ -1568,6 +1568,20 @@ void __hci_req_enable_advertising(struct hci_request *req)
 	hci_req_add(req, HCI_OP_LE_SET_ADV_ENABLE, sizeof(enable), &enable);
 }
 
+static u8 append_name(u8 *eir, u16 eir_len, u8 type, u8 *data, u8 data_len)
+{
+	u8 name[HCI_MAX_SHORT_NAME_LENGTH + 1];
+
+	/* If data is already NULL terminated just pass it directly */
+	if (data[data_len - 1] == '\0')
+		return eir_append_data(eir, eir_len, type, data, data_len);
+
+	memcpy(name, data, HCI_MAX_SHORT_NAME_LENGTH);
+	name[HCI_MAX_SHORT_NAME_LENGTH] = '\0';
+
+	return eir_append_data(eir, eir_len, type, name, sizeof(name));
+}
+
 u8 append_local_name(struct hci_dev *hdev, u8 *ptr, u8 ad_len)
 {
 	size_t short_len;
@@ -1578,29 +1592,26 @@ u8 append_local_name(struct hci_dev *hdev, u8 *ptr, u8 ad_len)
 		return ad_len;
 
 	/* use complete name if present and fits */
-	complete_len = strlen(hdev->dev_name);
+	complete_len = strnlen(hdev->dev_name, sizeof(hdev->dev_name));
 	if (complete_len && complete_len <= HCI_MAX_SHORT_NAME_LENGTH)
-		return eir_append_data(ptr, ad_len, EIR_NAME_COMPLETE,
-				       hdev->dev_name, complete_len + 1);
+		return append_name(ptr, ad_len, EIR_NAME_COMPLETE,
+				   hdev->dev_name, complete_len + 1);
 
 	/* use short name if present */
-	short_len = strlen(hdev->short_name);
+	short_len = strnlen(hdev->short_name, sizeof(hdev->short_name));
 	if (short_len)
-		return eir_append_data(ptr, ad_len, EIR_NAME_SHORT,
-				       hdev->short_name, short_len + 1);
+		return append_name(ptr, ad_len, EIR_NAME_SHORT,
+				   hdev->short_name,
+				   short_len == HCI_MAX_SHORT_NAME_LENGTH ?
+				   short_len : short_len + 1);
 
 	/* use shortened full name if present, we already know that name
 	 * is longer then HCI_MAX_SHORT_NAME_LENGTH
 	 */
-	if (complete_len) {
-		u8 name[HCI_MAX_SHORT_NAME_LENGTH + 1];
-
-		memcpy(name, hdev->dev_name, HCI_MAX_SHORT_NAME_LENGTH);
-		name[HCI_MAX_SHORT_NAME_LENGTH] = '\0';
-
-		return eir_append_data(ptr, ad_len, EIR_NAME_SHORT, name,
-				       sizeof(name));
-	}
+	if (complete_len)
+		return append_name(ptr, ad_len, EIR_NAME_SHORT,
+				   hdev->dev_name,
+				   HCI_MAX_SHORT_NAME_LENGTH);
 
 	return ad_len;
 }
