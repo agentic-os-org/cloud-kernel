@@ -851,7 +851,7 @@ err_put_table:
 	return rc;
 }
 
-static void __exit einj_remove(struct platform_device *pdev)
+static void einj_remove(struct platform_device *pdev)
 {
 	struct apei_exec_context ctx;
 
@@ -903,7 +903,7 @@ static void __exit einj_exit(void)
 	if (einj_initialized)
 		platform_driver_unregister(&einj_driver);
 
-	platform_device_del(einj_dev);
+	platform_device_unregister(einj_dev);
 }
 
 module_init(einj_init);
