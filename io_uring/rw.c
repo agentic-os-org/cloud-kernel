@@ -292,11 +292,23 @@ void io_req_rw_complete(struct io_kiocb *req, struct io_tw_state *ts)
 	 */
 	if (req->flags & REQ_F_REISSUE) {
 		req->flags &= ~REQ_F_REISSUE;
+		/*
+		 * Reissue will start accounting again, finish the current
+		 * cycle.
+		 */
+		io_req_io_end(req);
 		if (io_resubmit_prep(req)) {
 			req->flags |= REQ_F_FORCE_ASYNC;
 			io_req_task_queue(req);
 		} else {
-			io_req_task_queue_fail(req, io_fixup_rw_res(req, req->cqe.res));
+			/*
+			 * Can't retry and the original error was -EAGAIN for a
+			 * request that never asked for nonblocking IO. Don't
+			 * use req->cqe.res, that still holds the number of
+			 * bytes asked for and would post a bogus success CQE.
+			 * io_rw_fail() turns this into any partially done IO.
+			 */
+			io_req_task_queue_fail(req, -EIO);
 		}
 		return;
 	}
