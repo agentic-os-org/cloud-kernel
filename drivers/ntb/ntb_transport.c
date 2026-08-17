@@ -2295,9 +2295,8 @@ int ntb_transport_tx_enqueue(struct ntb_transport_qp *qp, void *cb, void *data,
 	if (!qp || !len)
 		return -EINVAL;
 
-	/* If the qp link is down already, just ignore. */
 	if (!qp->link_is_up)
-		return 0;
+		return -ENOLINK;
 
 	if (len > qp->tx_max_frame - sizeof(struct ntb_payload_header))
 		return -EMSGSIZE;
