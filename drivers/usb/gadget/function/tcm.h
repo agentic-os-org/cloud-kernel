@@ -3,6 +3,7 @@
 #define __TARGET_USB_GADGET_H__
 
 #include <linux/kref.h>
+#include <linux/spinlock.h>
 /* #include <linux/usb/uas.h> */
 #include <linux/usb/composite.h>
 #include <linux/usb/uas.h>
@@ -25,6 +26,12 @@ enum {
 #define USB_G_ALT_INT_UAS       1
 
 #define USB_G_DEFAULT_SESSION_TAGS	128
+
+enum {
+	USBG_DELAYED_SET_ALT_IDLE = 0,
+	USBG_DELAYED_SET_ALT_QUEUED,
+	USBG_DELAYED_SET_ALT_RUNNING,
+};
 
 struct tcm_usbg_nexus {
 	struct se_session *tvn_se_sess;
@@ -116,6 +123,17 @@ struct f_uas {
 #define USBG_USE_STREAMS	(1 << 2)
 #define USBG_IS_BOT		(1 << 3)
 #define USBG_BOT_CMD_PEND	(1 << 4)
+
+	/*
+	 * delayed_set_alt is a delayed_work (not a plain work_struct as
+	 * upstream) because this tree has no cancel_work(); the non-blocking
+	 * cancel path relies on cancel_delayed_work().
+	 */
+	struct delayed_work	delayed_set_alt;
+	spinlock_t		delayed_set_alt_lock; /* protects delayed_set_alt_* */
+	unsigned int		delayed_alt;
+	unsigned int		delayed_set_alt_state;
+	bool			delayed_set_alt_cancel;
 
 	struct usbg_cdb		cmd;
 	struct usb_ep		*ep_in;
