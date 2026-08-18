@@ -5660,10 +5660,11 @@ intel_dp_check_mst_status(struct intel_dp *intel_dp)
 {
 	struct drm_i915_private *i915 = dp_to_i915(intel_dp);
 	bool link_ok = true;
+	int tries = 33;
 
 	drm_WARN_ON_ONCE(&i915->drm, intel_dp->active_mst_links < 0);
 
-	for (;;) {
+	while (--tries) {
 		/*
 		 * The +2 is because DP_DPRX_ESI_LEN is 14, but we then
 		 * pass in "esi+10" to drm_dp_channel_eq_ok(), which
@@ -5710,6 +5711,12 @@ intel_dp_check_mst_status(struct intel_dp *intel_dp)
 			if (wret == 3)
 				break;
 		}
+	}
+
+	if (!tries) {
+		drm_dbg_kms(&i915->drm,
+			    "DPRX ESI not clearing, device may be stuck\n");
+		link_ok = false;
 	}
 
 	return link_ok;
