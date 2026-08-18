@@ -698,10 +698,8 @@ struct Scsi_Host {
 	 */
 	struct device *dma_dev;
 
-	CK_KABI_RESERVE(1)
-	CK_KABI_RESERVE(2)
-	CK_KABI_RESERVE(3)
-	CK_KABI_RESERVE(4)
+	/* Used for an rcu-synchronizing eh wakeup */
+	CK_KABI_USE(1, 2, 3, 4, struct work_struct eh_work)
 	CK_KABI_RESERVE(5)
 	CK_KABI_RESERVE(6)
 
