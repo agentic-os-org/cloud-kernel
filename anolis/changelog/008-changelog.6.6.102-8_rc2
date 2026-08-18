@@ -1,0 +1,19 @@
+* Tue Aug 18 2026 Ferry Meng <mengferry@linux.alibaba.com> [6.6.102-8_rc2%%DIST%%]
+- anolis: io_uring/rw: finish the IO cycle before a deferred reissue (Ferry Meng)
+- anolis: io_uring/rw: don't post a bogus success CQE on failed reissue (Ferry Meng)
+- anolis: KVM: x86: rename zxpause support to pauseopt and other improvements (LeoLiu-oc)
+- anolis: x86/delay: Add support for Zhaoxin PAUSEOPT instruction (LeoLiu-oc)
+- anolis: Revert "anolis: x86/delay: add support for Zhaoxin ZXPAUSE instruction" (LeoLiu-oc)
+- anolis: Revert "anolis: KVM: x86: Introduce support for Zhaoxin ZXPAUSE instruction" (LeoLiu-oc)
+- smb: client: fix query_info() replay double-free (Henrique Carvalho) {CVE-2026-64386}
+- sctp: don't free the ASCONF's own transport in DEL-IP processing (Jun Yang) {CVE-2026-64564}
+- anolis: driver: gpu: yhgch: update to version 3.7 (wangdeming)
+- x86/fred: Fix early boot failures on SEV-ES/SNP guests (Nikunj A Dadhania)
+- EDAC/mce_amd: Add support for FRU text in MCA (Yazen Ghannam)
+- x86/mce/apei: Handle variable SMCA BERT record size (Yazen Ghannam)
+- perf vendor events amd: Fix Zen 4 cache latency events (Sandipan Das)
+- EINJ, CXL: Fix CXL device SBDF calculation (Ben Cheatham)
+- ACPI: APEI: EINJ: Fix einj_dev release leak (Dan Williams)
+- ACPI: APEI: EINJ: mark remove callback as non-__exit (Arnd Bergmann)
+- ACPI: APEI: Skip initialization of GHES_ASSIST structures for Machine Check Architecture (Avadhut Naik)
+
