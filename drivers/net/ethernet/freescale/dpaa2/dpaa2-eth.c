@@ -4083,6 +4083,7 @@ static void dpaa2_eth_disconnect_mac(struct dpaa2_eth_priv *priv)
 		return;
 
 	dpaa2_mac_disconnect(priv->mac);
+	put_device(&priv->mac->mc_dev->dev);
 	kfree(priv->mac);
 	priv->mac = NULL;
 }
