@@ -1181,7 +1181,6 @@ config ARM64_ERRATUM_4118414
 	  * ARM Cortex-X4 erratum 4118414
 	  * ARM Cortex-X925 erratum 4193781
 	  * ARM Neoverse-N1 erratum 4193800
-	  * ARM Neoverse-N2 erratum 4193789
 	  * ARM Neoverse-V1 erratum 4193790
 	  * ARM Neoverse-V2 erratum 4193787
 	  * ARM Neoverse-V3 erratum 4193784
