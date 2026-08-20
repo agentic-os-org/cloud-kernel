@@ -455,6 +455,7 @@ void erofs_init_metabuf(struct erofs_buf *buf, struct super_block *sb);
 void *erofs_read_metabuf(struct erofs_buf *buf, struct super_block *sb,
 			 erofs_blk_t blkaddr, enum erofs_kmap_type type);
 int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *dev);
+loff_t erofs_file_llseek(struct file *file, loff_t offset, int whence);
 int erofs_map_blocks(struct inode *inode, struct erofs_map_blocks *map);
 extern const struct file_operations erofs_file_fops;
 
