@@ -337,6 +337,13 @@ static __be32 get_request_hdr(struct talitos_request *request, bool is_sec1)
 	return ((struct talitos_desc *)(edesc->buf + edesc->dma_len))->hdr1;
 }
 
+static void dma_unmap_request(struct device *dev,
+			      struct talitos_request *request, bool is_sec1)
+{
+	dma_unmap_single(dev, request->dma_desc, TALITOS_DESC_SIZE,
+			 DMA_BIDIRECTIONAL);
+}
+
 /*
  * process what was done, notify callback of error if not
  */
@@ -368,9 +375,7 @@ static void flush_channel(struct device *dev, int ch, int error, int reset_ch)
 			else
 				status = error;
 
-		dma_unmap_single(dev, request->dma_desc,
-				 TALITOS_DESC_SIZE,
-				 DMA_BIDIRECTIONAL);
+		dma_unmap_request(dev, request, is_sec1);
 
 		/* copy entries so we can call callback outside lock */
 		saved_req.desc = request->desc;
