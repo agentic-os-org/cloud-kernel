@@ -139,8 +139,8 @@ static void afs_break_one_callback(struct afs_volume *volume,
 }
 
 static void afs_break_some_callbacks(struct afs_server *server,
-				     struct afs_callback_break *cbb,
-				     size_t *_count)
+				    struct afs_callback_break *cbb,
+				    size_t *_count)
 {
 	struct afs_callback_break *residue = cbb;
 	struct afs_volume *volume;
