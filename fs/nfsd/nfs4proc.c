@@ -1297,7 +1297,6 @@ nfsd4_cleanup_inter_ssc(struct vfsmount *ss_mnt, struct nfsd_file *src,
 {
 	nfs42_ssc_close(src->nf_file);
 	fput(src->nf_file);
-	nfsd_file_put(dst);
 	mntput(ss_mnt);
 }
 
@@ -1335,13 +1334,6 @@ nfsd4_setup_intra_ssc(struct svc_rqst *rqstp,
 	return nfsd4_verify_copy(rqstp, cstate, &copy->cp_src_stateid,
 				 &copy->nf_src, &copy->cp_dst_stateid,
 				 &copy->nf_dst);
-}
-
-static void
-nfsd4_cleanup_intra_ssc(struct nfsd_file *src, struct nfsd_file *dst)
-{
-	nfsd_file_put(src);
-	nfsd_file_put(dst);
 }
 
 static void nfsd4_cb_offload_release(struct nfsd4_callback *cb)
@@ -1409,12 +1401,6 @@ static __be32 nfsd4_do_copy(struct nfsd4_copy *copy, bool sync)
 		status = nfs_ok;
 	}
 
-	if (!copy->cp_intra) /* Inter server SSC */
-		nfsd4_cleanup_inter_ssc(copy->ss_mnt, copy->nf_src,
-					copy->nf_dst);
-	else
-		nfsd4_cleanup_intra_ssc(copy->nf_src, copy->nf_dst);
-
 	return status;
 }
 
@@ -1437,6 +1423,14 @@ static void dup_copy_fields(struct nfsd4_copy *src, struct nfsd4_copy *dst)
 	memcpy(&dst->stateid, &src->stateid, sizeof(src->stateid));
 	memcpy(&dst->c_fh, &src->c_fh, sizeof(src->c_fh));
 	dst->ss_mnt = src->ss_mnt;
+}
+
+static void release_copy_files(struct nfsd4_copy *copy)
+{
+	if (copy->nf_src)
+		nfsd_file_put(copy->nf_src);
+	if (copy->nf_dst)
+		nfsd_file_put(copy->nf_dst);
 }
 
 static void cleanup_async_copy(struct nfsd4_copy *copy)
@@ -1473,6 +1467,9 @@ static int nfsd4_do_async_copy(void *data)
 	}
 
 	copy->nfserr = nfsd4_do_copy(copy, 0);
+	if (!copy->cp_intra) /* Inter server SSC */
+		nfsd4_cleanup_inter_ssc(copy->ss_mnt, copy->nf_src,
+					copy->nf_dst);
 do_callback:
 	cb_copy = kzalloc(sizeof(struct nfsd4_copy), GFP_KERNEL);
 	if (!cb_copy)
@@ -1552,6 +1549,7 @@ nfsd4_copy(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
 		status = nfsd4_do_copy(copy, 1);
 	}
 out:
+	release_copy_files(copy);
 	return status;
 out_err:
 	if (async_copy)
