@@ -9,8 +9,7 @@ BUILD_BUG_ON(1)
  * "static_call_update()" calls.
  *
  * KVM_X86_OP_OPTIONAL() can be used for those functions that can have
- * a NULL definition, for example if "static_call_cond()" will be used
- * at the call sites.  KVM_X86_OP_OPTIONAL_RET0() can be used likewise
+ * a NULL definition.  KVM_X86_OP_OPTIONAL_RET0() can be used likewise
  * to make a definition optional, but in this case the default will
  * be __static_call_return0.
  */
@@ -81,7 +80,6 @@ KVM_X86_OP(enable_nmi_window)
 KVM_X86_OP(enable_irq_window)
 KVM_X86_OP_OPTIONAL(update_cr8_intercept)
 KVM_X86_OP(refresh_apicv_exec_ctrl)
-KVM_X86_OP_OPTIONAL(hwapic_irr_update)
 KVM_X86_OP_OPTIONAL(hwapic_isr_update)
 KVM_X86_OP_OPTIONAL(load_eoi_exitmap)
 KVM_X86_OP_OPTIONAL(set_virtual_apic_mode)
@@ -92,6 +90,10 @@ KVM_X86_OP_OPTIONAL_RET0(set_tss_addr)
 KVM_X86_OP_OPTIONAL_RET0(set_identity_map_addr)
 KVM_X86_OP_OPTIONAL_RET0(get_mt_mask)
 KVM_X86_OP(load_mmu_pgd)
+KVM_X86_OP_OPTIONAL_RET0(link_external_spt)
+KVM_X86_OP_OPTIONAL_RET0(set_external_spte)
+KVM_X86_OP_OPTIONAL(free_external_spt)
+KVM_X86_OP_OPTIONAL(remove_external_spte)
 KVM_X86_OP(has_wbinvd_exit)
 KVM_X86_OP(get_l2_tsc_offset)
 KVM_X86_OP(get_l2_tsc_multiplier)

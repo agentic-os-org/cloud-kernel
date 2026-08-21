@@ -856,7 +856,7 @@ static void svm_recalc_pmu_msr_intercepts(struct kvm_vcpu *vcpu)
 		svm_set_intercept_for_msr(vcpu, MSR_K7_PERFCTR0 + i,
 					  MSR_TYPE_RW, intercept);
 
-	intercept |= !guest_cpuid_has(vcpu, X86_FEATURE_PERFCTR_CORE);
+	intercept |= !guest_cpu_cap_has(vcpu, X86_FEATURE_PERFCTR_CORE);
 	for (i = 0; i < pmu->nr_arch_gp_counters; i++)
 		svm_set_intercept_for_msr(vcpu, MSR_F15H_PERF_CTR + 2 * i,
 					  MSR_TYPE_RW, intercept);
@@ -901,7 +901,7 @@ static void svm_recalc_msr_intercepts(struct kvm_vcpu *vcpu)
 
 	if (cpu_feature_enabled(X86_FEATURE_FLUSH_L1D))
 		svm_set_intercept_for_msr(vcpu, MSR_IA32_FLUSH_CMD, MSR_TYPE_W,
-					  !guest_cpuid_has(vcpu, X86_FEATURE_FLUSH_L1D));
+					  !guest_cpu_cap_has(vcpu, X86_FEATURE_FLUSH_L1D));
 
 	/*
 	 * Disable interception of SPEC_CTRL if KVM doesn't need to manually
@@ -967,7 +967,7 @@ void svm_update_lbrv(struct kvm_vcpu *vcpu)
 	struct vcpu_svm *svm = to_svm(vcpu);
 	bool current_enable_lbrv = svm->vmcb->control.virt_ext & LBR_CTL_ENABLE_MASK;
 	bool enable_lbrv = (svm->vmcb->save.dbgctl & DEBUGCTLMSR_LBR) ||
-			    (is_guest_mode(vcpu) && guest_can_use(vcpu, X86_FEATURE_LBRV) &&
+			    (is_guest_mode(vcpu) && guest_cpu_cap_has(vcpu, X86_FEATURE_LBRV) &&
 			    (svm->nested.ctl.virt_ext & LBR_CTL_ENABLE_MASK));
 
 	if (enable_lbrv && !current_enable_lbrv)
@@ -1112,20 +1112,20 @@ static void svm_recalc_instruction_intercepts(struct kvm_vcpu *vcpu)
 	 */
 	if (kvm_cpu_cap_has(X86_FEATURE_INVPCID)) {
 		if (!npt_enabled ||
-		    !guest_cpuid_has(&svm->vcpu, X86_FEATURE_INVPCID))
+		    !guest_cpu_cap_has(&svm->vcpu, X86_FEATURE_INVPCID))
 			svm_set_intercept(svm, INTERCEPT_INVPCID);
 		else
 			svm_clr_intercept(svm, INTERCEPT_INVPCID);
 	}
 
 	if (kvm_cpu_cap_has(X86_FEATURE_RDTSCP)) {
-		if (guest_cpuid_has(vcpu, X86_FEATURE_RDTSCP))
+		if (guest_cpu_cap_has(vcpu, X86_FEATURE_RDTSCP))
 			svm_clr_intercept(svm, INTERCEPT_RDTSCP);
 		else
 			svm_set_intercept(svm, INTERCEPT_RDTSCP);
 	}
 
-	if (guest_cpuid_is_intel(vcpu)) {
+	if (guest_cpuid_is_intel_compatible(vcpu)) {
 		svm_set_intercept(svm, INTERCEPT_VMLOAD);
 		svm_set_intercept(svm, INTERCEPT_VMSAVE);
 		svm->vmcb->control.virt_ext &= ~VIRTUAL_VMLOAD_VMSAVE_ENABLE_MASK;
@@ -2806,7 +2806,7 @@ static int svm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 	switch (msr_info->index) {
 	case MSR_AMD64_TSC_RATIO:
 		if (!msr_info->host_initiated &&
-		    !guest_can_use(vcpu, X86_FEATURE_TSCRATEMSR))
+		    !guest_cpu_cap_has(vcpu, X86_FEATURE_TSCRATEMSR))
 			return 1;
 		msr_info->data = svm->tsc_ratio_msr;
 		break;
@@ -2838,12 +2838,12 @@ static int svm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 		break;
 	case MSR_IA32_SYSENTER_EIP:
 		msr_info->data = (u32)svm->vmcb01.ptr->save.sysenter_eip;
-		if (guest_cpuid_is_intel(vcpu))
+		if (guest_cpuid_is_intel_compatible(vcpu))
 			msr_info->data |= (u64)svm->sysenter_eip_hi << 32;
 		break;
 	case MSR_IA32_SYSENTER_ESP:
 		msr_info->data = svm->vmcb01.ptr->save.sysenter_esp;
-		if (guest_cpuid_is_intel(vcpu))
+		if (guest_cpuid_is_intel_compatible(vcpu))
 			msr_info->data |= (u64)svm->sysenter_esp_hi << 32;
 		break;
 	case MSR_TSC_AUX:
@@ -2882,7 +2882,7 @@ static int svm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 		break;
 	case MSR_AMD64_VIRT_SPEC_CTRL:
 		if (!msr_info->host_initiated &&
-		    !guest_cpuid_has(vcpu, X86_FEATURE_VIRT_SSBD))
+		    !guest_cpu_cap_has(vcpu, X86_FEATURE_VIRT_SSBD))
 			return 1;
 
 		msr_info->data = svm->virt_spec_ctrl;
@@ -2972,7 +2972,7 @@ static int svm_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr)
 	switch (ecx) {
 	case MSR_AMD64_TSC_RATIO:
 
-		if (!guest_can_use(vcpu, X86_FEATURE_TSCRATEMSR)) {
+		if (!guest_cpu_cap_has(vcpu, X86_FEATURE_TSCRATEMSR)) {
 
 			if (!msr->host_initiated)
 				return 1;
@@ -2994,7 +2994,7 @@ static int svm_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr)
 
 		svm->tsc_ratio_msr = data;
 
-		if (guest_can_use(vcpu, X86_FEATURE_TSCRATEMSR) &&
+		if (guest_cpu_cap_has(vcpu, X86_FEATURE_TSCRATEMSR) &&
 		    is_guest_mode(vcpu))
 			nested_svm_update_tsc_ratio_msr(vcpu);
 
@@ -3043,7 +3043,7 @@ static int svm_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr)
 		break;
 	case MSR_AMD64_VIRT_SPEC_CTRL:
 		if (!msr->host_initiated &&
-		    !guest_cpuid_has(vcpu, X86_FEATURE_VIRT_SSBD))
+		    !guest_cpu_cap_has(vcpu, X86_FEATURE_VIRT_SSBD))
 			return 1;
 
 		if (data & ~SPEC_CTRL_SSBD)
@@ -3086,11 +3086,11 @@ static int svm_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr)
 		 * 32 bit part of these msrs to support Intel's
 		 * implementation of SYSENTER/SYSEXIT.
 		 */
-		svm->sysenter_eip_hi = guest_cpuid_is_intel(vcpu) ? (data >> 32) : 0;
+		svm->sysenter_eip_hi = guest_cpuid_is_intel_compatible(vcpu) ? (data >> 32) : 0;
 		break;
 	case MSR_IA32_SYSENTER_ESP:
 		svm->vmcb01.ptr->save.sysenter_esp = (u32)data;
-		svm->sysenter_esp_hi = guest_cpuid_is_intel(vcpu) ? (data >> 32) : 0;
+		svm->sysenter_esp_hi = guest_cpuid_is_intel_compatible(vcpu) ? (data >> 32) : 0;
 		break;
 	case MSR_TSC_AUX:
 		/*
@@ -3240,7 +3240,7 @@ static int invpcid_interception(struct kvm_vcpu *vcpu)
 	unsigned long type;
 	gva_t gva;
 
-	if (!guest_cpuid_has(vcpu, X86_FEATURE_INVPCID)) {
+	if (!guest_cpu_cap_has(vcpu, X86_FEATURE_INVPCID)) {
 		kvm_queue_exception(vcpu, UD_VECTOR);
 		return 1;
 	}
@@ -4452,27 +4452,17 @@ static void svm_vcpu_after_set_cpuid(struct kvm_vcpu *vcpu)
 	 * XSS on VM-Enter/VM-Exit.  Failure to do so would effectively give
 	 * the guest read/write access to the host's XSS.
 	 */
-	if (boot_cpu_has(X86_FEATURE_XSAVE) &&
-	    boot_cpu_has(X86_FEATURE_XSAVES) &&
-	    guest_cpuid_has(vcpu, X86_FEATURE_XSAVE))
-		kvm_governed_feature_set(vcpu, X86_FEATURE_XSAVES);
-
-	kvm_governed_feature_check_and_set(vcpu, X86_FEATURE_NRIPS);
-	kvm_governed_feature_check_and_set(vcpu, X86_FEATURE_TSCRATEMSR);
-	kvm_governed_feature_check_and_set(vcpu, X86_FEATURE_LBRV);
+	guest_cpu_cap_change(vcpu, X86_FEATURE_XSAVES,
+			     boot_cpu_has(X86_FEATURE_XSAVES) &&
+			     guest_cpu_cap_has(vcpu, X86_FEATURE_XSAVE));
 
 	/*
-	 * Intercept VMLOAD if the vCPU mode is Intel in order to emulate that
+	 * Intercept VMLOAD if the vCPU model is Intel in order to emulate that
 	 * VMLOAD drops bits 63:32 of SYSENTER (ignoring the fact that exposing
 	 * SVM on Intel is bonkers and extremely unlikely to work).
 	 */
-	if (!guest_cpuid_is_intel(vcpu))
-		kvm_governed_feature_check_and_set(vcpu, X86_FEATURE_V_VMSAVE_VMLOAD);
-
-	kvm_governed_feature_check_and_set(vcpu, X86_FEATURE_PAUSEFILTER);
-	kvm_governed_feature_check_and_set(vcpu, X86_FEATURE_PFTHRESHOLD);
-	kvm_governed_feature_check_and_set(vcpu, X86_FEATURE_VGIF);
-	kvm_governed_feature_check_and_set(vcpu, X86_FEATURE_VNMI);
+	if (guest_cpuid_is_intel_compatible(vcpu))
+		guest_cpu_cap_clear(vcpu, X86_FEATURE_V_VMSAVE_VMLOAD);
 
 	if (sev_guest(vcpu->kvm))
 		sev_vcpu_after_set_cpuid(svm);
@@ -4742,7 +4732,7 @@ static int svm_enter_smm(struct kvm_vcpu *vcpu, union kvm_smram *smram)
 	 * responsible for ensuring nested SVM and SMIs are mutually exclusive.
 	 */
 
-	if (!guest_cpuid_has(vcpu, X86_FEATURE_LM))
+	if (!guest_cpu_cap_has(vcpu, X86_FEATURE_LM))
 		return 1;
 
 	smram->smram64.svm_guest_flag = 1;
@@ -4789,14 +4779,14 @@ static int svm_leave_smm(struct kvm_vcpu *vcpu, const union kvm_smram *smram)
 
 	const struct kvm_smram_state_64 *smram64 = &smram->smram64;
 
-	if (!guest_cpuid_has(vcpu, X86_FEATURE_LM))
+	if (!guest_cpu_cap_has(vcpu, X86_FEATURE_LM))
 		return 0;
 
 	/* Non-zero if SMI arrived while vCPU was in guest mode. */
 	if (!smram64->svm_guest_flag)
 		return 0;
 
-	if (!guest_cpuid_has(vcpu, X86_FEATURE_SVM))
+	if (!guest_cpu_cap_has(vcpu, X86_FEATURE_SVM))
 		return 1;
 
 	if (!(smram64->efer & EFER_SVME))

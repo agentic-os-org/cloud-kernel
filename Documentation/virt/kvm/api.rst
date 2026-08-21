@@ -1816,15 +1816,18 @@ emulate them efficiently. The fields in each entry are defined as follows:
          the values returned by the cpuid instruction for
          this function/index combination
 
-The TSC deadline timer feature (CPUID leaf 1, ecx[24]) is always returned
-as false, since the feature depends on KVM_CREATE_IRQCHIP for local APIC
-support.  Instead it is reported via::
+x2APIC (CPUID leaf 1, ecx[21) and TSC deadline timer (CPUID leaf 1, ecx[24])
+may be returned as true, but they depend on KVM_CREATE_IRQCHIP for in-kernel
+emulation of the local APIC.  TSC deadline timer support is also reported via::
 
   ioctl(KVM_CHECK_EXTENSION, KVM_CAP_TSC_DEADLINE_TIMER)
 
 if that returns true and you use KVM_CREATE_IRQCHIP, or if you emulate the
 feature in userspace, then you can enable the feature for KVM_SET_CPUID2.
 
+Enabling x2APIC in KVM_SET_CPUID2 requires KVM_CREATE_IRQCHIP as KVM doesn't
+support forwarding x2APIC MSR accesses to userspace, i.e. KVM does not support
+emulating x2APIC in userspace.
 
 4.47 KVM_PPC_GET_PVINFO
 -----------------------
@@ -1985,6 +1988,13 @@ frequency is KHz.
 If the KVM_CAP_VM_TSC_CONTROL capability is advertised, this can also
 be used as a vm ioctl to set the initial tsc frequency of subsequently
 created vCPUs.
+
+For TSC protected Confidential Computing (CoCo) VMs where TSC frequency
+is configured once at VM scope and remains unchanged during VM's
+lifetime, the vm ioctl should be used to configure the TSC frequency
+and the vcpu ioctl is not supported.
+
+Example of such CoCo VMs: TDX guests.
 
 4.56 KVM_GET_TSC_KHZ
 --------------------
@@ -7596,6 +7606,7 @@ branch to guests' 0x200 interrupt vector.
 :Architectures: x86
 :Parameters: args[0] defines which exits are disabled
 :Returns: 0 on success, -EINVAL when args[0] contains invalid exits
+          or if any vCPUs have already been created
 
 Valid bits in args[0] are::
 

@@ -11,6 +11,13 @@
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM kvm
 
+#ifdef CREATE_TRACE_POINTS
+#define tracing_kvm_rip_read(vcpu) ({					\
+	typeof(vcpu) __vcpu = vcpu;					\
+	__vcpu->arch.guest_state_protected ? 0 : kvm_rip_read(__vcpu);	\
+	})
+#endif
+
 /*
  * Tracepoint for guest mode entry.
  */
@@ -26,7 +33,7 @@ TRACE_EVENT(kvm_entry,
 
 	TP_fast_assign(
 		__entry->vcpu_id        = vcpu->vcpu_id;
-		__entry->rip		= kvm_rip_read(vcpu);
+		__entry->rip		= tracing_kvm_rip_read(vcpu);
 		__entry->immediate_exit	= force_immediate_exit;
 	),
 
@@ -311,15 +318,15 @@ TRACE_EVENT(name,							     \
 	),								     \
 									     \
 	TP_fast_assign(							     \
-		__entry->guest_rip	= kvm_rip_read(vcpu);		     \
+		__entry->guest_rip	= tracing_kvm_rip_read(vcpu);		     \
 		__entry->isa            = isa;				     \
 		__entry->vcpu_id        = vcpu->vcpu_id;		     \
-		static_call(kvm_x86_get_exit_info)(vcpu,		     \
-					  &__entry->exit_reason,	     \
-					  &__entry->info1,		     \
-					  &__entry->info2,		     \
-					  &__entry->intr_info,		     \
-					  &__entry->error_code);	     \
+		kvm_x86_call(get_exit_info)(vcpu,			     \
+					    &__entry->exit_reason,	     \
+					    &__entry->info1,		     \
+					    &__entry->info2,		     \
+					    &__entry->intr_info,	     \
+					    &__entry->error_code);	     \
 	),								     \
 									     \
 	TP_printk("vcpu %u reason %s%s%s rip 0x%lx info1 0x%016llx "	     \
@@ -412,7 +419,7 @@ TRACE_EVENT(kvm_page_fault,
 
 	TP_fast_assign(
 		__entry->vcpu_id	= vcpu->vcpu_id;
-		__entry->guest_rip	= kvm_rip_read(vcpu);
+		__entry->guest_rip	= tracing_kvm_rip_read(vcpu);
 		__entry->fault_address	= fault_address;
 		__entry->error_code	= error_code;
 	),
@@ -828,7 +835,8 @@ TRACE_EVENT(kvm_emulate_insn,
 		),
 
 	TP_fast_assign(
-		__entry->csbase = static_call(kvm_x86_get_segment_base)(vcpu, VCPU_SREG_CS);
+		__entry->csbase = kvm_x86_call(get_segment_base)(vcpu,
+								 VCPU_SREG_CS);
 		__entry->len = vcpu->arch.emulate_ctxt->fetch.ptr
 			       - vcpu->arch.emulate_ctxt->fetch.data;
 		__entry->rip = vcpu->arch.emulate_ctxt->_eip - __entry->len;

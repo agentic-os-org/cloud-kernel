@@ -268,7 +268,7 @@ static int pmc_reprogram_counter(struct kvm_pmc *pmc, u32 type, u64 config,
 	attr.sample_period = get_sample_period(pmc, pmc->counter);
 
 	if ((attr.config & HSW_IN_TX_CHECKPOINTED) &&
-	    guest_cpuid_is_intel(pmc->vcpu)) {
+	    (boot_cpu_has(X86_FEATURE_RTM) || boot_cpu_has(X86_FEATURE_HLE))) {
 		/*
 		 * HSW_IN_TX_CHECKPOINTED is not supported with nonzero
 		 * period. Just clear the sample period so at least
@@ -729,7 +729,7 @@ int kvm_pmu_rdpmc(struct kvm_vcpu *vcpu, unsigned idx, u64 *data)
 		return 1;
 
 	if (!kvm_is_cr4_bit_set(vcpu, X86_CR4_PCE) &&
-	    (static_call(kvm_x86_get_cpl)(vcpu) != 0) &&
+	    (kvm_x86_call(get_cpl)(vcpu) != 0) &&
 	    kvm_is_cr0_bit_set(vcpu, X86_CR0_PE))
 		return 1;
 
@@ -780,7 +780,7 @@ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_need_rdpmc_intercept);
 void kvm_pmu_deliver_pmi(struct kvm_vcpu *vcpu)
 {
 	if (lapic_in_kernel(vcpu)) {
-		static_call_cond(kvm_x86_pmu_deliver_pmi)(vcpu);
+		static_call(kvm_x86_pmu_deliver_pmi)(vcpu);
 		kvm_apic_local_deliver(vcpu->arch.apic, APIC_LVTPC);
 	}
 }
@@ -927,7 +927,7 @@ void kvm_pmu_reset(struct kvm_vcpu *vcpu)
 	pmu->fixed_ctr_ctrl = pmu->fixed_ctr_ctrl_hw = 0;
 	pmu->global_ctrl = pmu->global_status = 0;
 
-	static_call_cond(kvm_x86_pmu_reset)(vcpu);
+	static_call(kvm_x86_pmu_reset)(vcpu);
 }
 
 
@@ -994,7 +994,6 @@ void kvm_pmu_init(struct kvm_vcpu *vcpu)
 	static_call(kvm_x86_pmu_init)(vcpu);
 	pmu->event_count = 0;
 	pmu->need_cleanup = false;
-	kvm_pmu_refresh(vcpu);
 }
 
 /* Release perf_events for vPMCs that have been unused for a full time slice.  */
@@ -1015,7 +1014,7 @@ void kvm_pmu_cleanup(struct kvm_vcpu *vcpu)
 			pmc_stop_counter(pmc);
 	}
 
-	static_call_cond(kvm_x86_pmu_cleanup)(vcpu);
+	static_call(kvm_x86_pmu_cleanup)(vcpu);
 
 	bitmap_zero(pmu->pmc_in_use, X86_PMC_IDX_MAX);
 }
@@ -1082,7 +1081,7 @@ static inline bool cpl_is_matched(struct kvm_pmc *pmc)
 		select_user = config & INTEL_FIXED_0_USER;
 	}
 
-	return (static_call(kvm_x86_get_cpl)(pmc->vcpu) == 0) ? select_os : select_user;
+	return (kvm_x86_call(get_cpl)(pmc->vcpu) == 0) ? select_os : select_user;
 }
 
 static void kvm_pmu_trigger_event(struct kvm_vcpu *vcpu,
