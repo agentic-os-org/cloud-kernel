@@ -27,9 +27,9 @@
 	This was written by looking at Nick Holloway's dummy driver
 	Thanks for the great code!
 
-		-Sam Lantinga	(slouken@cs.ucdavis.edu)  02/01/95
+		-Sam Lantinga	(slouken@cs.ucdavis.edu) 02/01/95
 
-	Minor tweaks:
+Minor tweaks:
 		Cleaned up the code a little and added some pre-1.3.0 tweaks.
 		dev->hard_header/hard_header_len changed to use no headers.
 		Comments/bracketing tweaked.
@@ -246,7 +246,6 @@ static int ipip_tunnel_rcv(struct sk_buff *skb, u8 ipproto)
 	}
 
 	return -1;
-
 drop:
 	kfree_skb(skb);
 	return 0;
@@ -509,6 +508,9 @@ static int ipip_changelink(struct net_device *dev, struct nlattr *tb[],
 	struct ip_tunnel_encap ipencap;
 	bool collect_md;
 	__u32 fwmark = t->fwmark;
+
+	if (!rtnl_dev_link_net_capable(dev, t->net))
+		return -EPERM;
 
 	if (ipip_netlink_encap_parms(data, &ipencap)) {
 		int err = ip_tunnel_encap_setup(t, &ipencap);
