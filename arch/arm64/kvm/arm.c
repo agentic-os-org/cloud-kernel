@@ -46,6 +46,10 @@
 #include <kvm/arm_pmu.h>
 #include <kvm/arm_psci.h>
 
+#ifdef MODULE
+MODULE_IMPORT_NS("KVM");
+#endif
+
 #include "sys_regs.h"
 
 enum kvm_wfx_trap_policy {
