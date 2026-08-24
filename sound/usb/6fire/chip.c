@@ -163,6 +163,7 @@ static int usb6fire_chip_probe(struct usb_interface *intf,
 	return 0;
 
 destroy_chip:
+	chip->shutdown = true;
 	usb6fire_chip_destroy(chip);
 	return ret;
 }
