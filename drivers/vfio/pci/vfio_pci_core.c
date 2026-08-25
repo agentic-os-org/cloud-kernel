@@ -38,10 +38,6 @@
 #define DRIVER_AUTHOR   "Alex Williamson <alex.williamson@redhat.com>"
 #define DRIVER_DESC "core driver for VFIO based PCI devices"
 
-static bool nointxmask;
-static bool disable_vga;
-static bool disable_idle_d3;
-
 static void vfio_pci_eventfd_rcu_free(struct rcu_head *rcu)
 {
 	struct vfio_pci_eventfd *eventfd =
@@ -92,10 +88,10 @@ struct vfio_pci_vf_token {
 	int			users;
 };
 
-static inline bool vfio_vga_disabled(void)
+static inline bool vfio_vga_disabled(struct vfio_pci_core_device *vdev)
 {
 #ifdef CONFIG_VFIO_PCI_VGA
-	return disable_vga;
+	return vdev->disable_vga;
 #else
 	return true;
 #endif
@@ -111,11 +107,12 @@ static inline bool vfio_vga_disabled(void)
  */
 static unsigned int vfio_pci_set_decode(struct pci_dev *pdev, bool single_vga)
 {
+	struct vfio_pci_core_device *vdev = dev_get_drvdata(&pdev->dev);
 	struct pci_dev *tmp = NULL;
 	unsigned char max_busnr;
 	unsigned int decodes;
 
-	if (single_vga || !vfio_vga_disabled() || pci_is_root_bus(pdev->bus))
+	if (single_vga || !vfio_vga_disabled(vdev) || pci_is_root_bus(pdev->bus))
 		return VGA_RSRC_NORMAL_IO | VGA_RSRC_NORMAL_MEM |
 		       VGA_RSRC_LEGACY_IO | VGA_RSRC_LEGACY_MEM;
 
@@ -271,8 +268,11 @@ int vfio_pci_set_power_state(struct vfio_pci_core_device *vdev, pci_power_t stat
 	int ret;
 
 	/* Prevent changing power state for PFs with VFs enabled */
-	if (pci_num_vf(pdev) && state > PCI_D0)
-		return -EBUSY;
+	if (state > PCI_D0) {
+		lockdep_assert_held_write(&vdev->memory_lock);
+		if (vdev->sriov_active)
+			return -EBUSY;
+	}
 
 	if (vdev->needs_pm_restore) {
 		if (pdev->current_state < PCI_D3hot && state >= PCI_D3hot) {
@@ -483,6 +483,43 @@ static int vfio_pci_core_runtime_resume(struct device *dev)
 #endif /* CONFIG_PM */
 
 /*
+ * Eager-request BAR resources, and iomap them.  Soft failures are
+ * allowed, and consumers must check the barmap before use in order to
+ * give compatible user-visible behaviour with the previous on-demand
+ * allocation method.
+ */
+static void vfio_pci_core_map_bars(struct vfio_pci_core_device *vdev)
+{
+	struct pci_dev *pdev = vdev->pdev;
+	int i;
+
+	for (i = 0; i < PCI_STD_NUM_BARS; i++) {
+		int bar = i + PCI_STD_RESOURCES;
+
+		vdev->barmap[bar] = IOMEM_ERR_PTR(-ENODEV);
+
+		if (pdev->non_mappable_bars)
+			continue;
+
+		if (!pci_resource_len(pdev, i))
+			continue;
+
+		if (pci_request_selected_regions(pdev, 1 << bar, "vfio")) {
+			pci_dbg(pdev, "Failed to reserve region %d\n", bar);
+			vdev->barmap[bar] = IOMEM_ERR_PTR(-EBUSY);
+			continue;
+		}
+
+		vdev->barmap[bar] = pci_iomap(pdev, bar, 0);
+		if (!vdev->barmap[bar]) {
+			pci_dbg(pdev, "Failed to iomap region %d\n", bar);
+			pci_release_selected_regions(pdev, 1 << bar);
+			vdev->barmap[bar] = IOMEM_ERR_PTR(-ENOMEM);
+		}
+	}
+}
+
+/*
  * The pci-driver core runtime PM routines always save the device state
  * before going into suspended state. If the device is going into low power
  * state with only with runtime PM ops, then no explicit handling is needed
@@ -501,7 +538,7 @@ int vfio_pci_core_enable(struct vfio_pci_core_device *vdev)
 	u16 cmd;
 	u8 msix_pos;
 
-	if (!disable_idle_d3) {
+	if (!vdev->disable_idle_d3) {
 		ret = pm_runtime_resume_and_get(&pdev->dev);
 		if (ret < 0)
 			return ret;
@@ -525,7 +562,7 @@ int vfio_pci_core_enable(struct vfio_pci_core_device *vdev)
 	if (!vdev->pci_saved_state)
 		pci_dbg(pdev, "%s: Couldn't store saved state\n", __func__);
 
-	if (likely(!nointxmask)) {
+	if (likely(!vdev->nointxmask)) {
 		if (vfio_pci_nointx(pdev)) {
 			pci_info(pdev, "Masking broken INTx support\n");
 			vdev->nointx = true;
@@ -565,9 +602,10 @@ int vfio_pci_core_enable(struct vfio_pci_core_device *vdev)
 		vdev->has_dyn_msix = false;
 	}
 
-	if (!vfio_vga_disabled() && vfio_pci_is_vga(pdev))
+	if (!vfio_vga_disabled(vdev) && vfio_pci_is_vga(pdev))
 		vdev->has_vga = true;
 
+	vfio_pci_core_map_bars(vdev);
 
 	return 0;
 
@@ -579,7 +617,7 @@ out_free_state:
 out_disable_device:
 	pci_disable_device(pdev);
 out_power:
-	if (!disable_idle_d3)
+	if (!vdev->disable_idle_d3)
 		pm_runtime_put(&pdev->dev);
 	return ret;
 }
@@ -648,7 +686,7 @@ void vfio_pci_core_disable(struct vfio_pci_core_device *vdev)
 
 	for (i = 0; i < PCI_STD_NUM_BARS; i++) {
 		bar = i + PCI_STD_RESOURCES;
-		if (!vdev->barmap[bar])
+		if (IS_ERR_OR_NULL(vdev->barmap[bar]))
 			continue;
 		pci_iounmap(pdev, vdev->barmap[bar]);
 		pci_release_selected_regions(pdev, 1 << bar);
@@ -715,7 +753,7 @@ out:
 	vfio_pci_dev_set_try_reset(vdev->vdev.dev_set);
 
 	/* Put the pm-runtime usage counter acquired during enable */
-	if (!disable_idle_d3)
+	if (!vdev->disable_idle_d3)
 		pm_runtime_put(&pdev->dev);
 }
 EXPORT_SYMBOL_GPL(vfio_pci_core_disable);
@@ -1727,7 +1765,7 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	struct pci_dev *pdev = vdev->pdev;
 	unsigned int index;
 	u64 phys_len, req_len, pgoff, req_start;
-	int ret;
+	void __iomem *bar_io;
 
 	index = vma->vm_pgoff >> (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT);
 
@@ -1761,12 +1799,11 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 		return -EINVAL;
 
 	/*
-	 * Even though we don't make use of the barmap for the mmap,
-	 * we need to request the region and the barmap tracks that.
+	 * Ensure the BAR resource region is reserved for use.
 	 */
-	ret = vfio_pci_core_setup_barmap(vdev, index);
-	if (ret)
-		return ret;
+	bar_io = vfio_pci_core_get_iomap(vdev, index);
+	if (IS_ERR(bar_io))
+		return PTR_ERR(bar_io);
 
 	vma->vm_private_data = vdev;
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
@@ -2198,7 +2235,7 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 
 	dev->driver->pm = &vfio_pci_core_pm_ops;
 	pm_runtime_allow(dev);
-	if (!disable_idle_d3)
+	if (!vdev->disable_idle_d3)
 		pm_runtime_put(dev);
 
 	ret = vfio_register_group_dev(&vdev->vdev);
@@ -2207,7 +2244,7 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 	return 0;
 
 out_power:
-	if (!disable_idle_d3)
+	if (!vdev->disable_idle_d3)
 		pm_runtime_get_noresume(dev);
 
 	pm_runtime_forbid(dev);
@@ -2226,7 +2263,7 @@ void vfio_pci_core_unregister_device(struct vfio_pci_core_device *vdev)
 	vfio_pci_vf_uninit(vdev);
 	vfio_pci_vga_uninit(vdev);
 
-	if (!disable_idle_d3)
+	if (!vdev->disable_idle_d3)
 		pm_runtime_get_noresume(&vdev->pdev->dev);
 
 	pm_runtime_forbid(&vdev->pdev->dev);
@@ -2288,8 +2325,9 @@ int vfio_pci_core_sriov_configure(struct vfio_pci_core_device *vdev,
 
 		down_write(&vdev->memory_lock);
 		vfio_pci_set_power_state(vdev, PCI_D0);
-		ret = pci_enable_sriov(pdev, nr_virtfn);
+		vdev->sriov_active = true;
 		up_write(&vdev->memory_lock);
+		ret = pci_enable_sriov(pdev, nr_virtfn);
 		if (ret) {
 			pm_runtime_put(&pdev->dev);
 			goto out_del;
@@ -2303,6 +2341,13 @@ int vfio_pci_core_sriov_configure(struct vfio_pci_core_device *vdev,
 	}
 
 out_del:
+	/*
+	 * Avoid taking the memory_lock intentionally. A race with a power
+	 * state transition would at most result in an -EBUSY, leaving the
+	 * device in PCI_D0.
+	 */
+	vdev->sriov_active = false;
+
 	mutex_lock(&vfio_pci_sriov_pfs_mutex);
 	list_del_init(&vdev->sriov_pfs_item);
 out_unlock:
@@ -2550,7 +2595,7 @@ static void vfio_pci_dev_set_try_reset(struct vfio_device_set *dev_set)
 	 * state. Increment the usage count for all the devices in the dev_set
 	 * before reset and decrement the same after reset.
 	 */
-	if (!disable_idle_d3 && vfio_pci_dev_set_pm_runtime_get(dev_set))
+	if (vfio_pci_dev_set_pm_runtime_get(dev_set))
 		return;
 
 	if (!pci_reset_bus(pdev))
@@ -2560,19 +2605,9 @@ static void vfio_pci_dev_set_try_reset(struct vfio_device_set *dev_set)
 		if (reset_done)
 			cur->needs_reset = false;
 
-		if (!disable_idle_d3)
-			pm_runtime_put(&cur->pdev->dev);
+		pm_runtime_put(&cur->pdev->dev);
 	}
 }
-
-void vfio_pci_core_set_params(bool is_nointxmask, bool is_disable_vga,
-			      bool is_disable_idle_d3)
-{
-	nointxmask = is_nointxmask;
-	disable_vga = is_disable_vga;
-	disable_idle_d3 = is_disable_idle_d3;
-}
-EXPORT_SYMBOL_GPL(vfio_pci_core_set_params);
 
 static void vfio_pci_core_cleanup(void)
 {
