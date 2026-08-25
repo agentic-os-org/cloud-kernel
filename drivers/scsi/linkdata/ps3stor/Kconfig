@@ -4,6 +4,5 @@ config SCSI_PS3STOR
         select SCSI_SAS_ATTRS
         select RAID_ATTRS
         select IRQ_POLL
-        default m
         help
         This driver supports Linkdata HBA & RAID controllers.
