@@ -1202,7 +1202,8 @@ void cgroup_writeback_umount(struct super_block *sb)
 	 * inode.
 	 */
 	smp_mb();
-	cgroup_writeback_drain(sb);
+	if (atomic_read(&sb->s_isw_nr_in_flight))
+		cgroup_writeback_drain(sb);
 }
 
 static int __init cgroup_writeback_init(void)
