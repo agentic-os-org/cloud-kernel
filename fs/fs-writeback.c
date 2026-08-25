@@ -101,7 +101,7 @@ static void wb_io_lists_depopulated(struct bdi_writeback *wb)
 	    list_empty(&wb->b_io) && list_empty(&wb->b_more_io)) {
 		clear_bit(WB_has_dirty_io, &wb->state);
 		WARN_ON_ONCE(atomic_long_sub_return(wb->avg_write_bandwidth,
-					&wb->bdi->tot_write_bandwidth) < 0);
+				&wb->bdi->tot_write_bandwidth) < 0);
 	}
 }
 
@@ -655,12 +655,19 @@ static void inode_switch_wbs(struct inode *inode, int new_wb_id)
 
 	atomic_inc(&isw_nr_in_flight);
 
-	/* find and pin the new wb */
+	/*
+	 * Paired with synchronize_rcu() in cgroup_writeback_umount():
+	 * holding rcu_read_lock across inode_prepare_wbs_switch()
+	 * (covering the SB_ACTIVE check and the inode grab) and
+	 * wb_queue_isw() ensures synchronize_rcu() cannot return until
+	 * the work is queued, so the subsequent flush_workqueue() will
+	 * wait for the switch.
+	 */
 	rcu_read_lock();
+	/* find and pin the new wb */
 	memcg_css = css_from_id(new_wb_id, &memory_cgrp_subsys);
 	if (memcg_css && !css_tryget(memcg_css))
 		memcg_css = NULL;
-	rcu_read_unlock();
 	if (!memcg_css)
 		goto out_free;
 
@@ -675,9 +682,11 @@ static void inode_switch_wbs(struct inode *inode, int new_wb_id)
 	isw->inodes[0] = inode;
 
 	wb_queue_isw(new_wb, isw);
+	rcu_read_unlock();
 	return;
 
 out_free:
+	rcu_read_unlock();
 	atomic_dec(&isw_nr_in_flight);
 	if (new_wb)
 		wb_put(new_wb);
@@ -736,6 +745,14 @@ bool cleanup_offline_cgwb(struct bdi_writeback *wb)
 		new_wb = &wb->bdi->wb; /* wb_get() is noop for bdi's wb */
 
 	nr = 0;
+	/*
+	 * Paired with synchronize_rcu() in cgroup_writeback_umount().
+	 * Holding rcu_read_lock across the SB_ACTIVE check, the inode grab
+	 * and wb_queue_isw() ensures synchronize_rcu() cannot return until
+	 * the work is queued, so the subsequent flush_workqueue() will wait
+	 * for the switch.
+	 */
+	rcu_read_lock();
 	spin_lock(&wb->list_lock);
 	/*
 	 * In addition to the inodes that have completed writeback, also switch
@@ -753,6 +770,7 @@ bool cleanup_offline_cgwb(struct bdi_writeback *wb)
 
 	/* no attached inodes? bail out */
 	if (nr == 0) {
+		rcu_read_unlock();
 		atomic_dec(&isw_nr_in_flight);
 		wb_put(new_wb);
 		kfree(isw);
@@ -760,6 +778,7 @@ bool cleanup_offline_cgwb(struct bdi_writeback *wb)
 	}
 
 	wb_queue_isw(new_wb, isw);
+	rcu_read_unlock();
 
 	return restart;
 }
@@ -1357,98 +1376,6 @@ void sb_mark_inode_writeback(struct inode *inode)
 		}
 		spin_unlock_irqrestore(&sb->s_inode_wblist_lock, flags);
 	}
-}
-
-/*
- * clear an inode as under writeback on the sb
- */
-void sb_clear_inode_writeback(struct inode *inode)
-{
-	struct super_block *sb = inode->i_sb;
-	unsigned long flags;
-
-	if (!list_empty(&inode->i_wb_list)) {
-		spin_lock_irqsave(&sb->s_inode_wblist_lock, flags);
-		if (!list_empty(&inode->i_wb_list)) {
-			list_del_init(&inode->i_wb_list);
-			trace_sb_clear_inode_writeback(inode);
-		}
-		spin_unlock_irqrestore(&sb->s_inode_wblist_lock, flags);
-	}
-}
-
-/*
- * Redirty an inode: set its when-it-was dirtied timestamp and move it to the
- * furthest end of its superblock's dirty-inode list.
- *
- * Before stamping the inode's ->dirtied_when, we check to see whether it is
- * already the most-recently-dirtied inode on the b_dirty list.  If that is
- * the case then the inode must have been redirtied while it was being written
- * out and we don't reset its dirtied_when.
- */
-static void redirty_tail_locked(struct inode *inode, struct bdi_writeback *wb)
-{
-	assert_spin_locked(&inode->i_lock);
-
-	inode->i_state &= ~I_SYNC_QUEUED;
-	/*
-	 * When the inode is being freed just don't bother with dirty list
-	 * tracking. Flush worker will ignore this inode anyway and it will
-	 * trigger assertions in inode_io_list_move_locked().
-	 */
-	if (inode->i_state & I_FREEING) {
-		list_del_init(&inode->i_io_list);
-		wb_io_lists_depopulated(wb);
-		return;
-	}
-	if (!list_empty(&wb->b_dirty)) {
-		struct inode *tail;
-
-		tail = wb_inode(wb->b_dirty.next);
-		if (time_before(inode->dirtied_when, tail->dirtied_when))
-			inode->dirtied_when = jiffies;
-	}
-	inode_io_list_move_locked(inode, wb, &wb->b_dirty);
-}
-
-static void redirty_tail(struct inode *inode, struct bdi_writeback *wb)
-{
-	spin_lock(&inode->i_lock);
-	redirty_tail_locked(inode, wb);
-	spin_unlock(&inode->i_lock);
-}
-
-/*
- * requeue inode for re-scanning after bdi->b_io list is exhausted.
- */
-static void requeue_io(struct inode *inode, struct bdi_writeback *wb)
-{
-	inode_io_list_move_locked(inode, wb, &wb->b_more_io);
-}
-
-static void inode_sync_complete(struct inode *inode)
-{
-	inode->i_state &= ~I_SYNC;
-	/* If inode is clean an unused, put it into LRU now... */
-	inode_add_lru(inode);
-	/* Waiters must see I_SYNC cleared before being woken up */
-	smp_mb();
-	wake_up_bit(&inode->i_state, __I_SYNC);
-}
-
-static bool inode_dirtied_after(struct inode *inode, unsigned long t)
-{
-	bool ret = time_after(inode->dirtied_when, t);
-#ifndef CONFIG_64BIT
-	/*
-	 * For inodes being constantly redirtied, dirtied_when can get stuck.
-	 * It _appears_ to be in the future, but is actually in distant past.
-	 * This test is necessary to prevent such wrapped-around relative times
-	 * from permanently stopping the whole bdi writeback.
-	 */
-	ret = ret && time_before_eq(inode->dirtied_when, jiffies);
-#endif
-	return ret;
 }
 
 /*
@@ -2122,7 +2049,7 @@ static long wb_writeback(struct bdi_writeback *wb,
 		/*
 		 * Stop writeback when nr_pages has been consumed
 		 */
-		if (work->nr_pages <= 0)
+		if (work->nr_pages <=0)
 			break;
 
 		/*
