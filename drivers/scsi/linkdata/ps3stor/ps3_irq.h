@@ -92,7 +92,9 @@ struct ps3_irq_context {
 #ifdef _WINDOWS
 	PGROUP_AFFINITY group_affinity;
 #endif
+
 	struct ps3_irq_recovery *irq_recovery;
+	unsigned short iops_batch_cnt_shift;
 };
 
 int ps3_irq_context_init(struct ps3_instance *instance);

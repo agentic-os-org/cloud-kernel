@@ -107,13 +107,16 @@ static inline bool ps3_is_nvme_direct_cmd(struct ps3_qos_pd_mgr *qos_pd_mgr,
 		cmd->io_attr.direct_flag == PS3_CMDWORD_DIRECT_OK);
 }
 
-static void ps3_qos_update_pd_quota(struct ps3_cmd *cmd)
+static void ps3_qos_update_pd_quota(struct ps3_cmd *cmd,
+		 unsigned char in_reply)
 {
 	struct ps3_qos_pd_mgr *qos_pd_mgr = NULL;
 	unsigned short i = 0;
 	unsigned short disk_id = 0;
 	int pd_used_quota = 0;
 	atomic_t *pd_rsc = NULL;
+	struct ps3_qos_pd_reply_info *qos_reply_info =
+		&cmd->instance->qos_context.pd_ctx.reply_info[cmd->cmd_word.isrSN];
 
 	for (i = 0; i < cmd->target_pd_count; i++) {
 		if (cmd->target_pd[i].get_quota) {
@@ -124,8 +127,17 @@ static void ps3_qos_update_pd_quota(struct ps3_cmd *cmd)
 			else
 				pd_rsc = &qos_pd_mgr->pd_used_quota;
 			pd_used_quota = ps3_atomic_dec_return(pd_rsc);
+
+			if (in_reply && qos_reply_info->processed_pd_state[disk_id] == 0) {
+				qos_reply_info->processed_pd_state[disk_id] = 1;
+				qos_reply_info->processed_pd_id
+					[qos_reply_info->processed_pd_cnt] = disk_id;
+				qos_reply_info->processed_pd_cnt++;
+			}
+
 			LOG_DEBUG(
-				"update pd quota. host_no:%u t_id:0x%llx CFID:%u direct:%u pid:%u used_quota:%d\n",
+				"update pd quota. host_no:%u t_id:0x%llx CFID:%u\n"
+				"\tdirect:%u pid:%u used_quota:%d\n",
 				PS3_HOST(cmd->instance), cmd->trace_id,
 				cmd->index, cmd->cmd_word.direct, disk_id,
 				pd_used_quota);
@@ -201,13 +213,13 @@ static void ps3_qos_cmd_resend_fail(struct ps3_cmd *cmd, int ret)
 	PS3_DEV_IO_START_ERR_INC(instance, cmd);
 	PS3_IO_OUTSTAND_DEC(cmd->instance, s_cmd);
 	PS3_IO_BACK_ERR_INC(cmd->instance, s_cmd);
-	PS3_VD_OUTSTAND_DEC(cmd->instance, s_cmd);
+	PS3_VD_OUTSTAND_DEC(cmd->instance, cmd);
 	PS3_DEV_BUSY_DEC(s_cmd);
 	ps3_scsi_cmd_free(cmd);
 	SCMD_IO_DONE(s_cmd);
 }
 
-struct qos_wait_queue *
+static struct qos_wait_queue *
 ps3_qos_cmd_waitq_get(struct ps3_qos_tg_context *qos_tg_ctx,
 		      struct ps3_cmd *cmd)
 {
@@ -234,7 +246,8 @@ ps3_qos_cmd_waitq_get(struct ps3_qos_tg_context *qos_tg_ctx,
 	return wait_q;
 }
 
-static void ps3_hba_qos_cmd_update(struct ps3_cmd *cmd)
+static void ps3_hba_qos_cmd_update(struct ps3_cmd *cmd,
+			 unsigned char in_reply)
 {
 	struct ps3_qos_tg_context *qos_tg_ctx =
 		&cmd->instance->qos_context.tg_ctx;
@@ -248,7 +261,7 @@ static void ps3_hba_qos_cmd_update(struct ps3_cmd *cmd)
 			ps3_atomic_inc(&qos_tg_ctx->mgr_free_cnt);
 		}
 	} else {
-		ps3_qos_update_pd_quota(cmd);
+		ps3_qos_update_pd_quota(cmd, in_reply);
 		if (cmd->cmd_word.direct != PS3_CMDWORD_DIRECT_OK) {
 			qos_vd_mgr = ps3_qos_vd_mgr_get(cmd);
 			if (cmd->io_attr.dev_type != PS3_DEV_TYPE_VD)
@@ -332,7 +345,7 @@ static bool ps3_qos_mgr_cmdword_get(struct ps3_cmd *cmd)
 	return can_get;
 }
 
-unsigned char ps3_qos_vd_cmdword_get(struct ps3_cmd *cmd)
+static unsigned char ps3_qos_vd_cmdword_get(struct ps3_cmd *cmd)
 {
 	unsigned char can_get = PS3_FALSE;
 	struct ps3_qos_vd_mgr *qos_vd_mgr = NULL;
@@ -348,7 +361,7 @@ unsigned char ps3_qos_vd_cmdword_get(struct ps3_cmd *cmd)
 	return can_get;
 }
 
-unsigned char ps3_qos_exclusive_cmdword_get(struct ps3_cmd *cmd)
+static unsigned char ps3_qos_exclusive_cmdword_get(struct ps3_cmd *cmd)
 {
 	unsigned char can_get = PS3_FALSE;
 
@@ -360,7 +373,7 @@ unsigned char ps3_qos_exclusive_cmdword_get(struct ps3_cmd *cmd)
 	return can_get;
 }
 
-unsigned char ps3_qos_tg_decision(struct ps3_cmd *cmd)
+static unsigned char ps3_qos_tg_decision(struct ps3_cmd *cmd)
 {
 	unsigned char can_get = PS3_FALSE;
 	struct ps3_instance *instance = cmd->instance;
@@ -416,19 +429,31 @@ static inline bool ps3_qos_pd_quota_add(struct qos_wait_queue *waitq)
 	return can_get;
 }
 
-static void ps3_qos_pd_in_q(struct ps3_cmd *cmd, struct qos_wait_queue *waitq,
+static unsigned char ps3_qos_pd_in_q(struct ps3_cmd *cmd, struct qos_wait_queue *waitq,
 			    unsigned short pd_idx)
 {
 	unsigned long flag = 0;
+	unsigned char in_q = PS3_TRUE;
 
 	ps3_spin_lock_irqsave(waitq->rsc_lock, &flag);
-	list_add_tail(&cmd->qos_list, &waitq->wait_list);
-	waitq->count++;
-	(*waitq->total_waited_cnt)++;
-	cmd->qos_waitq_flag = PS3_QOS_CMD_IN_PD;
-	cmd->first_over_quota_pd_idx = pd_idx;
+	if (unlikely((*waitq->total_waited_cnt == 0) &&
+		(ps3_atomic_read(waitq->used_rsc) < *waitq->free_rsc))) {
+		in_q = !ps3_qos_pd_quota_add(waitq);
+	}
+
+	if (in_q) {
+		list_add_tail(&cmd->qos_list, &waitq->wait_list);
+		waitq->count++;
+		(*waitq->total_waited_cnt)++;
+		cmd->qos_waitq_flag = PS3_QOS_CMD_IN_PD;
+		cmd->first_over_quota_pd_idx = pd_idx;
+	}
 	ps3_spin_unlock_irqrestore(waitq->rsc_lock, flag);
-	PS3_QOS_STAT_START(cmd->instance, cmd, PS3_QOS_PD_QUEUE);
+
+	if (in_q)
+		PS3_QOS_STAT_START(cmd->instance, cmd, PS3_QOS_PD_QUEUE);
+
+	return in_q;
 }
 
 static struct qos_wait_queue *
@@ -460,14 +485,14 @@ static unsigned char ps3_qos_pd_quota_get(struct ps3_qos_pd_mgr *qos_pd_mgr,
 	unsigned char can_get = PS3_FALSE;
 
 	can_get = ps3_qos_pd_quota_add(waitq);
-	if (!can_get) {
-		ps3_qos_pd_in_q(cmd, waitq, pd_idx);
+	if (!can_get && ps3_qos_pd_in_q(cmd, waitq, pd_idx)) {
 		LOG_DEBUG(
 			"insert qos pd quota waitq.host_no:%u:t_id:0x%llx CFID:%u waitq[%u,%u] did[%u,%u]\n",
 			PS3_HOST(cmd->instance), cmd->trace_id, cmd->index,
 			waitq->id, waitq->count, qos_pd_mgr->disk_id, pd_idx);
 	} else {
 		cmd->target_pd[pd_idx].get_quota = PS3_TRUE;
+		can_get = PS3_TRUE;
 	}
 
 	return can_get;
@@ -665,6 +690,26 @@ static void ps3_qos_pd_notify(struct ps3_instance *instance)
 	}
 }
 
+static void ps3_qos_pd_notify_in_reply(struct ps3_instance *instance,
+			 unsigned short isr_sn)
+{
+	unsigned short i = 0;
+	unsigned short pd_id = 0;
+	struct ps3_qos_pd_context *qos_pd_ctx = NULL;
+	struct ps3_qos_pd_mgr *qos_pd_mgr = NULL;
+	struct ps3_qos_pd_reply_info *pd_reply_info = NULL;
+
+	qos_pd_ctx = &instance->qos_context.pd_ctx;
+	pd_reply_info = &instance->qos_context.pd_ctx.reply_info[isr_sn];
+	for (i = 0; i < pd_reply_info->processed_pd_cnt; i++) {
+		pd_id = pd_reply_info->processed_pd_id[i];
+		qos_pd_mgr = ps3_qos_pd_mgr_get(instance, pd_id);
+		ps3_qos_single_pd_notify(qos_pd_ctx, qos_pd_mgr);
+		pd_reply_info->processed_pd_state[pd_id] = 0;
+	}
+	pd_reply_info->processed_pd_cnt = 0;
+}
+
 static unsigned char
 ps3_qos_single_vd_notify(struct ps3_qos_vd_context *qos_vd_ctx,
 			 struct ps3_qos_vd_mgr *qos_vd_mgr)
@@ -746,7 +791,7 @@ static unsigned char ps3_qos_tg_notify(struct ps3_instance *instance)
 	return notified;
 }
 
-unsigned char ps3_qos_all_pd_rc_get(struct ps3_cmd *cmd)
+static unsigned char ps3_qos_all_pd_rc_get(struct ps3_cmd *cmd)
 {
 	cmd->target_pd[cmd->first_over_quota_pd_idx].get_quota = PS3_TRUE;
 	PS3_QOS_STAT_END(cmd->instance, cmd, PS3_QOS_PD_QUEUE);
@@ -780,7 +825,7 @@ static void ps3_vd_quota_waitq_clean(struct ps3_qos_vd_mgr *qos_vd_mgr,
 					PS3_HOST(qos_vd_mgr->instance),
 					cmd->trace_id, cmd->index,
 					qos_vd_mgr->id);
-				ps3_qos_update_pd_quota(cmd);
+				ps3_qos_update_pd_quota(cmd, PS3_FALSE);
 				ps3_scsih_drv_io_reply_scsi(
 					cmd->scmd, cmd, resp_status, PS3_FALSE);
 			}
@@ -817,7 +862,7 @@ static void ps3_qos_vd_quota_waitq_resend(struct ps3_qos_vd_mgr *qos_vd_mgr)
 				ret = ps3_scsi_cmd_send(instance, cmd,
 							PS3_FALSE);
 				if (unlikely(ret != PS3_SUCCESS)) {
-					ps3_qos_cmd_update(instance, cmd);
+					ps3_qos_cmd_update(instance, cmd, PS3_FALSE);
 					ps3_qos_cmd_resend_fail(cmd, ret);
 				} else {
 					cmd->qos_waitq_flag = 0;
@@ -873,7 +918,7 @@ static void ps3_qos_waitq_clean(struct ps3_qos_pd_mgr *qos_pd_mgr,
 	ps3_spin_unlock_irqrestore(waitq->rsc_lock, flag);
 }
 
-void ps3_pd_quota_waitq_clear_all(struct ps3_qos_pd_mgr *qos_pd_mgr,
+static void ps3_pd_quota_waitq_clear_all(struct ps3_qos_pd_mgr *qos_pd_mgr,
 				  int resp_status)
 {
 	unsigned short i = 0;
@@ -889,7 +934,7 @@ void ps3_pd_quota_waitq_clear_all(struct ps3_qos_pd_mgr *qos_pd_mgr,
 		  qos_pd_mgr->vd_id);
 }
 
-void ps3_pd_quota_waitq_clean(struct ps3_qos_pd_mgr *qos_pd_mgr,
+static void ps3_pd_quota_waitq_clean(struct ps3_qos_pd_mgr *qos_pd_mgr,
 			      unsigned short que_id, int resp_status)
 {
 	struct qos_wait_queue *waitq = NULL;
@@ -958,7 +1003,7 @@ static unsigned char ps3_qos_vd_seq_check(struct ps3_cmd *cmd)
 				  cmd->index,
 				  cmd->req_frame->hwReq.reqHead.virtDiskSeq,
 				  (!vd_entry) ? 0 : vd_entry->virtDiskSeq);
-			ps3_qos_update_pd_quota(cmd);
+			ps3_qos_update_pd_quota(cmd, PS3_FALSE);
 			ps3_scsih_drv_io_reply_scsi(cmd->scmd, cmd,
 						    SCSI_STATUS_TASK_ABORTED,
 						    PS3_FALSE);
@@ -997,7 +1042,7 @@ static unsigned int ps3_qos_pd_resend_cmd(struct ps3_qos_pd_mgr *qos_pd_mgr,
 		if (ps3_qos_pd_resend_check(instance, cmd)) {
 			ret = ps3_scsi_cmd_send(instance, cmd, PS3_FALSE);
 			if (unlikely(ret != PS3_SUCCESS)) {
-				ps3_qos_cmd_update(instance, cmd);
+				ps3_qos_cmd_update(instance, cmd, PS3_FALSE);
 				ps3_qos_cmd_resend_fail(cmd, ret);
 			} else {
 				cmd->qos_waitq_flag = 0;
@@ -1055,7 +1100,7 @@ static void ps3_qos_pd_jbod_resend(struct ps3_qos_pd_mgr *qos_pd_mgr)
 	ps3_qos_pd_waitq_resend(qos_pd_mgr, waitq);
 }
 
-void ps3_qos_pd_waitq_ratio_update(struct ps3_qos_pd_mgr *qos_pd_mgr)
+static void ps3_qos_pd_waitq_ratio_update(struct ps3_qos_pd_mgr *qos_pd_mgr)
 {
 	unsigned short min_waitq_cnt = 0;
 	unsigned short i = 0;
@@ -1225,7 +1270,7 @@ static void ps3_poll_vd_cmd_waitq(struct ps3_qos_tg_context *qos_tg_ctx)
 			ret = ps3_scsi_cmd_send(instance, cmd, PS3_FALSE);
 			if (unlikely(ret != PS3_SUCCESS)) {
 				ps3_qos_update_vd_quota(cmd);
-				ps3_qos_update_pd_quota(cmd);
+				ps3_qos_update_pd_quota(cmd, PS3_FALSE);
 				ps3_qos_cmd_resend_fail(cmd, ret);
 			} else {
 				ps3_atomic_inc(&qos_vd_mgr->share_cmd_used);
@@ -1357,7 +1402,7 @@ static void ps3_qos_tg_exclusive_resend(struct ps3_qos_tg_context *qos_tg_ctx)
 							PS3_FALSE);
 				if (unlikely(ret != PS3_SUCCESS)) {
 					ps3_qos_update_vd_quota(cmd);
-					ps3_qos_update_pd_quota(cmd);
+					ps3_qos_update_pd_quota(cmd, PS3_FALSE);
 					ps3_qos_cmd_resend_fail(cmd, ret);
 					ps3_atomic_inc(
 						&qos_vd_mgr->exclusive_cmd_cnt);
@@ -1542,8 +1587,56 @@ static int ps3_qos_pd_context_init(struct ps3_instance *instance)
 		}
 	}
 
+	qos_pd_ctx->reply_info =
+			(struct ps3_qos_pd_reply_info *)ps3_vzalloc(instance,
+				instance->irq_context.valid_msix_vector_count *
+				sizeof(struct ps3_qos_pd_reply_info));
+	if (qos_pd_ctx->reply_info == NULL) {
+		LOG_ERROR("hno:%u:Failed to alloc memory for reply_info\n",
+			  PS3_HOST(instance));
+		ret = -PS3_FAILED;
+		goto _destroy_created_workqueue;
+	}
+
+	for (i = 0; i < instance->irq_context.valid_msix_vector_count; i++) {
+		qos_pd_ctx->reply_info[i].processed_pd_state =
+				(unsigned char *)ps3_vzalloc(instance,
+							PS3_MAX_PD_COUNT(instance) + 1);
+		if (qos_pd_ctx->reply_info[i].processed_pd_state == NULL) {
+			LOG_ERROR("hno:%u:Failed to alloc memory for processed_pd_state\n",
+				PS3_HOST(instance));
+			ret = -PS3_FAILED;
+			goto __destroy_reply_info;
+		}
+
+		qos_pd_ctx->reply_info[i].processed_pd_id =
+			(unsigned short *)ps3_vzalloc(instance,
+				(PS3_MAX_PD_COUNT(instance) + 1) * sizeof(unsigned short));
+		if (qos_pd_ctx->reply_info[i].processed_pd_id == NULL) {
+			LOG_ERROR("hno:%u:Failed to alloc memory for processed_pd_id\n",
+				PS3_HOST(instance));
+			ret = -PS3_FAILED;
+			goto __destroy_reply_info;
+		}
+
+	}
+
 	LOG_INFO("hno:%u: qos pd context init success\n", PS3_HOST(instance));
 	goto _out;
+__destroy_reply_info:
+	for (k = 0; k < instance->irq_context.valid_msix_vector_count; k++) {
+		if (qos_pd_ctx->reply_info[k].processed_pd_state != NULL) {
+			ps3_vfree(instance, qos_pd_ctx->reply_info[k].processed_pd_state);
+			qos_pd_ctx->reply_info[k].processed_pd_state = NULL;
+		}
+
+		if (qos_pd_ctx->reply_info[k].processed_pd_id != NULL) {
+			ps3_vfree(instance, qos_pd_ctx->reply_info[k].processed_pd_id);
+			qos_pd_ctx->reply_info[k].processed_pd_id = NULL;
+		}
+	}
+	ps3_vfree(instance, qos_pd_ctx->reply_info);
+	qos_pd_ctx->reply_info = NULL;
 _destroy_created_workqueue:
 	for (k = 0; k < j; k++) {
 		destroy_workqueue(qos_pd_ctx->work_queues[k]);
@@ -1577,7 +1670,7 @@ static void ps3_qos_pd_context_exit(struct ps3_instance *instance)
 	if (qos_pd_ctx->qos_pd_mgrs != NULL) {
 		for (i = 1; i <= instance->qos_context.max_pd_count; i++) {
 			qos_pd_mgr = &qos_pd_ctx->qos_pd_mgrs[i];
-			cancel_work_sync(&qos_pd_mgr->resend_work);
+			ps3_cancel_work_sync(&qos_pd_mgr->resend_work);
 			ps3_vfree(instance, qos_pd_mgr->waitqs);
 			qos_pd_mgr->waitqs = NULL;
 		}
@@ -1595,6 +1688,20 @@ static void ps3_qos_pd_context_exit(struct ps3_instance *instance)
 		ps3_vfree(instance, qos_pd_ctx->work_queues);
 		qos_pd_ctx->work_queues = NULL;
 	}
+
+	for (i = 0; i < instance->irq_context.valid_msix_vector_count; i++) {
+		if (qos_pd_ctx->reply_info[i].processed_pd_state != NULL) {
+			ps3_vfree(instance, qos_pd_ctx->reply_info[i].processed_pd_state);
+			qos_pd_ctx->reply_info[i].processed_pd_state = NULL;
+		}
+
+		if (qos_pd_ctx->reply_info[i].processed_pd_id != NULL) {
+			ps3_vfree(instance, qos_pd_ctx->reply_info[i].processed_pd_id);
+			qos_pd_ctx->reply_info[i].processed_pd_id = NULL;
+		}
+	}
+	ps3_vfree(instance, qos_pd_ctx->reply_info);
+	qos_pd_ctx->reply_info = NULL;
 }
 
 static int ps3_qos_vd_context_init(struct ps3_instance *instance)
@@ -1667,7 +1774,7 @@ static int ps3_qos_vd_context_init(struct ps3_instance *instance)
 	       (qos_vd_ctx->workq_count) * sizeof(struct workqueue_struct *));
 	for (i = 0; i < qos_vd_ctx->workq_count; i++) {
 		snprintf(workq_name, PS3_QOS_MAX_WORKQ_NAME_LENGTH,
-			 "qos_vd_wq_f%u_%u",
+			 "vd_wq_f%u_%u",
 			 ps3_get_pci_function(instance->pdev), i);
 		qos_vd_ctx->work_queues[i] =
 			create_singlethread_workqueue(workq_name);
@@ -1706,7 +1813,7 @@ static void ps3_qos_vd_context_exit(struct ps3_instance *instance)
 	if (qos_vd_ctx->qos_vd_mgrs != NULL) {
 		for (i = 1; i <= instance->qos_context.max_vd_count; i++) {
 			qos_vd_mgr = &qos_vd_ctx->qos_vd_mgrs[i];
-			cancel_work_sync(&qos_vd_mgr->resend_work);
+			ps3_cancel_work_sync(&qos_vd_mgr->resend_work);
 		}
 		ps3_vfree(instance, qos_vd_ctx->qos_vd_mgrs);
 		qos_vd_ctx->qos_vd_mgrs = NULL;
@@ -1824,7 +1931,7 @@ static void ps3_qos_tg_context_exit(struct ps3_instance *instance)
 
 	qos_tg_ctx = &instance->qos_context.tg_ctx;
 	if (qos_tg_ctx->work_queue != NULL) {
-		cancel_work_sync(&qos_tg_ctx->resend_work);
+		ps3_cancel_work_sync(&qos_tg_ctx->resend_work);
 		flush_workqueue(qos_tg_ctx->work_queue);
 		destroy_workqueue(qos_tg_ctx->work_queue);
 		qos_tg_ctx->work_queue = NULL;
@@ -1897,12 +2004,16 @@ static unsigned char ps3_qos_vd_member_insert(struct ps3_cmd *cmd)
 
 	if (in_queue) {
 		waitq = ps3_qos_pd_waitq_get(qos_pd_mgr, cmd);
-		ps3_qos_pd_in_q(cmd, waitq, i);
+		if (!ps3_qos_pd_in_q(cmd, waitq, i)) {
+			cmd->target_pd[i].get_quota = PS3_TRUE;
+			in_queue = PS3_FALSE;
+		}
+
 		ps3_atomic_dec(&qos_pd_mgr->processing_cnt);
 		LOG_DEBUG("insert qos pd quota waitq.host_no:%u:t_id:0x%llx\n"
-			  "\tCFID:%u waitq[%u,%u] did[%u %u]\n",
+			  "\tCFID:%u waitq[%u,%u] did[%u %u] ret:%u\n",
 			  PS3_HOST(cmd->instance), cmd->trace_id, cmd->index,
-			  waitq->id, waitq->count, qos_pd_mgr->disk_id, i);
+			  waitq->id, waitq->count, qos_pd_mgr->disk_id, i, in_queue);
 	}
 
 	return in_queue;
@@ -2016,7 +2127,7 @@ l_out:
 	return ret;
 }
 
-unsigned char ps3_hba_qos_decision(struct ps3_cmd *cmd)
+static unsigned char ps3_hba_qos_decision(struct ps3_cmd *cmd)
 {
 	unsigned char can_get = PS3_FALSE;
 
@@ -2037,11 +2148,12 @@ _out:
 	return can_get;
 }
 
-void ps3_hba_qos_waitq_notify(struct ps3_instance *instance)
+static void ps3_hba_qos_waitq_notify(struct ps3_instance *instance,
+				 unsigned short isr_sn)
 {
 	if (!ps3_qos_tg_notify(instance)) {
 		if (!ps3_qos_vd_notify(instance))
-			ps3_qos_pd_notify(instance);
+			ps3_qos_pd_notify_in_reply(instance, isr_sn);
 	}
 }
 
@@ -2097,7 +2209,7 @@ static bool ps3_vd_quota_waiq_abort(struct ps3_cmd *aborted_cmd)
 	return found;
 }
 
-bool ps3_cmd_waitq_abort(struct ps3_cmd *aborted_cmd)
+static bool ps3_cmd_waitq_abort(struct ps3_cmd *aborted_cmd)
 {
 	unsigned long lock_flag_mgr = 0;
 	struct ps3_instance *instance = NULL;
@@ -2137,7 +2249,7 @@ static unsigned char ps3_hba_qos_waitq_abort(struct ps3_cmd *cmd)
 		if (cmd->qos_waitq_flag == PS3_QOS_CMD_IN_VD) {
 			found = ps3_vd_quota_waiq_abort(cmd);
 			if (found) {
-				ps3_qos_update_pd_quota(cmd);
+				ps3_qos_update_pd_quota(cmd, PS3_FALSE);
 				goto out;
 			}
 		}
@@ -2147,7 +2259,7 @@ static unsigned char ps3_hba_qos_waitq_abort(struct ps3_cmd *cmd)
 		found = ps3_cmd_waitq_abort(cmd);
 		if (found) {
 			ps3_qos_update_vd_quota(cmd);
-			ps3_qos_update_pd_quota(cmd);
+			ps3_qos_update_pd_quota(cmd, PS3_FALSE);
 		}
 	}
 out:
@@ -2175,7 +2287,7 @@ static void ps3_vd_cmd_waitq_clean(struct ps3_instance *instance,
 			wait_q->count--;
 			qos_tg_ctx->total_wait_cmd_cnt--;
 			ps3_qos_update_vd_quota(cmd);
-			ps3_qos_update_pd_quota(cmd);
+			ps3_qos_update_pd_quota(cmd, PS3_FALSE);
 			ps3_scsih_drv_io_reply_scsi(cmd->scmd, cmd, result,
 						    PS3_FALSE);
 		}
@@ -2209,7 +2321,7 @@ static void ps3_jbod_cmd_waitq_clean(struct ps3_instance *instance,
 				wait_q->count--;
 				qos_tg_ctx->total_wait_cmd_cnt--;
 				ps3_qos_update_vd_quota(cmd);
-				ps3_qos_update_pd_quota(cmd);
+				ps3_qos_update_pd_quota(cmd, PS3_FALSE);
 				ps3_scsih_drv_io_reply_scsi(cmd->scmd, cmd,
 							    result, PS3_FALSE);
 			}
@@ -2270,12 +2382,12 @@ static void ps3_hba_qos_vd_clean(struct ps3_instance *instance,
 		    qos_pd_mgr->vd_id == vd_id) {
 			ps3_pd_quota_waitq_clean(qos_pd_mgr, vd_id,
 						 resp_status);
-			cancel_work_sync(&qos_pd_mgr->resend_work);
+			ps3_cancel_work_sync(&qos_pd_mgr->resend_work);
 		}
 	}
 
 	ps3_vd_quota_waitq_clean(qos_vd_mgr, NULL, resp_status);
-	cancel_work_sync(&qos_vd_mgr->resend_work);
+	ps3_cancel_work_sync(&qos_vd_mgr->resend_work);
 
 	ps3_vd_cmd_waitq_clean(instance, vd_id, resp_status);
 	ps3_mgr_cmd_waitq_clean(instance, priv_data, resp_status);
@@ -2303,7 +2415,7 @@ void ps3_linx80_vd_member_change(struct ps3_instance *instance,
 	if (ps3_atomic_read(&qos_pd_mgr->valid) != PS3_TRUE)
 		goto _out;
 	ps3_pd_quota_waitq_clean(qos_pd_mgr, 0, PS3_STATUS_VD_MEMBER_OFFLINE);
-	cancel_work_sync(&qos_pd_mgr->resend_work);
+	ps3_cancel_work_sync(&qos_pd_mgr->resend_work);
 	LOG_INFO("linx80 update pd qos rsc. host_no:%u pd_id:%u dev_type:%u\n",
 		 PS3_HOST(instance), pd_id, pd_entry->dev_type);
 
@@ -2322,7 +2434,7 @@ static void ps3_hba_qos_pd_clean(struct ps3_instance *instance,
 	disk_id = PS3_PDID(&priv_data->disk_pos);
 	qos_pd_mgr = ps3_qos_pd_mgr_get(instance, disk_id);
 	ps3_pd_quota_waitq_clean(qos_pd_mgr, 0, resp_status);
-	cancel_work_sync(&qos_pd_mgr->resend_work);
+	ps3_cancel_work_sync(&qos_pd_mgr->resend_work);
 
 	qos_vd_mgr = PS3_QOS_JBOD_VD_MGR(instance);
 	ps3_vd_quota_waitq_clean(qos_vd_mgr, priv_data, resp_status);
@@ -2460,7 +2572,7 @@ void ps3_qos_vd_member_del(struct ps3_instance *instance,
 	}
 }
 
-void ps3_hba_qos_waitq_clear_all(struct ps3_instance *instance, int resp_status)
+static void ps3_hba_qos_waitq_clear_all(struct ps3_instance *instance, int resp_status)
 {
 	unsigned long flag = 0;
 	unsigned short i = 0;
@@ -2474,7 +2586,7 @@ void ps3_hba_qos_waitq_clear_all(struct ps3_instance *instance, int resp_status)
 		qos_pd_mgr = ps3_qos_pd_mgr_get(instance, i);
 		if (ps3_atomic_read(&qos_pd_mgr->valid) == 1) {
 			ps3_pd_quota_waitq_clear_all(qos_pd_mgr, resp_status);
-			cancel_work_sync(&qos_pd_mgr->resend_work);
+			ps3_cancel_work_sync(&qos_pd_mgr->resend_work);
 		}
 	}
 
@@ -2482,7 +2594,7 @@ void ps3_hba_qos_waitq_clear_all(struct ps3_instance *instance, int resp_status)
 		qos_vd_mgr = &instance->qos_context.vd_ctx.qos_vd_mgrs[i];
 		if (qos_vd_mgr->valid) {
 			ps3_vd_quota_waitq_clean(qos_vd_mgr, NULL, resp_status);
-			cancel_work_sync(&qos_vd_mgr->resend_work);
+			ps3_cancel_work_sync(&qos_vd_mgr->resend_work);
 		}
 	}
 
@@ -2500,7 +2612,7 @@ void ps3_hba_qos_waitq_clear_all(struct ps3_instance *instance, int resp_status)
 			wait_q->count--;
 			qos_tg_ctx->total_wait_cmd_cnt--;
 			ps3_qos_update_vd_quota(cmd);
-			ps3_qos_update_pd_quota(cmd);
+			ps3_qos_update_pd_quota(cmd, PS3_FALSE);
 			ps3_scsih_drv_io_reply_scsi(cmd->scmd, cmd, resp_status,
 						    PS3_FALSE);
 		}
@@ -2519,7 +2631,7 @@ void ps3_hba_qos_waitq_clear_all(struct ps3_instance *instance, int resp_status)
 					    PS3_FALSE);
 	}
 	ps3_spin_unlock_irqrestore(&qos_tg_ctx->lock, flag);
-	cancel_work_sync(&qos_tg_ctx->resend_work);
+	ps3_cancel_work_sync(&qos_tg_ctx->resend_work);
 
 	LOG_INFO("host_no:%u:clear all qos waitq\n", PS3_HOST(instance));
 }
@@ -2824,7 +2936,7 @@ _out:
 	return;
 }
 
-void ps3_hba_qos_vd_init(struct ps3_instance *instance,
+static void ps3_hba_qos_vd_init(struct ps3_instance *instance,
 			 struct PS3VDEntry *vd_entry)
 {
 	struct ps3_qos_vd_mgr *qos_vd_mgr = NULL;
@@ -2897,10 +3009,8 @@ void ps3_qos_vd_init(struct ps3_instance *instance, struct PS3VDEntry *vd_entry)
 			if (pd_entry) {
 				qos_pd_mgr = ps3_qos_pd_mgr_init(
 					instance, pd_entry);
-				if (unlikely(qos_pd_mgr->dev_type !=
-					     pd_entry->dev_type)) {
-					ps3_qos_pd_rsc_init(qos_pd_mgr,
-							    pd_entry);
+				if (PS3_NEED_UPDATE_PD_QUOTAS(qos_pd_mgr, pd_entry)) {
+					ps3_qos_pd_rsc_init(qos_pd_mgr, pd_entry);
 					if (!vd_entry->isSsd) {
 						qos_pd_mgr->pd_quota =
 							instance->cmd_context
@@ -2933,7 +3043,7 @@ void ps3_qos_vd_init(struct ps3_instance *instance, struct PS3VDEntry *vd_entry)
 			PS3_TARGET(&vd_entry->diskPos), vd_id);
 }
 
-void ps3_hba_qos_vd_reset(struct ps3_instance *instance, unsigned short disk_id)
+static void ps3_hba_qos_vd_reset(struct ps3_instance *instance, unsigned short disk_id)
 {
 	struct ps3_qos_vd_mgr *qos_vd_mgr = NULL;
 
@@ -2968,6 +3078,7 @@ static void ps3_qos_pd_notify_timeout(struct ps3_instance *instance)
 					"awake qos pd quota waitq by poll. host_no:%u vid:%u pid:%u\n",
 					PS3_HOST(instance), qos_pd_mgr->vd_id,
 					qos_pd_mgr->disk_id);
+				qos_pd_mgr->wdt_awake++;
 			}
 		}
 	}
@@ -3020,7 +3131,7 @@ static unsigned char ps3_qos_tg_notify_timeout(struct ps3_instance *instance)
 	return notified;
 }
 
-void ps3_hba_qos_waitq_poll(struct ps3_instance *instance)
+static void ps3_hba_qos_waitq_poll(struct ps3_instance *instance)
 {
 	if (!ps3_qos_tg_notify_timeout(instance)) {
 		if (!ps3_qos_vd_notify_timeout(instance))
@@ -3276,7 +3387,7 @@ static unsigned char ps3_qos_cq_decision(struct ps3_cmd *cmd)
 	return can_get;
 }
 
-unsigned char ps3_raid_qos_decision(struct ps3_cmd *cmd)
+static unsigned char ps3_raid_qos_decision(struct ps3_cmd *cmd)
 {
 	unsigned char can_get = PS3_FALSE;
 
@@ -3321,17 +3432,18 @@ static void ps3_qos_update_mgrq_rc(struct ps3_cmd *cmd)
 		  PS3_HOST(cmd->instance), cmd->trace_id, cmd->index, free_cnt);
 }
 
-static void ps3_raid_qos_cmd_update(struct ps3_cmd *cmd)
+static void ps3_raid_qos_cmd_update(struct ps3_cmd *cmd,
+		 unsigned char in_reply)
 {
 	if (cmd->cmd_word.type == PS3_CMDWORD_TYPE_MGR) {
 		ps3_qos_update_mgrq_rc(cmd);
 	} else {
-		ps3_qos_update_pd_quota(cmd);
+		ps3_qos_update_pd_quota(cmd, in_reply);
 		ps3_qos_update_cmdq_rc(cmd);
 	}
 }
 
-void ps3_qos_mgrq_resend(struct ps3_qos_softq_mgr *softq_mgr)
+static void ps3_qos_mgrq_resend(struct ps3_qos_softq_mgr *softq_mgr)
 {
 	int ret = PS3_SUCCESS;
 	unsigned long flag = 0;
@@ -3354,7 +3466,7 @@ void ps3_qos_mgrq_resend(struct ps3_qos_softq_mgr *softq_mgr)
 		PS3_QOS_STAT_END(instance, cmd, PS3_QOS_MGR_QUEUE);
 		ret = ps3_scsi_cmd_send(instance, cmd, PS3_FALSE);
 		if (unlikely(ret != PS3_SUCCESS)) {
-			ps3_raid_qos_cmd_update(cmd);
+			ps3_raid_qos_cmd_update(cmd, PS3_FALSE);
 			ps3_qos_cmd_resend_fail(cmd, ret);
 		} else {
 			cmd->qos_waitq_flag = 0;
@@ -3475,10 +3587,11 @@ static unsigned char ps3_qos_cq_notify(struct ps3_instance *instance)
 	return notified;
 }
 
-void ps3_raid_qos_waitq_notify(struct ps3_instance *instance)
+static void ps3_raid_qos_waitq_notify(struct ps3_instance *instance,
+				 unsigned short isr_sn)
 {
 	if (!ps3_qos_cq_notify(instance))
-		ps3_qos_pd_notify(instance);
+		ps3_qos_pd_notify_in_reply(instance, isr_sn);
 }
 
 static unsigned char
@@ -3538,7 +3651,7 @@ static void ps3_qos_resend_multi_cmd(struct ps3_qos_softq_mgr *softq_mgr,
 		if (ps3_qos_cmdq_resend_judge(softq_mgr, cmd)) {
 			ret = ps3_scsi_cmd_send(instance, cmd, PS3_FALSE);
 			if (unlikely(ret != PS3_SUCCESS)) {
-				ps3_raid_qos_cmd_update(cmd);
+				ps3_raid_qos_cmd_update(cmd, PS3_FALSE);
 				ps3_qos_cmd_resend_fail(cmd, ret);
 			} else {
 				cmd->qos_waitq_flag = 0;
@@ -3643,7 +3756,7 @@ _out:
 static void ps3_qos_softq_exit(struct ps3_instance *instance,
 			       struct ps3_qos_softq_mgr *softq_mgr)
 {
-	cancel_work_sync(&softq_mgr->resend_work);
+	ps3_cancel_work_sync(&softq_mgr->resend_work);
 	flush_workqueue(softq_mgr->work_queue);
 	destroy_workqueue(softq_mgr->work_queue);
 	ps3_vfree(instance, softq_mgr->waitqs);
@@ -3818,7 +3931,7 @@ static unsigned char ps3_qos_cmdq_abort(struct ps3_cmd *cmd)
 	return found;
 }
 
-unsigned char ps3_raid_qos_waitq_abort(struct ps3_cmd *cmd)
+static unsigned char ps3_raid_qos_waitq_abort(struct ps3_cmd *cmd)
 {
 	unsigned char found = PS3_FALSE;
 	struct ps3_qos_softq_mgr *softq_mgr = NULL;
@@ -3835,7 +3948,7 @@ unsigned char ps3_raid_qos_waitq_abort(struct ps3_cmd *cmd)
 
 		found = ps3_qos_cmdq_abort(cmd);
 		if (found) {
-			ps3_qos_update_pd_quota(cmd);
+			ps3_qos_update_pd_quota(cmd, PS3_FALSE);
 			ps3_qos_peer_cmdq_rc_update(cmd);
 		}
 	} else {
@@ -3882,7 +3995,7 @@ static void ps3_qos_mgrq_clean(struct ps3_instance *instance,
 	}
 	ps3_spin_unlock_irqrestore(&softq_mgr->rc_lock, flag);
 	if (priv_data == NULL)
-		cancel_work_sync(&softq_mgr->resend_work);
+		ps3_cancel_work_sync(&softq_mgr->resend_work);
 }
 
 static void ps3_qos_cmdq_clean(struct ps3_instance *instance,
@@ -3916,7 +4029,7 @@ static void ps3_qos_cmdq_clean(struct ps3_instance *instance,
 					list_del(&cmd->qos_list);
 					waitq->count--;
 					softq_mgr->total_wait_cmd_cnt--;
-					ps3_qos_update_pd_quota(cmd);
+					ps3_qos_update_pd_quota(cmd, PS3_FALSE);
 					ps3_scsih_drv_io_reply_scsi(cmd->scmd,
 								    cmd,
 								    resp_status,
@@ -3957,7 +4070,7 @@ static void ps3_qos_cmdq_clear(struct ps3_instance *instance, int resp_status)
 					list_del(&cmd->qos_list);
 					waitq->count--;
 					softq_mgr->total_wait_cmd_cnt--;
-					ps3_qos_update_pd_quota(cmd);
+					ps3_qos_update_pd_quota(cmd, PS3_FALSE);
 					ps3_scsih_drv_io_reply_scsi(cmd->scmd,
 								    cmd,
 								    resp_status,
@@ -3967,7 +4080,7 @@ static void ps3_qos_cmdq_clear(struct ps3_instance *instance, int resp_status)
 							   flag);
 			}
 		}
-		cancel_work_sync(&softq_mgr->resend_work);
+		ps3_cancel_work_sync(&softq_mgr->resend_work);
 	}
 }
 
@@ -4019,7 +4132,7 @@ static void ps3_raid_qos_vd_clean(struct ps3_instance *instance,
 		      PS3_HOST(instance), priv_data->dev_type, vd_id);
 }
 
-void ps3_raid_qos_waitq_clear_all(struct ps3_instance *instance,
+static void ps3_raid_qos_waitq_clear_all(struct ps3_instance *instance,
 				  int resp_status)
 {
 	unsigned short i = 0;
@@ -4029,7 +4142,7 @@ void ps3_raid_qos_waitq_clear_all(struct ps3_instance *instance,
 		qos_pd_mgr = ps3_qos_pd_mgr_get(instance, i);
 		if (ps3_atomic_read(&qos_pd_mgr->valid) == 1) {
 			ps3_pd_quota_waitq_clear_all(qos_pd_mgr, resp_status);
-			cancel_work_sync(&qos_pd_mgr->resend_work);
+			ps3_cancel_work_sync(&qos_pd_mgr->resend_work);
 		}
 	}
 
@@ -4080,7 +4193,7 @@ static unsigned char ps3_qos_cq_notify_timeout(struct ps3_instance *instance)
 	return notified;
 }
 
-void ps3_raid_qos_waitq_poll(struct ps3_instance *instance)
+static void ps3_raid_qos_waitq_poll(struct ps3_instance *instance)
 {
 	if (!ps3_qos_cq_notify_timeout(instance))
 		ps3_qos_pd_notify_timeout(instance);
@@ -4203,19 +4316,21 @@ _exit:
 	return ret;
 }
 
-void ps3_qos_cmd_update(struct ps3_instance *instance, struct ps3_cmd *cmd)
+void ps3_qos_cmd_update(struct ps3_instance *instance,
+		struct ps3_cmd *cmd, unsigned char in_reply)
 {
 	if (!ps3_qos_enable(instance) || !PS3_QOS_INITED(instance))
 		return;
 
-	instance->qos_context.opts.qos_cmd_update(cmd);
+	instance->qos_context.opts.qos_cmd_update(cmd, in_reply);
 }
 
-void ps3_qos_waitq_notify(struct ps3_instance *instance)
+void ps3_qos_waitq_notify(struct ps3_instance *instance,
+			 unsigned short isr_sn)
 {
 	if (!ps3_qos_enable(instance) || !PS3_QOS_INITED(instance))
 		return;
-	instance->qos_context.opts.qos_waitq_notify(instance);
+	instance->qos_context.opts.qos_waitq_notify(instance, isr_sn);
 }
 
 unsigned char ps3_qos_waitq_abort(struct ps3_cmd *cmd)
