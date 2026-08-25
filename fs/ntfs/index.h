@@ -73,6 +73,9 @@ typedef struct {
 
 extern ntfs_index_context *ntfs_index_ctx_get(ntfs_inode *idx_ni);
 extern void ntfs_index_ctx_put(ntfs_index_context *ictx);
+int ntfs_index_block_inconsistent(ntfs_volume *vol,
+				  const INDEX_ALLOCATION *ib,
+				  u32 block_size, s64 vcn, u64 inum);
 
 extern int ntfs_index_lookup(const void *key, const int key_len,
 		ntfs_index_context *ictx);
@@ -113,12 +116,12 @@ static inline void ntfs_index_entry_flush_dcache_page(ntfs_index_context *ictx)
  * record, and hence the index root attribute, will be written out to disk
  * later.
  *
- * If the index entry is in an index block belonging to the index allocation
- * attribute, mark the buffers belonging to the index record as well as the
- * page cache page the index block is in dirty.  This automatically marks the
- * VFS inode of the ntfs index inode to which the index entry belongs dirty,
- * too (I_DIRTY_PAGES) and this in turn ensures the page buffers, and hence the
- * dirty index block, will be written out to disk later.
+ * If the index entry is in the index allocation attribute, mark the buffers
+ * belonging to the index record as well as the page cache page the index
+ * block is in dirty.  This automatically marks the VFS inode of the ntfs
+ * index inode to which the index entry belongs dirty, too (I_DIRTY_PAGES)
+ * and this in turn ensures the page buffers, and hence the dirty index block,
+ * will be written out to disk later.
  */
 static inline void ntfs_index_entry_mark_dirty(ntfs_index_context *ictx)
 {

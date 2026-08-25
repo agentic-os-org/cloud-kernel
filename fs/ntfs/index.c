@@ -61,13 +61,118 @@ void ntfs_index_ctx_put(ntfs_index_context *ictx)
 	return;
 }
 
+static int ntfs_index_header_inconsistent(ntfs_volume *vol,
+					  const INDEX_HEADER *ih,
+					  u32 bytes_available, u64 inum)
+{
+	u32 entries_offset, index_length, allocated_size;
+
+	if (bytes_available < sizeof(INDEX_HEADER)) {
+		ntfs_error(vol->sb,
+			   "index block in inode %llu is smaller than an index header.",
+			   (unsigned long long)inum);
+		return -EIO;
+	}
+
+	entries_offset = le32_to_cpu(ih->entries_offset);
+	index_length = le32_to_cpu(ih->index_length);
+	allocated_size = le32_to_cpu(ih->allocated_size);
+
+	if (entries_offset < sizeof(INDEX_HEADER) ||
+	    entries_offset > bytes_available) {
+		ntfs_error(vol->sb,
+			   "Invalid index entry offset in inode %llu.",
+			   (unsigned long long)inum);
+		return -EIO;
+	}
+
+	if (index_length <= entries_offset) {
+		ntfs_error(vol->sb,
+			   "No space for index entries in inode %llu.",
+			   (unsigned long long)inum);
+		return -EIO;
+	}
+
+	if (allocated_size < index_length) {
+		ntfs_error(vol->sb,
+			   "Index entries overflow in inode %llu.",
+			   (unsigned long long)inum);
+		return -EIO;
+	}
+
+	if (allocated_size > bytes_available || index_length > bytes_available) {
+		ntfs_error(vol->sb,
+			   "Index entries in inode %llu exceed the available buffer.",
+			   (unsigned long long)inum);
+		return -EIO;
+	}
+
+	return 0;
+}
+
+/*
+ * The size of block is assumed to have been checked to be what is
+ * defined in the index root.
+ *
+ * Returns 0 if no error was found, -EIO otherwise
+ *
+ * |<--->|  offsetof(INDEX_BLOCK, index)
+ * |     |<--->|  sizeof(INDEX_HEADER)
+ * |     |     |<----------------->|  le32_to_cpu(ih->entries_offset)
+ * |     |     |                   |<------>| index entry
+ * |     |     |<--------------------------------->|  le32_to_cpu(ih->index_length)
+ * |     |     |<----------------------------------------->|  le32_to_cpu(ih->allocated_size)
+ * |<----------------------------------------------------->|  block_size
+ *
+ * sizeof(INDEX_HEADER) <= ent_offset < ind_length <= alloc_size < bk_size
+ */
+int ntfs_index_block_inconsistent(ntfs_volume *vol,
+				  const INDEX_ALLOCATION *ib,
+				  u32 block_size, s64 vcn, u64 inum)
+{
+	u32 ib_size = (unsigned int)le32_to_cpu(ib->index.allocated_size) +
+		offsetof(INDEX_BLOCK, index);
+	struct super_block *sb = vol->sb;
+
+	ntfs_debug("Entering\n");
+
+	if (!ntfs_is_indx_record(ib->magic)) {
+		ntfs_error(sb, "Corrupt index block signature: vcn %lld inode %llu\n",
+			   vcn, (unsigned long long)inum);
+		return -EIO;
+	}
+
+	if (le64_to_cpu(ib->index_block_vcn) != vcn) {
+		ntfs_error(sb,
+			"Corrupt index block: s64 (%lld) is different from expected s64 (%lld) in inode %llu\n",
+			(long long)le64_to_cpu(ib->index_block_vcn),
+			vcn, inum);
+		return -EIO;
+	}
+
+	if (ib_size != block_size) {
+		ntfs_error(sb,
+			   "Corrupt index block : s64 (%lld) of inode %llu has a size (%u) differing from the index specified size (%u)\n",
+			   vcn, inum, ib_size, block_size);
+		return -EIO;
+	}
+
+	if (ntfs_index_header_inconsistent(vol, &ib->index,
+					   block_size -
+					   offsetof(INDEX_BLOCK, index),
+					   inum))
+		return -EIO;
+
+	return 0;
+}
+
 /**
  * ntfs_index_lookup - find a key in an index and return its index entry
  * @key:	[IN] key for which to search in the index
  * @key_len:	[IN] length of @key in bytes
  * @ictx:	[IN/OUT] context describing the index and the returned entry
  *
- * Before calling ntfs_index_lookup(), @ictx must have been obtained from a
+ * Before calling ntfs_index_lookup(), @ictx must be obtained from a
  * call to ntfs_index_ctx_get().
  *
  * Look for the @key in the index specified by the index lookup context @ictx.
