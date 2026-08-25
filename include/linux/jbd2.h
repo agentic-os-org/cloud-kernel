@@ -1305,7 +1305,6 @@ struct journal_s
 #endif
 	atomic_t proxy_exec_refcount;
 	bool proxy_exec;
-	bool proxy_exec_for_highclass;
 
 	/**
 	 * @jbd2_trans_commit_key:

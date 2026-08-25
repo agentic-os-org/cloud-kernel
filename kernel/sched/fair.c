@@ -7419,6 +7419,11 @@ static void throttle_cfs_rq_work(struct callback_head *work)
 		 */
 		if (!cfs_rq->throttle_count)
 			return;
+
+		/* Holding jbd2 lock, defer throttle until lock release */
+		if (p->proxy_exec)
+			return;
+
 		rq = scope.rq;
 		update_rq_clock(rq);
 		WARN_ON_ONCE(p->throttled || !list_empty(&p->throttle_node));
@@ -7580,6 +7585,18 @@ static inline void task_throttle_setup_work(struct task_struct *p)
 		return;
 
 	task_work_add(p, &p->sched_throttle_work, TWA_RESUME);
+}
+
+void sched_proxy_exec_end(void)
+{
+	struct task_struct *p = current;
+
+	p->proxy_exec = false;
+
+	scoped_guard(task_rq_lock, p) {
+		if (cfs_rq_of(&p->se)->throttle_count)
+			task_throttle_setup_work(p);
+	}
 }
 
 static void record_throttle_clock(struct cfs_rq *cfs_rq)
@@ -8389,6 +8406,7 @@ static void task_throttle_setup_work(struct task_struct *p) {}
 static bool task_is_throttled(struct task_struct *p) { return false; }
 static void dequeue_throttled_task(struct task_struct *p, int flags) {}
 static bool enqueue_throttled_task(struct task_struct *p) { return false; }
+void sched_proxy_exec_end(void) { current->proxy_exec = false; }
 static void record_throttle_clock(struct cfs_rq *cfs_rq) {}
 
 static inline int cfs_rq_throttled(struct cfs_rq *cfs_rq)

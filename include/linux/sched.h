@@ -2720,13 +2720,6 @@ void create_rich_container_reaper(struct task_struct *tsk);
 #else
 static inline void create_rich_container_reaper(struct task_struct *tsk) { }
 #endif
-extern void sched_move_task_to_root_task_group(struct task_struct *tsk,
-					       bool proxy_exec_for_highclass);
-extern void sched_move_task_to_origin_task_group(struct task_struct *tsk);
-DECLARE_STATIC_KEY_FALSE(__jbd2_proxy_exec_enabled);
-static inline bool jbd2_proxy_exec_disabled(void)
-{
-	return !static_branch_unlikely(&__jbd2_proxy_exec_enabled);
-}
+extern void sched_proxy_exec_end(void);
 extern void sched_task_release(struct task_struct *p);
 #endif

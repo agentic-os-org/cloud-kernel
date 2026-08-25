@@ -9276,15 +9276,6 @@ void sched_release_group(struct task_group *tg)
 	spin_unlock_irqrestore(&task_group_lock, flags);
 }
 
-/*
- * Proxy exec only supports jbd2 lock currently, and when other locks supported, we'll
- * add the judgement into proxy_exec_enabled().
- */
-static inline bool proxy_exec_enabled(void)
-{
-	return !jbd2_proxy_exec_disabled();
-}
-
 static void sched_change_group(struct task_struct *tsk)
 {
 	struct task_group *tg;
@@ -9297,10 +9288,7 @@ static void sched_change_group(struct task_struct *tsk)
 	tg = container_of(task_css_check(tsk, cpu_cgrp_id, true),
 			  struct task_group, css);
 	tg = autogroup_task_group(tsk, tg);
-	if (proxy_exec_enabled() && unlikely(tsk->proxy_exec))
-		tsk->sched_task_group = &root_task_group;
-	else
-		tsk->sched_task_group = tg;
+	tsk->sched_task_group = tg;
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	if (tsk->sched_class->task_change_group)
@@ -9367,37 +9355,6 @@ void sched_move_task(struct task_struct *tsk, bool for_autogroup)
 		resched_curr(rq);
 	}
 
-}
-
-void sched_move_task_to_root_task_group(struct task_struct *tsk, bool proxy_exec_for_highclass)
-{
-	if (tsk->sched_task_group == &root_task_group)
-		return;
-
-	if (tsk->sched_class != &fair_sched_class)
-		return;
-
-	if (!proxy_exec_for_highclass && !task_is_idle(tsk))
-		return;
-
-	tsk->proxy_exec = true;
-	sched_move_task(tsk, false);
-}
-
-void sched_move_task_to_origin_task_group(struct task_struct *tsk)
-{
-	struct task_group *orig_tg;
-
-	if (!tsk->proxy_exec)
-		return;
-
-	tsk->proxy_exec = false;
-	orig_tg = container_of(task_css_check(tsk, cpu_cgrp_id, true),
-			  struct task_group, css);
-	orig_tg = autogroup_task_group(tsk, orig_tg);
-
-	if (orig_tg != tsk->sched_task_group)
-		sched_move_task(tsk, false);
 }
 
 static struct cgroup_subsys_state *
