@@ -30,7 +30,7 @@ obj-y += kvm_host.o
 kvm-$(CONFIG_HW_PERF_EVENTS)  += pmu-emul.o pmu.o
 
 ifdef CONFIG_KVM_ARM_HOST_VHE_ONLY
-ccflags-y += -I $(srctree)/$(src)/hyp/include
+ccflags-y += -I$(srctree)/arch/arm64/kvm/hyp/include
 
 kvm-y += $(addprefix hyp/, vgic-v3-sr.o aarch32.o vgic-v2-cpuif-proxy.o entry.o \
 	   fpsimd.o hyp-entry.o exception.o pgtable.o)
