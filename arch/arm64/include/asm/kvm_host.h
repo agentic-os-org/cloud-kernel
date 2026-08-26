@@ -921,6 +921,14 @@ struct kvm_vcpu_arch {
 		gpa_t base;
 	} steal;
 
+#ifdef CONFIG_PARAVIRT_SCHED
+	/* Guest PV sched state */
+	struct {
+		bool pv_unhalted;
+		gpa_t base;
+	} pvsched;
+#endif
+
 	/* Per-vcpu CCSIDR override or NULL */
 	u32 *ccsidr;
 
@@ -1346,6 +1354,33 @@ static inline bool kvm_arm_is_pvtime_enabled(struct kvm_vcpu_arch *vcpu_arch)
 {
 	return (vcpu_arch->steal.base != INVALID_GPA);
 }
+
+#ifdef CONFIG_PARAVIRT_SCHED
+void kvm_update_pvsched_preempted(struct kvm_vcpu *vcpu, u32 preempted);
+long kvm_pvsched_kick_vcpu(struct kvm_vcpu *vcpu);
+
+static inline void kvm_arm_pvsched_vcpu_init(struct kvm_vcpu_arch *vcpu_arch)
+{
+	vcpu_arch->pvsched.base = INVALID_GPA;
+}
+
+static inline bool kvm_arm_is_pvsched_enabled(struct kvm_vcpu_arch *vcpu_arch)
+{
+	return (vcpu_arch->pvsched.base != INVALID_GPA);
+}
+#else
+static inline void kvm_update_pvsched_preempted(struct kvm_vcpu *vcpu,
+						u32 preempted) {}
+static inline long kvm_pvsched_kick_vcpu(struct kvm_vcpu *vcpu)
+{
+	return 0;
+}
+static inline void kvm_arm_pvsched_vcpu_init(struct kvm_vcpu_arch *vcpu_arch) {}
+static inline bool kvm_arm_is_pvsched_enabled(struct kvm_vcpu_arch *vcpu_arch)
+{
+	return false;
+}
+#endif
 
 struct kvm_vcpu *kvm_mpidr_to_vcpu(struct kvm *kvm, unsigned long mpidr);
 
