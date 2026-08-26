@@ -1596,57 +1596,6 @@ static const struct proc_ops jbd2_proxy_exec_proc_ops = {
 	.proc_release           = single_release,
 };
 
-static int jbd2_seq_proxy_exec_for_highclass_show(struct seq_file *m, void *v)
-{
-	journal_t *journal = m->private;
-
-	seq_printf(m, "%d\n", journal->proxy_exec_for_highclass);
-	return 0;
-}
-
-static int jbd2_seq_proxy_exec_for_highclass_open(struct inode *inode, struct file *filp)
-{
-	journal_t *journal = pde_data(inode);
-
-	return single_open(filp, jbd2_seq_proxy_exec_for_highclass_show, journal);
-}
-
-static ssize_t jbd2_seq_proxy_exec_for_highclass_write(struct file *file,
-			const char __user *buf, size_t count, loff_t *offset)
-{
-	struct inode *inode = file_inode(file);
-	journal_t *journal = pde_data(inode);
-	char buffer[PROC_NUMBUF];
-	unsigned long long proxy_exec_for_highclass;
-	int err;
-
-	memset(buffer, 0, sizeof(buffer));
-	if (count > sizeof(buffer) - 1)
-		count = sizeof(buffer) - 1;
-	if (copy_from_user(buffer, buf, count)) {
-		err = -EFAULT;
-		goto out;
-	}
-
-	err = kstrtoull(strstrip(buffer), 0, &proxy_exec_for_highclass);
-	if (err)
-		goto out;
-	if (proxy_exec_for_highclass != 0 && proxy_exec_for_highclass != 1) {
-		err = -EINVAL;
-		goto out;
-	}
-	WRITE_ONCE(journal->proxy_exec_for_highclass, proxy_exec_for_highclass);
-out:
-	return err < 0 ? err : count;
-}
-
-static const struct proc_ops jbd2_proxy_exec_for_highclass_proc_ops = {
-	.proc_open              = jbd2_seq_proxy_exec_for_highclass_open,
-	.proc_read              = seq_read,
-	.proc_write             = jbd2_seq_proxy_exec_for_highclass_write,
-	.proc_lseek             = seq_lseek,
-	.proc_release           = single_release,
-};
 
 static struct proc_dir_entry *proc_jbd2_stats;
 
@@ -1664,8 +1613,6 @@ static void jbd2_stats_proc_init(journal_t *journal)
 				 &jbd2_stall_thresh_proc_ops, journal);
 		proc_create_data("proxy_exec", 0644, journal->j_proc_entry,
 				&jbd2_proxy_exec_proc_ops, journal);
-		proc_create_data("proxy_exec_for_highclass", 0644, journal->j_proc_entry,
-				&jbd2_proxy_exec_for_highclass_proc_ops, journal);
 	}
 }
 
@@ -1676,7 +1623,6 @@ static void jbd2_stats_proc_exit(journal_t *journal)
 	remove_proc_entry("stats", journal->j_proc_entry);
 	remove_proc_entry("stall_thresh", journal->j_proc_entry);
 	remove_proc_entry("proxy_exec", journal->j_proc_entry);
-	remove_proc_entry("proxy_exec_for_highclass", journal->j_proc_entry);
 	remove_proc_entry(journal->j_devname, proc_jbd2_stats);
 }
 
@@ -2153,7 +2099,6 @@ journal_t *jbd2_journal_init_inode(struct inode *inode)
 	jbd2_stats_proc_init(journal);
 	atomic_set(&journal->proxy_exec_refcount, 0);
 	journal->proxy_exec = false;
-	journal->proxy_exec_for_highclass = false;
 
 	return journal;
 }

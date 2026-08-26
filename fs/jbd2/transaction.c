@@ -438,7 +438,7 @@ repeat:
 	handle->h_start_jiffies = jiffies;
 	atomic_inc(&transaction->t_updates);
 	if (jbd2_proxy_exec_enabled(journal, true) && jbd2_proxy_exec_try_get(journal))
-		sched_move_task_to_root_task_group(current, journal->proxy_exec_for_highclass);
+		current->proxy_exec = true;
 	atomic_inc(&transaction->t_handle_count);
 	jbd2_debug(4, "Handle %p given %d credits (total %d, free %lu)\n",
 		  handle, blocks,
@@ -742,11 +742,11 @@ static void stop_this_handle(handle_t *handle)
 	if (atomic_dec_and_test(&transaction->t_updates))
 		wake_up(&journal->j_wait_updates);
 
+	rwsem_release(&journal->j_trans_commit_map, _THIS_IP_);
 	if (jbd2_proxy_exec_enabled(journal, false)) {
-		sched_move_task_to_origin_task_group(current);
+		sched_proxy_exec_end();
 		jbd2_proxy_exec_put(journal);
 	}
-	rwsem_release(&journal->j_trans_commit_map, _THIS_IP_);
 	/*
 	 * Scope of the GFP_NOFS context is over here and so we can restore the
 	 * original alloc context.
