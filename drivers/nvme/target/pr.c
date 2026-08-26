@@ -46,7 +46,7 @@ u16 nvmet_set_feat_resv_notif_mask(struct nvmet_req *req, u32 mask)
 
 	if (mask & ~(NVMET_PR_NOTIFI_MASK_ALL)) {
 		req->error_loc = offsetof(struct nvme_common_command, cdw11);
-		return NVME_SC_INVALID_FIELD | NVME_SC_DNR;
+		return NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
 	}
 
 	if (nsid != U32_MAX) {
@@ -54,7 +54,7 @@ u16 nvmet_set_feat_resv_notif_mask(struct nvmet_req *req, u32 mask)
 		if (status)
 			return status;
 		if (!req->ns->pr.enable)
-			return NVME_SC_INVALID_FIELD | NVME_SC_DNR;
+			return NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
 
 		WRITE_ONCE(req->ns->pr.notify_mask, mask);
 		goto success;
@@ -79,7 +79,7 @@ u16 nvmet_get_feat_resv_notif_mask(struct nvmet_req *req)
 		return status;
 
 	if (!req->ns->pr.enable)
-		return NVME_SC_INVALID_FIELD | NVME_SC_DNR;
+		return NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
 
 	nvmet_set_result(req, READ_ONCE(req->ns->pr.notify_mask));
 	return status;
@@ -238,7 +238,7 @@ static u16 nvmet_pr_register(struct nvmet_req *req,
 	reg = nvmet_pr_find_registrant(pr, &ctrl->hostid);
 	if (reg) {
 		if (reg->rkey != nrkey)
-			status = NVME_SC_RESERVATION_CONFLICT | NVME_SC_DNR;
+			status = NVME_SC_RESERVATION_CONFLICT | NVME_STATUS_DNR;
 		kfree(new);
 		goto out;
 	}
@@ -290,7 +290,7 @@ static u16 nvmet_pr_unregister(struct nvmet_req *req,
 			       struct nvmet_pr_register_data *d,
 			       bool ignore_key)
 {
-	u16 status = NVME_SC_RESERVATION_CONFLICT | NVME_SC_DNR;
+	u16 status = NVME_SC_RESERVATION_CONFLICT | NVME_STATUS_DNR;
 	struct nvmet_ctrl *ctrl = req->sq->ctrl;
 	struct nvmet_pr *pr = &req->ns->pr;
 	struct nvmet_pr_registrant *reg;
@@ -352,7 +352,7 @@ static u16 nvmet_pr_replace(struct nvmet_req *req,
 			    struct nvmet_pr_register_data *d,
 			    bool ignore_key)
 {
-	u16 status = NVME_SC_RESERVATION_CONFLICT | NVME_SC_DNR;
+	u16 status = NVME_SC_RESERVATION_CONFLICT | NVME_STATUS_DNR;
 	struct nvmet_ctrl *ctrl = req->sq->ctrl;
 	struct nvmet_pr *pr = &req->ns->pr;
 	struct nvmet_pr_registrant *reg;
@@ -402,7 +402,7 @@ static void nvmet_execute_pr_register(struct nvmet_req *req)
 		break;
 	default:
 		req->error_loc = offsetof(struct nvme_common_command, cdw10);
-		status = NVME_SC_INVALID_OPCODE | NVME_SC_DNR;
+		status = NVME_SC_INVALID_OPCODE | NVME_STATUS_DNR;
 		break;
 	}
 free_data:
@@ -422,11 +422,11 @@ static u16 nvmet_pr_acquire(struct nvmet_req *req,
 
 	holder = rcu_dereference_protected(pr->holder, 1);
 	if (holder && reg != holder)
-		return  NVME_SC_RESERVATION_CONFLICT | NVME_SC_DNR;
+		return  NVME_SC_RESERVATION_CONFLICT | NVME_STATUS_DNR;
 	if (holder && reg == holder) {
 		if (holder->rtype == rtype)
 			return NVME_SC_SUCCESS;
-		return NVME_SC_RESERVATION_CONFLICT | NVME_SC_DNR;
+		return NVME_SC_RESERVATION_CONFLICT | NVME_STATUS_DNR;
 	}
 
 	nvmet_pr_set_new_holder(pr, rtype, reg);
@@ -460,7 +460,7 @@ static u16 nvmet_pr_unreg_all_host_by_prkey(struct nvmet_req *req, u64 prkey,
 					    uuid_t *send_hostid,
 					    bool abort)
 {
-	u16 status = NVME_SC_RESERVATION_CONFLICT | NVME_SC_DNR;
+	u16 status = NVME_SC_RESERVATION_CONFLICT | NVME_STATUS_DNR;
 	struct nvmet_pr_registrant *reg, *tmp;
 	struct nvmet_pr *pr = &req->ns->pr;
 	uuid_t hostid;
@@ -585,7 +585,7 @@ static u16 nvmet_pr_preempt(struct nvmet_req *req,
 	if (prkey)
 		return nvmet_pr_unreg_all_host_by_prkey(req, prkey,
 					&ctrl->hostid, abort);
-	return NVME_SC_INVALID_FIELD | NVME_SC_DNR;
+	return NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
 }
 
 static void nvmet_pr_do_abort(struct work_struct *w)
@@ -631,7 +631,7 @@ static u16 __nvmet_execute_pr_acquire(struct nvmet_req *req,
 		goto inc_gen;
 	default:
 		req->error_loc = offsetof(struct nvme_common_command, cdw10);
-		status = NVME_SC_INVALID_OPCODE | NVME_SC_DNR;
+		status = NVME_SC_INVALID_OPCODE | NVME_STATUS_DNR;
 		goto out;
 	}
 inc_gen:
@@ -658,7 +658,7 @@ static void nvmet_execute_pr_acquire(struct nvmet_req *req)
 	if (ignore_key ||
 	    rtype < NVME_PR_WRITE_EXCLUSIVE ||
 	    rtype > NVME_PR_EXCLUSIVE_ACCESS_ALL_REGS) {
-		status = NVME_SC_INVALID_FIELD | NVME_SC_DNR;
+		status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
 		goto out;
 	}
 
@@ -672,7 +672,7 @@ static void nvmet_execute_pr_acquire(struct nvmet_req *req)
 	if (status)
 		goto free_data;
 
-	status = NVME_SC_RESERVATION_CONFLICT | NVME_SC_DNR;
+	status = NVME_SC_RESERVATION_CONFLICT | NVME_STATUS_DNR;
 	down(&pr->pr_sem);
 	list_for_each_entry_rcu(reg, &pr->registrant_list, entry) {
 		if (uuid_equal(&reg->hostid, &ctrl->hostid) &&
@@ -712,7 +712,7 @@ static u16 nvmet_pr_release(struct nvmet_req *req,
 
 	original_rtype = holder->rtype;
 	if (original_rtype != rtype)
-		return NVME_SC_RESERVATION_CONFLICT | NVME_SC_DNR;
+		return NVME_SC_RESERVATION_CONFLICT | NVME_STATUS_DNR;
 
 	rcu_assign_pointer(pr->holder, NULL);
 
@@ -752,7 +752,7 @@ static u16 __nvmet_execute_pr_release(struct nvmet_req *req,
 		return NVME_SC_SUCCESS;
 	default:
 		req->error_loc = offsetof(struct nvme_common_command, cdw10);
-		return NVME_SC_INVALID_OPCODE | NVME_SC_DNR;
+		return NVME_SC_INVALID_OPCODE | NVME_STATUS_DNR;
 	}
 }
 
@@ -769,7 +769,7 @@ static void nvmet_execute_pr_release(struct nvmet_req *req)
 	u16 status;
 
 	if (ignore_key) {
-		status = NVME_SC_INVALID_FIELD | NVME_SC_DNR;
+		status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
 		goto out;
 	}
 
@@ -783,7 +783,7 @@ static void nvmet_execute_pr_release(struct nvmet_req *req)
 	if (status)
 		goto free_data;
 
-	status = NVME_SC_RESERVATION_CONFLICT | NVME_SC_DNR;
+	status = NVME_SC_RESERVATION_CONFLICT | NVME_STATUS_DNR;
 	down(&pr->pr_sem);
 	list_for_each_entry_rcu(reg, &pr->registrant_list, entry) {
 		if (uuid_equal(&reg->hostid, &ctrl->hostid) &&
@@ -818,13 +818,13 @@ static void nvmet_execute_pr_report(struct nvmet_req *req)
 	/* nvmet hostid(uuid_t) is 128 bit. */
 	if (!eds) {
 		req->error_loc = offsetof(struct nvme_common_command, cdw11);
-		status = NVME_SC_HOST_ID_INCONSIST | NVME_SC_DNR;
+		status = NVME_SC_HOST_ID_INCONSIST | NVME_STATUS_DNR;
 		goto out;
 	}
 
 	if (num_bytes < sizeof(struct nvme_reservation_status_ext)) {
 		req->error_loc = offsetof(struct nvme_common_command, cdw10);
-		status = NVME_SC_INVALID_FIELD | NVME_SC_DNR;
+		status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
 		goto out;
 	}
 
@@ -954,25 +954,25 @@ u16 nvmet_pr_check_cmd_access(struct nvmet_req *req)
 	switch (holder->rtype) {
 	case NVME_PR_WRITE_EXCLUSIVE:
 		if (nvmet_is_req_write_cmd_group(req))
-			status = NVME_SC_RESERVATION_CONFLICT | NVME_SC_DNR;
+			status = NVME_SC_RESERVATION_CONFLICT | NVME_STATUS_DNR;
 		break;
 	case NVME_PR_EXCLUSIVE_ACCESS:
 		if (nvmet_is_req_read_cmd_group(req) ||
 		    nvmet_is_req_write_cmd_group(req))
-			status = NVME_SC_RESERVATION_CONFLICT | NVME_SC_DNR;
+			status = NVME_SC_RESERVATION_CONFLICT | NVME_STATUS_DNR;
 		break;
 	case NVME_PR_WRITE_EXCLUSIVE_REG_ONLY:
 	case NVME_PR_WRITE_EXCLUSIVE_ALL_REGS:
 		if ((nvmet_is_req_write_cmd_group(req)) &&
 		    !nvmet_pr_find_registrant(pr, &ctrl->hostid))
-			status = NVME_SC_RESERVATION_CONFLICT | NVME_SC_DNR;
+			status = NVME_SC_RESERVATION_CONFLICT | NVME_STATUS_DNR;
 		break;
 	case NVME_PR_EXCLUSIVE_ACCESS_REG_ONLY:
 	case NVME_PR_EXCLUSIVE_ACCESS_ALL_REGS:
 		if ((nvmet_is_req_read_cmd_group(req) ||
 		    nvmet_is_req_write_cmd_group(req)) &&
 		    !nvmet_pr_find_registrant(pr, &ctrl->hostid))
-			status = NVME_SC_RESERVATION_CONFLICT | NVME_SC_DNR;
+			status = NVME_SC_RESERVATION_CONFLICT | NVME_STATUS_DNR;
 		break;
 	default:
 		pr_warn("the reservation type is set wrong, type:%d\n",
