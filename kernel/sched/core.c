@@ -9092,10 +9092,23 @@ static void sched_change_group(struct task_struct *tsk, int type)
 			  struct task_group, css);
 	tg = autogroup_task_group(tsk, tg);
 
-	if (proxy_exec_enabled() && unlikely(tsk->proxy_exec))
+	if (proxy_exec_enabled() && unlikely(tsk->proxy_exec)) {
 		tsk->sched_task_group = &root_task_group;
-	else
+#ifdef CONFIG_GROUP_IDENTITY
+		if (is_highclass_task(tsk))
+			tsk->se.id_flags |= ID_HIGHCLASS;
+#endif
+	} else {
 		tsk->sched_task_group = tg;
+#ifdef CONFIG_GROUP_IDENTITY
+		/*
+		 * No need to special-case PF_NO_SETAFFINITY tasks here:
+		 * they cannot be migrated between cgroups because
+		 * cgroup_procs_write_start() rejects them upfront.
+		 */
+		tsk->se.id_flags &= ~ID_HIGHCLASS;
+#endif
+	}
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	if (tsk->sched_class->task_change_group)
