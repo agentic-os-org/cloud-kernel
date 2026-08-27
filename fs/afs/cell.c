@@ -208,7 +208,7 @@ static struct afs_cell *afs_alloc_cell(struct afs_net *net,
 
 parse_failed:
 	if (ret == -EINVAL)
-		printk(KERN_ERR "kAFS: bad VL server IP address\n");
+		printk(KERN_ERR "kAFS: bad VL server address\n");
 error:
 	kfree(cell->name);
 	kfree(cell);
