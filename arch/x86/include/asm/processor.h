@@ -134,6 +134,8 @@ struct cpuinfo_x86 {
 	u16			cpu_core_id;
 	u16			cpu_die_id;
 	u16			logical_die_id;
+	// AMD Node ID and Nodes per Package info
+	u32			amd_node_id;
 	/* Index into per_cpu list: */
 	u16			cpu_index;
 	u32			microcode;
@@ -829,7 +831,6 @@ DECLARE_PER_CPU(u64, msr_misc_features_shadow);
 extern u16 get_llc_id(unsigned int cpu);
 
 #ifdef CONFIG_CPU_SUP_AMD
-extern u16 amd_get_nb_id(int cpu);
 extern u32 amd_get_nodes_per_socket(void);
 extern u32 amd_get_highest_perf(void);
 extern bool cpu_has_ibpb_brtype_microcode(void);
@@ -837,7 +838,6 @@ extern void amd_clear_divider(void);
 
 extern u32 hygon_get_nodes_per_socket(void);
 #else
-static inline u16 amd_get_nb_id(int cpu)		{ return 0; }
 static inline u32 amd_get_nodes_per_socket(void)	{ return 0; }
 static inline u32 amd_get_highest_perf(void)		{ return 0; }
 static inline bool cpu_has_ibpb_brtype_microcode(void)	{ return false; }
