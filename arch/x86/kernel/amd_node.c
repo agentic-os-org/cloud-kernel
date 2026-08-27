@@ -86,6 +86,8 @@ struct pci_dev *amd_node_get_root(u16 node)
 
 	/* Grab the pointer for the actual root device instance. */
 	root = pci_get_domain_bus_and_slot(0, bus, 0);
+	if (!root)
+		goto out;
 
 	pci_dbg(root, "is root for AMD node %u\n", node);
 out:
