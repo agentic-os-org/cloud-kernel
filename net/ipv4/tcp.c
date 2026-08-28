@@ -410,6 +410,7 @@ void tcp_init_sock(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
+	int rto_min_us;
 
 	tp->out_of_order_queue = RB_ROOT;
 	sk->tcp_rtx_queue = RB_ROOT;
@@ -418,7 +419,8 @@ void tcp_init_sock(struct sock *sk)
 	INIT_LIST_HEAD(&tp->tsorted_sent_queue);
 
 	icsk->icsk_rto = TCP_TIMEOUT_INIT;
-	icsk->icsk_rto_min = TCP_RTO_MIN;
+	rto_min_us = READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_rto_min_us);
+	icsk->icsk_rto_min = usecs_to_jiffies(rto_min_us);
 	icsk->icsk_delack_max = TCP_DELACK_MAX;
 	tp->mdev_us = jiffies_to_usecs(TCP_TIMEOUT_INIT);
 	minmax_reset(&tp->rtt_min, tcp_jiffies32, ~0U);
@@ -2827,8 +2829,8 @@ int tcp_disconnect(struct sock *sk, int flags)
 	icsk->icsk_probes_out = 0;
 	icsk->icsk_probes_tstamp = 0;
 	icsk->icsk_rto = TCP_TIMEOUT_INIT;
-	icsk->icsk_rto_min = TCP_RTO_MIN;
-	icsk->icsk_delack_max = TCP_DELACK_MAX;
+	WRITE_ONCE(icsk->icsk_rto_min, TCP_RTO_MIN);
+	WRITE_ONCE(icsk->icsk_delack_max, TCP_DELACK_MAX);
 	tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
 	tp->snd_cwnd = TCP_INIT_CWND;
 	tp->snd_cwnd_cnt = 0;
@@ -3246,6 +3248,26 @@ static int do_tcp_setsockopt(struct sock *sk, int level, int optname,
 
 	if (copy_from_sockptr(&val, optval, sizeof(val)))
 		return -EFAULT;
+
+	/* Handle options that can be set without locking the socket. */
+	switch (optname) {
+	case TCP_RTO_MIN_US: {
+		int rto_min = usecs_to_jiffies(val);
+
+		if (rto_min > TCP_RTO_MIN || rto_min < TCP_TIMEOUT_MIN)
+			return -EINVAL;
+		WRITE_ONCE(inet_csk(sk)->icsk_rto_min, rto_min);
+		return 0;
+	}
+	case TCP_DELACK_MAX_US: {
+		int delack_max = usecs_to_jiffies(val);
+
+		if (delack_max > TCP_DELACK_MAX || delack_max < TCP_TIMEOUT_MIN)
+			return -EINVAL;
+		WRITE_ONCE(inet_csk(sk)->icsk_delack_max, delack_max);
+		return 0;
+	}
+	}
 
 	lock_sock(sk);
 
@@ -4019,6 +4041,12 @@ zerocopy_rcv_out:
 		return err;
 	}
 #endif
+	case TCP_RTO_MIN_US:
+		val = jiffies_to_usecs(READ_ONCE(inet_csk(sk)->icsk_rto_min));
+		break;
+	case TCP_DELACK_MAX_US:
+		val = jiffies_to_usecs(READ_ONCE(inet_csk(sk)->icsk_delack_max));
+		break;
 	default:
 		return -ENOPROTOOPT;
 	}
