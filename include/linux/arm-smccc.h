@@ -750,5 +750,30 @@ asmlinkage void __arm_smccc_hvc(unsigned long a0, unsigned long a1,
 	})
 #endif /*CONFIG_ARM64*/
 
+#ifdef CONFIG_PARAVIRT_SCHED
+/* Paravirtualised sched calls */
+#define ARM_SMCCC_HV_PV_LOCK_FEATURES					\
+	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,				\
+			   ARM_SMCCC_SMC_64,				\
+			   ARM_SMCCC_OWNER_VENDOR_HYP,			\
+			   0xb0)
+
+#define ARM_SMCCC_HV_PV_LOCK_PREEMPTED					\
+	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,				\
+			   ARM_SMCCC_SMC_64,				\
+			   ARM_SMCCC_OWNER_VENDOR_HYP,			\
+			   0xb1)
+#define ARM_SMCCC_HV_PV_QSPINLOCK_FEATURES				\
+	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,				\
+			   ARM_SMCCC_SMC_64,				\
+			   ARM_SMCCC_OWNER_VENDOR_HYP,			\
+			   0xb2)
+#define ARM_SMCCC_HV_PV_QSPINLOCK_KICK_CPU					\
+	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,				\
+			   ARM_SMCCC_SMC_64,				\
+			   ARM_SMCCC_OWNER_STANDARD_HYP,		\
+			   0xb3)
+#endif /* CONFIG_PARAVIRT_SCHED */
+
 #endif /*__ASSEMBLY__*/
 #endif /*__LINUX_ARM_SMCCC_H*/

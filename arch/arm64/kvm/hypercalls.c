@@ -118,6 +118,14 @@ static bool kvm_smccc_test_fw_bmap(struct kvm_vcpu *vcpu, u32 func_id)
 	case ARM_SMCCC_VENDOR_HYP_KVM_PTP_FUNC_ID:
 		return test_bit(KVM_REG_ARM_VENDOR_HYP_BIT_PTP,
 				&smccc_feat->vendor_hyp_bmap);
+#ifdef CONFIG_PARAVIRT_SCHED
+	case ARM_SMCCC_HV_PV_LOCK_FEATURES:
+	case ARM_SMCCC_HV_PV_LOCK_PREEMPTED:
+	case ARM_SMCCC_HV_PV_QSPINLOCK_FEATURES:
+	case ARM_SMCCC_HV_PV_QSPINLOCK_KICK_CPU:
+		return test_bit(KVM_REG_ARM_VENDOR_HYP_BIT_PV_LOCK,
+				&smccc_feat->vendor_hyp_bmap);
+#endif /* CONFIG_PARAVIRT_SCHED */
 	default:
 		return false;
 	}
@@ -345,6 +353,16 @@ int kvm_smccc_call_handler(struct kvm_vcpu *vcpu)
 				     &smccc_feat->std_hyp_bmap))
 				val[0] = SMCCC_RET_SUCCESS;
 			break;
+#ifdef CONFIG_PARAVIRT_SCHED
+		case ARM_SMCCC_HV_PV_LOCK_FEATURES:
+			val[0] = SMCCC_RET_SUCCESS;
+			break;
+#endif /* CONFIG_PARAVIRT_SCHED */
+#ifdef CONFIG_PARAVIRT_SPINLOCKS
+		case ARM_SMCCC_HV_PV_QSPINLOCK_FEATURES:
+			val[0] = SMCCC_RET_SUCCESS;
+			break;
+#endif /* CONFIG_PARAVIRT_SPINLOCKS */
 		}
 		break;
 	case ARM_SMCCC_HV_PV_TIME_FEATURES:
@@ -355,6 +373,18 @@ int kvm_smccc_call_handler(struct kvm_vcpu *vcpu)
 		if (gpa != INVALID_GPA)
 			val[0] = gpa;
 		break;
+#ifdef CONFIG_PARAVIRT_SCHED
+	case ARM_SMCCC_HV_PV_LOCK_PREEMPTED:
+		gpa = smccc_get_arg1(vcpu);
+		if (gpa != INVALID_GPA) {
+			vcpu->arch.pvsched.base = gpa;
+			val[0] = SMCCC_RET_SUCCESS;
+		}
+		break;
+	case ARM_SMCCC_HV_PV_QSPINLOCK_KICK_CPU:
+		val[0] = kvm_pvsched_kick_vcpu(vcpu);
+		break;
+#endif /* CONFIG_PARAVIRT_SCHED */
 	case ARM_SMCCC_VENDOR_HYP_CALL_UID_FUNC_ID:
 		uuid = ARM_SMCCC_VENDOR_HYP_UID_KVM;
 		val[0] = smccc_uuid_to_reg(&uuid, 0);

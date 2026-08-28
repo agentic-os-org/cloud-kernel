@@ -170,6 +170,18 @@ static int kvm_handle_wfx(struct kvm_vcpu *vcpu)
 			vcpu_set_flag(vcpu, IN_WFIT);
 
 		kvm_vcpu_wfi(vcpu);
+#ifdef CONFIG_PARAVIRT_SCHED
+		/*
+		 * The 'pv_unhalted' flag should be updated to false as the
+		 * last step to prevent potential hangs. For example,
+		 * consider vCPU A waiting for a lock with kvm_wait(), and
+		 * vCPU B holding the lock. vCPU B uses kvm_kick_cpu to set
+		 * 'unhalted' to true first, but then pv_unhalted is set
+		 * back to false. This sequence can cause kvm_vcpu_wfi to
+		 * continuously wait for 'pv_unhalted' to become true.
+		 */
+		vcpu->arch.pvsched.pv_unhalted = false;
+#endif
 	}
 out:
 	kvm_incr_pc(vcpu);
