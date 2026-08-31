@@ -1786,4 +1786,7 @@ static inline void host_kvm_vcpu_pmu_resync_el0(void)
 }
 #endif
 
+u32 kvm_pv_cpu_freq_get(struct kvm_vcpu *vcpu);
+u32 kvm_pv_cpu_freq_get_v2(struct kvm_vcpu *vcpu);
+
 #endif /* __ARM64_KVM_HOST_H__ */

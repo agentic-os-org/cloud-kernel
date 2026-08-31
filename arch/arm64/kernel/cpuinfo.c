@@ -10,10 +10,12 @@
 #include <asm/cputype.h>
 #include <asm/cpufeature.h>
 #include <asm/fpsimd.h>
+#include <asm/pv_cpufreq-abi.h>
 
 #include <linux/bitops.h>
 #include <linux/bug.h>
 #include <linux/compat.h>
+#include <linux/cpufreq.h>
 #include <linux/elf.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -221,6 +223,7 @@ static int c_show(struct seq_file *m, void *v)
 	struct cpuinfo_arm64 *cpuinfo = v;
 	u32 midr = cpuinfo->reg_midr;
 	unsigned int index, total;
+	unsigned int freq;
 	bool rich_container = false;
 
 	index = cpu;
@@ -280,7 +283,14 @@ static int c_show(struct seq_file *m, void *v)
 	seq_puts(m, "CPU architecture: 8\n");
 	seq_printf(m, "CPU variant\t: 0x%x\n", MIDR_VARIANT(midr));
 	seq_printf(m, "CPU part\t: 0x%03x\n", MIDR_PARTNUM(midr));
-	seq_printf(m, "CPU revision\t: %d\n\n", MIDR_REVISION(midr));
+	seq_printf(m, "CPU revision\t: %d\n", MIDR_REVISION(midr));
+
+	freq = cpufreq_quick_get(cpu);
+	if (!freq)
+		freq = pv_cpufreq_get(cpu);
+	if (freq)
+		seq_printf(m, "CPU MHz\t\t: %u.%03u\n", freq / 1000, freq % 1000);
+	seq_puts(m, "\n");
 
 	return 0;
 }
