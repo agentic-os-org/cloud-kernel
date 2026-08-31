@@ -86,7 +86,8 @@ struct riscv_pmu {
 	void		(*event_mapped)(struct perf_event *event, struct mm_struct *mm);
 	void		(*event_unmapped)(struct perf_event *event, struct mm_struct *mm);
 	uint8_t		(*csr_index)(struct perf_event *event);
-	void		(*sched_task)(struct perf_event_pmu_context *ctx, bool sched_in);
+	void	(*sched_task)(struct perf_event_pmu_context *ctx,
+			      struct task_struct *task, bool sched_in);
 
 	struct cpu_hw_events	__percpu *hw_events;
 	struct hlist_node	node;
@@ -125,7 +126,8 @@ static inline bool riscv_pmu_ctr_supported(struct riscv_pmu *pmu)
 
 bool riscv_pmu_ctr_valid(struct perf_event *event);
 void riscv_pmu_ctr_consume(struct cpu_hw_events *cpuc, struct perf_event *event);
-void riscv_pmu_ctr_sched_task(struct perf_event_pmu_context *pmu_ctx, bool sched_in);
+void riscv_pmu_ctr_sched_task(struct perf_event_pmu_context *pmu_ctx,
+			      struct task_struct *task, bool sched_in);
 void riscv_pmu_ctr_add(struct perf_event *event);
 void riscv_pmu_ctr_del(struct perf_event *event);
 void riscv_pmu_ctr_enable(struct perf_event *event);
@@ -141,7 +143,7 @@ static inline bool riscv_pmu_ctr_valid(struct perf_event *event) { return false;
 static inline void riscv_pmu_ctr_consume(struct cpu_hw_events *cpuc,
 				      struct perf_event *event) { }
 static inline void riscv_pmu_ctr_sched_task(struct perf_event_pmu_context *,
-					    bool sched_in) { }
+					    struct task_struct *task, bool sched_in) { }
 static void riscv_pmu_ctr_add(struct perf_event *event) { }
 static void riscv_pmu_ctr_del(struct perf_event *event) { }
 static inline void riscv_pmu_ctr_enable(struct perf_event *event) { }

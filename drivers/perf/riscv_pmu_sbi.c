@@ -1205,9 +1205,9 @@ static void rvpmu_sbi_ctr_stop(struct perf_event *event, unsigned long flag)
 }
 
 static void pmu_sched_task(struct perf_event_pmu_context *pmu_ctx,
-			   bool sched_in)
+			   struct task_struct *task, bool sched_in)
 {
-	riscv_pmu_ctr_sched_task(pmu_ctx, sched_in);
+	riscv_pmu_ctr_sched_task(pmu_ctx, task, sched_in);
 }
 
 static int rvpmu_sbi_find_num_ctrs(void)

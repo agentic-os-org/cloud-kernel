@@ -16,7 +16,7 @@
 #include <linux/perf/riscv_pmu.h>
 #include <linux/cpufeature.h>
 #include <asm/hwcap.h>
-#include <asm/csr_ind.h>
+#include <asm/csr_indirect.h>
 #include <asm/csr.h>
 
 #define CTR_BRANCH_FILTERS_INH  (CTRCTL_EXCINH       | \
@@ -88,32 +88,32 @@ struct riscv_perf_task_context {
 
 static inline u64 get_ctr_src_reg(unsigned int ctr_idx)
 {
-	return csr_ind_read(CSR_SIREG, CTR_ENTRIES_FIRST, ctr_idx);
+	return csr_indirect_read(CSR_SIREG, CTR_ENTRIES_FIRST, ctr_idx);
 }
 
 static inline void set_ctr_src_reg(unsigned int ctr_idx, u64 value)
 {
-	return csr_ind_write(CSR_SIREG, CTR_ENTRIES_FIRST, ctr_idx, value);
+	return csr_indirect_write(CSR_SIREG, CTR_ENTRIES_FIRST, ctr_idx, value);
 }
 
 static inline u64 get_ctr_tgt_reg(unsigned int ctr_idx)
 {
-	return csr_ind_read(CSR_SIREG2, CTR_ENTRIES_FIRST, ctr_idx);
+	return csr_indirect_read(CSR_SIREG2, CTR_ENTRIES_FIRST, ctr_idx);
 }
 
 static inline void set_ctr_tgt_reg(unsigned int ctr_idx, u64 value)
 {
-	return csr_ind_write(CSR_SIREG2, CTR_ENTRIES_FIRST, ctr_idx, value);
+	return csr_indirect_write(CSR_SIREG2, CTR_ENTRIES_FIRST, ctr_idx, value);
 }
 
 static inline u64 get_ctr_data_reg(unsigned int ctr_idx)
 {
-	return csr_ind_read(CSR_SIREG3, CTR_ENTRIES_FIRST, ctr_idx);
+	return csr_indirect_read(CSR_SIREG3, CTR_ENTRIES_FIRST, ctr_idx);
 }
 
 static inline void set_ctr_data_reg(unsigned int ctr_idx, u64 value)
 {
-	return csr_ind_write(CSR_SIREG3, CTR_ENTRIES_FIRST, ctr_idx, value);
+	return csr_indirect_write(CSR_SIREG3, CTR_ENTRIES_FIRST, ctr_idx, value);
 }
 
 static inline bool ctr_record_valid(u64 ctr_src)
@@ -131,14 +131,14 @@ static inline unsigned int ctr_get_cycles(u64 ctr_data)
 	const unsigned int cce = FIELD_GET(CTRDATA_CCE_MASK, ctr_data);
 	const unsigned int ccm = FIELD_GET(CTRDATA_CCM_MASK, ctr_data);
 
-	if (ctr_data & CTRDATA_CCV)
+	if (!(ctr_data & CTRDATA_CCV))
 		return 0;
 
 	/* Formula to calculate cycles from spec: (2^12 + CCM) << CCE-1 */
 	if (cce > 0)
 		return (4096 + ccm) << (cce - 1);
 
-	return FIELD_GET(CTRDATA_CCM_MASK, ctr_data);
+	return ccm;
 }
 
 static inline unsigned int ctr_get_type(u64 ctr_data)
@@ -420,7 +420,7 @@ static void riscv_pmu_ctr_save(void *ctx, unsigned int depth)
  * On ctxswout, sched_in = false, called before the PMU is stopped
  */
 void riscv_pmu_ctr_sched_task(struct perf_event_pmu_context *pmu_ctx,
-			      bool sched_in)
+			      struct task_struct *task, bool sched_in)
 {
 	struct riscv_pmu *rvpmu = to_riscv_pmu(pmu_ctx->pmu);
 	struct cpu_hw_events *cpuc = this_cpu_ptr(rvpmu->hw_events);
