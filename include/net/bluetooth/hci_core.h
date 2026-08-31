@@ -1335,8 +1335,7 @@ hci_conn_hash_lookup_big_state(struct hci_dev *hdev, __u8 handle,  __u16 state)
 	rcu_read_lock();
 
 	list_for_each_entry_rcu(c, &h->list, list) {
-		if (bacmp(&c->dst, BDADDR_ANY) || c->type != ISO_LINK ||
-			c->state != state)
+		if (c->type != ISO_LINK || c->state != state)
 			continue;
 
 		if (handle == c->iso_qos.bcast.big) {
