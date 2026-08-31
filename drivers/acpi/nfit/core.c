@@ -55,6 +55,8 @@ MODULE_PARM_DESC(force_labels, "Opt-in to labels despite missing methods");
 LIST_HEAD(acpi_descs);
 DEFINE_MUTEX(acpi_desc_lock);
 
+DEFINE_MUTEX(acpi_notify_lock);
+
 static struct workqueue_struct *nfit_wq;
 
 struct nfit_table_prev {
@@ -1702,9 +1704,15 @@ static void acpi_nvdimm_notify(acpi_handle handle, u32 event, void *data)
 	struct acpi_device *adev = data;
 	struct device *dev = &adev->dev;
 
-	device_lock(dev->parent);
-	__acpi_nvdimm_notify(dev, event);
-	device_unlock(dev->parent);
+	/*
+	 * Locking is needed here for synchronization with driver probe and
+	 * removal and the parent NFIT device's ACPI driver data pointer is
+	 * NULL when teardown is in progress.
+	 */
+	guard(mutex)(&acpi_notify_lock);
+
+	if (acpi_driver_data(to_acpi_device(dev->parent)))
+		__acpi_nvdimm_notify(dev, event);
 }
 
 static bool acpi_nvdimm_has_method(struct acpi_device *adev, char *method)
@@ -3154,11 +3162,10 @@ EXPORT_SYMBOL_GPL(acpi_nfit_init);
 static int acpi_nfit_flush_probe(struct nvdimm_bus_descriptor *nd_desc)
 {
 	struct acpi_nfit_desc *acpi_desc = to_acpi_desc(nd_desc);
-	struct device *dev = acpi_desc->dev;
 
-	/* Bounce the device lock to flush acpi_nfit_add / acpi_nfit_notify */
-	device_lock(dev);
-	device_unlock(dev);
+	/* Bounce the notify lock to flush acpi_nfit_add / acpi_nfit_notify */
+	mutex_lock(&acpi_notify_lock);
+	mutex_unlock(&acpi_notify_lock);
 
 	/* Bounce the init_mutex to complete initial registration */
 	mutex_lock(&acpi_desc->init_mutex);
@@ -3291,17 +3298,15 @@ static void acpi_nfit_notify(acpi_handle handle, u32 event, void *data)
 {
 	struct acpi_device *adev = data;
 
-	device_lock(&adev->dev);
-	__acpi_nfit_notify(&adev->dev, handle, event);
-	device_unlock(&adev->dev);
-}
+	/*
+	 * Locking is needed here for synchronization with driver probe and
+	 * removal and the ACPI driver data pointer is NULL when teardown
+	 * is in progress.
+	 */
+	guard(mutex)(&acpi_notify_lock);
 
-static void acpi_nfit_remove_notify_handler(void *data)
-{
-	struct acpi_device *adev = data;
-
-	acpi_dev_remove_notify_handler(adev, ACPI_DEVICE_NOTIFY,
-				       acpi_nfit_notify);
+	if (acpi_driver_data(adev))
+		__acpi_nfit_notify(&adev->dev, handle, event);
 }
 
 void acpi_nfit_shutdown(void *data)
@@ -3344,13 +3349,14 @@ static int acpi_nfit_add(struct acpi_device *adev)
 	acpi_size sz;
 	int rc = 0;
 
-	rc = acpi_dev_install_notify_handler(adev, ACPI_DEVICE_NOTIFY,
-					     acpi_nfit_notify);
-	if (rc)
-		return rc;
+	/*
+	 * Prevent acpi_nfit_notify() from progressing until the probe is
+	 * complete in case there is a concurrent event to process.
+	 */
+	guard(mutex)(&acpi_notify_lock);
 
-	rc = devm_add_action_or_reset(dev, acpi_nfit_remove_notify_handler,
-					adev);
+	rc = devm_acpi_install_notify_handler(dev, ACPI_DEVICE_NOTIFY,
+					      acpi_nfit_notify);
 	if (rc)
 		return rc;
 
@@ -3364,6 +3370,11 @@ static int acpi_nfit_add(struct acpi_device *adev)
 		 * data in the format of a series of NFIT Structures.
 		 */
 		dev_dbg(dev, "failed to find NFIT at startup\n");
+		/*
+		 * Let acpi_nfit_update_notify() run in case it will need to
+		 * allocate the acpi_desc object.
+		 */
+		adev->driver_data = dev;
 		return 0;
 	}
 
@@ -3398,10 +3409,21 @@ static int acpi_nfit_add(struct acpi_device *adev)
 				+ sizeof(struct acpi_table_nfit),
 				sz - sizeof(struct acpi_table_nfit));
 
+	if (rc) {
+		acpi_nfit_shutdown(acpi_desc);
+		return rc;
+	}
+
+	rc = devm_add_action_or_reset(dev, acpi_nfit_shutdown, acpi_desc);
 	if (rc)
 		return rc;
 
-	return devm_add_action_or_reset(dev, acpi_nfit_shutdown, acpi_desc);
+	/*
+	 * Let notify handlers operate (the actual value of the ACPI driver
+	 * data pointer does not matter here so long as it is not NULL).
+	 */
+	adev->driver_data = dev;
+	return 0;
 }
 
 static void acpi_nfit_update_notify(struct device *dev, acpi_handle handle)
