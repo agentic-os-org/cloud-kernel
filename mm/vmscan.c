@@ -1555,6 +1555,9 @@ free_it:
 		nr_reclaimed += nr_pages;
 
 		folio_unqueue_deferred_split(folio);
+		/* Deferred TLB entries must be flushed before a large folio is freed */
+		if (unlikely(folio_test_large(folio)))
+			try_to_unmap_flush();
 		if (folio_batch_add(&free_folios, folio) == 0) {
 			mem_cgroup_uncharge_folios(&free_folios);
 			try_to_unmap_flush();
