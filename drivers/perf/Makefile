@@ -31,4 +31,4 @@ obj-$(CONFIG_DWC_PCIE_PMU) += dwc_pcie_pmu.o
 obj-$(CONFIG_ARM_CORESIGHT_PMU_ARCH_SYSTEM_PMU) += arm_cspmu/
 obj-$(CONFIG_MESON_DDR_PMU) += amlogic/
 obj-$(CONFIG_CXL_PMU) += cxl_pmu.o
-obj-$(CONFIG_LRW_DDR_PMU) += lrw_ddr_pmu.o
+obj-$(CONFIG_LPRS_DDR_PMU) += lprs_ddr_pmu.o
