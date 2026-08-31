@@ -48,6 +48,7 @@ struct imsic_priv {
 
 	/* Global configuration common for all HARTs */
 	struct imsic_global_config		global;
+	phys_addr_t				*smode_msi_pa;
 
 	/* Per-CPU state */
 	struct imsic_local_priv __percpu	*lpriv;
