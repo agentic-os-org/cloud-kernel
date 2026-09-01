@@ -1353,6 +1353,9 @@ config DUPTEXT
 config IOMMU_MM_DATA
 	bool
 
+config EXECMEM
+	bool
+
 config NUMA_MEMBLKS
 	bool
 
@@ -1387,7 +1390,6 @@ config BPF_THP
 
 	  WARNING: This feature is unstable and may change in future kernel
 endif # BPF_MM
-
 source "mm/damon/Kconfig"
 
 config ASYNC_FORK
