@@ -159,7 +159,7 @@ int amdgpu_gart_table_vram_pin(struct amdgpu_device *adev)
 	r = amdgpu_bo_kmap(adev->gart.bo, &adev->gart.ptr);
 	if (r)
 		amdgpu_bo_unpin(adev->gart.bo);
-	else
+	else if (!adev->gart.ready)
 		memset_io(adev->gart.ptr, adev->gart.gart_pte_flags,
 			  adev->gart.table_size);
 	amdgpu_bo_unreserve(adev->gart.bo);
