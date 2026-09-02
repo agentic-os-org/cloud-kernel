@@ -3337,7 +3337,7 @@ void tr_del_hugepage(struct page *page)
 	spin_lock_irqsave(&hr_queue->reclaim_queue_lock, flags);
 	if (!list_empty(hugepage_reclaim_list(head))) {
 		list_del_init(hugepage_reclaim_list(head));
-		tr_set_hugepage_time(page, 0);
+		tr_set_hugepage_time(head, 0);
 		hr_queue->queue_length--;
 	}
 	spin_unlock_irqrestore(&hr_queue->reclaim_queue_lock, flags);
