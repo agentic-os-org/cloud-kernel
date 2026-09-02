@@ -69,11 +69,7 @@ DEFINE_PER_CPU(unsigned, mce_exception_count);
 
 DEFINE_PER_CPU_READ_MOSTLY(unsigned int, mce_num_banks);
 
-struct mce_bank {
-	u64			ctl;			/* subevents to enable */
-	bool			init;			/* initialise bank? */
-};
-static DEFINE_PER_CPU_READ_MOSTLY(struct mce_bank[MAX_NR_BANKS], mce_banks_array);
+DEFINE_PER_CPU_READ_MOSTLY(struct mce_bank[MAX_NR_BANKS], mce_banks_array);
 
 #define ATTR_LEN               16
 /* One object for each MCE bank, shared by all CPUs */
@@ -132,7 +128,7 @@ static void (*quirk_no_way_out)(int bank, struct mce *m, struct pt_regs *regs);
 BLOCKING_NOTIFIER_HEAD(x86_mce_decoder_chain);
 
 /* Do initial initialization of a struct mce */
-noinstr void mce_setup(struct mce *m)
+void mce_setup(struct mce *m)
 {
 	memset(m, 0, sizeof(struct mce));
 	m->cpu = m->extcpu = smp_processor_id();
@@ -157,7 +153,7 @@ EXPORT_PER_CPU_SYMBOL_GPL(injectm);
 
 void mce_log(struct mce *m)
 {
-	if (!mce_gen_pool_add(m))
+	if (mce_gen_pool_add(m))
 		irq_work_queue(&mce_irq_work);
 }
 EXPORT_SYMBOL_GPL(mce_log);
@@ -428,7 +424,7 @@ static noinstr u64 mce_rdmsrl(u32 msr)
 	return EAX_EDX_VAL(val, low, high);
 }
 
-static noinstr void mce_wrmsrl(u32 msr, u64 v)
+noinstr void mce_wrmsrl(u32 msr, u64 v)
 {
 	u32 low, high;
 
@@ -461,9 +457,15 @@ static noinstr void mce_wrmsrl(u32 msr, u64 v)
  * check into our "mce" struct so that we can use it later to assess
  * the severity of the problem as we read per-bank specific details.
  */
-static inline void mce_gather_info(struct mce *m, struct pt_regs *regs)
+static noinstr void mce_gather_info(struct mce *m, struct pt_regs *regs)
 {
+	/*
+	 * Enable instrumentation around mce_setup() which calls external
+	 * facilities.
+	 */
+	instrumentation_begin();
 	mce_setup(m);
+	instrumentation_end();
 
 	m->mcgstatus = mce_rdmsrl(MSR_IA32_MCG_STATUS);
 	if (regs) {
@@ -489,10 +491,10 @@ static inline void mce_gather_info(struct mce *m, struct pt_regs *regs)
 	}
 }
 
-int mce_available(struct cpuinfo_x86 *c)
+bool mce_available(struct cpuinfo_x86 *c)
 {
 	if (mca_cfg.disabled)
-		return 0;
+		return false;
 	return cpu_has(c, X86_FEATURE_MCE) && cpu_has(c, X86_FEATURE_MCA);
 }
 
@@ -517,6 +519,9 @@ int mce_usable_address(struct mce *m)
 {
 	if (!(m->status & MCI_STATUS_ADDRV))
 		return 0;
+
+	if (m->cpuvendor == X86_VENDOR_AMD)
+		return amd_mce_usable_address(m);
 
 	/* Checks after this one are Intel/Zhaoxin-specific: */
 	if (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL &&
@@ -672,7 +677,10 @@ static noinstr void mce_read_aux(struct mce *m, int i)
 		m->misc = mce_rdmsrl(mca_msr_reg(i, MCA_MISC));
 
 	if (m->status & MCI_STATUS_ADDRV) {
-		m->addr = mce_rdmsrl(mca_msr_reg(i, MCA_ADDR));
+		if (m->kflags & MCE_CHECK_DFR_REGS)
+			m->addr = mce_rdmsrl(MSR_AMD64_SMCA_MCx_DEADDR(i));
+		else
+			m->addr = mce_rdmsrl(mca_msr_reg(i, MCA_ADDR));
 
 		/*
 		 * Mask the reported address by the reported granularity.
@@ -683,15 +691,7 @@ static noinstr void mce_read_aux(struct mce *m, int i)
 			m->addr <<= shift;
 		}
 
-		/*
-		 * Extract [55:<lsb>] where lsb is the least significant
-		 * *valid* bit of the address bits.
-		 */
-		if (mce_flags.smca) {
-			u8 lsb = (m->addr >> 56) & 0x3f;
-
-			m->addr &= GENMASK_ULL(55, lsb);
-		}
+		smca_extract_err_addr(m);
 	}
 
 	if (mce_flags.smca) {
@@ -703,6 +703,84 @@ static noinstr void mce_read_aux(struct mce *m, int i)
 }
 
 DEFINE_PER_CPU(unsigned, mce_poll_count);
+
+/*
+ * We have three scenarios for checking for Deferred errors:
+ *
+ * 1) Non-SMCA systems check MCA_STATUS and log error if found.
+ * 2) SMCA systems check MCA_STATUS. If error is found then log it and also
+ *    clear MCA_DESTAT.
+ * 3) SMCA systems check MCA_DESTAT, if error was not found in MCA_STATUS, and
+ *    log it.
+ */
+static bool smca_should_log_poll_error(struct mce *m)
+{
+	if (m->status & MCI_STATUS_VAL)
+		return true;
+
+	m->status = mce_rdmsrl(MSR_AMD64_SMCA_MCx_DESTAT(m->bank));
+	if ((m->status & MCI_STATUS_VAL) && (m->status & MCI_STATUS_DEFERRED)) {
+		m->kflags |= MCE_CHECK_DFR_REGS;
+		return true;
+	}
+
+	return false;
+}
+
+/*
+ * Newer Intel systems that support software error
+ * recovery need to make additional checks. Other
+ * CPUs should skip over uncorrected errors, but log
+ * everything else.
+ */
+static bool ser_should_log_poll_error(struct mce *m)
+{
+	/* Log "not enabled" (speculative) errors */
+	if (!(m->status & MCI_STATUS_EN))
+		return true;
+
+	/*
+	 * Log UCNA (SDM: 15.6.3 "UCR Error Classification")
+	 * UC == 1 && PCC == 0 && S == 0
+	 */
+	if (!(m->status & MCI_STATUS_PCC) && !(m->status & MCI_STATUS_S))
+		return true;
+
+	return false;
+}
+
+static bool should_log_poll_error(enum mcp_flags flags, struct mce *m)
+{
+	if (mce_flags.smca)
+		return smca_should_log_poll_error(m);
+
+	/* If this entry is not valid, ignore it. */
+	if (!(m->status & MCI_STATUS_VAL))
+		return false;
+
+	/*
+	 * If we are logging everything (at CPU online) or this
+	 * is a corrected error, then we must log it.
+	 */
+	if ((flags & MCP_UC) || !(m->status & MCI_STATUS_UC))
+		return true;
+
+	if (mca_cfg.ser)
+		return ser_should_log_poll_error(m);
+
+	if (m->status & MCI_STATUS_UC)
+		return false;
+
+	return true;
+}
+
+static void clear_bank(struct mce *m)
+{
+	if (m->cpuvendor == X86_VENDOR_AMD)
+		return amd_clear_bank(m);
+
+	mce_wrmsrl(mca_msr_reg(m->bank, MCA_STATUS), 0);
+}
 
 /*
  * Poll for corrected events or events that happened before reset.
@@ -719,10 +797,9 @@ DEFINE_PER_CPU(unsigned, mce_poll_count);
  * is already totally * confused. In this case it's likely it will
  * not fully execute the machine check handler either.
  */
-bool machine_check_poll(enum mcp_flags flags, mce_banks_t *b)
+void machine_check_poll(enum mcp_flags flags, mce_banks_t *b)
 {
 	struct mce_bank *mce_banks = this_cpu_ptr(mce_banks_array);
-	bool error_seen = false;
 	struct mce m;
 	int i;
 
@@ -744,56 +821,26 @@ bool machine_check_poll(enum mcp_flags flags, mce_banks_t *b)
 		barrier();
 		m.status = mce_rdmsrl(mca_msr_reg(i, MCA_STATUS));
 
-		/* If this entry is not valid, ignore it */
-		if (!(m.status & MCI_STATUS_VAL))
+		/*
+		 * Update storm tracking here, before checking for the
+		 * MCI_STATUS_VAL bit. Valid corrected errors count
+		 * towards declaring, or maintaining, storm status. No
+		 * error in a bank counts towards avoiding, or ending,
+		 * storm status.
+		 */
+		if (!mca_cfg.cmci_disabled)
+			mce_track_storm(&m);
+
+		/* Verify that the error should be logged based on hardware conditions. */
+		if (!should_log_poll_error(flags, &m))
 			continue;
 
-		/*
-		 * If we are logging everything (at CPU online) or this
-		 * is a corrected error, then we must log it.
-		 */
-		if ((flags & MCP_UC) || !(m.status & MCI_STATUS_UC))
-			goto log_it;
-
-		/*
-		 * Newer Intel systems that support software error
-		 * recovery need to make additional checks. Other
-		 * CPUs should skip over uncorrected errors, but log
-		 * everything else.
-		 */
-		if (!mca_cfg.ser) {
-			if (m.status & MCI_STATUS_UC)
-				continue;
-			goto log_it;
-		}
-
-		/* Log "not enabled" (speculative) errors */
-		if (!(m.status & MCI_STATUS_EN))
-			goto log_it;
-
-		/*
-		 * Log UCNA (SDM: 15.6.3 "UCR Error Classification")
-		 * UC == 1 && PCC == 0 && S == 0
-		 */
-		if (!(m.status & MCI_STATUS_PCC) && !(m.status & MCI_STATUS_S))
-			goto log_it;
-
-		/*
-		 * Skip anything else. Presumption is that our read of this
-		 * bank is racing with a machine check. Leave the log alone
-		 * for do_machine_check() to deal with it.
-		 */
-		continue;
-
-log_it:
 		if (m.status & MCI_STATUS_UC)
 			report_fault_event(-1, NULL, SLIGHT_FAULT,
 				FE_MCE, "UCE hardware failure");
 		else
 			report_fault_event(-1, NULL, SLIGHT_FAULT,
 				FE_MCE, "CE hardware failure");
-
-		error_seen = true;
 
 		if (flags & MCP_DONTLOG)
 			goto clear_it;
@@ -814,10 +861,7 @@ log_it:
 			mce_log(&m);
 
 clear_it:
-		/*
-		 * Clear state for this bank.
-		 */
-		mce_wrmsrl(mca_msr_reg(i, MCA_STATUS), 0);
+		clear_bank(&m);
 	}
 
 	/*
@@ -826,8 +870,6 @@ clear_it:
 	 */
 
 	sync_core();
-
-	return error_seen;
 }
 EXPORT_SYMBOL_GPL(machine_check_poll);
 
@@ -1319,11 +1361,64 @@ static void queue_task_work(struct mce *m, char *msg, void (*func)(struct callba
 }
 
 /*
- * The actual machine check handler. This only handles real
- * exceptions when something got corrupted coming in through int 18.
+ * Disable fast string copy and return from the MCE handler upon the first SRAR
+ * MCE on bank 1 due to a CPU erratum on Intel Skylake/Cascade Lake/Cooper Lake
+ * CPUs.
+ * The fast string copy instructions ("REP; MOVS*") could consume an
+ * uncorrectable memory error in the cache line _right after_ the desired region
+ * to copy and raise an MCE with RIP pointing to the instruction _after_ the
+ * "REP; MOVS*".
+ * This mitigation addresses the issue completely with the caveat of performance
+ * degradation on the CPU affected. This is still better than the OS crashing on
+ * MCEs raised on an irrelevant process due to "REP; MOVS*" accesses from a
+ * kernel context (e.g., copy_page).
  *
- * This is executed in NMI context not subject to normal locking rules. This
- * implies that most kernel services cannot be safely used. Don't even
+ * Returns true when fast string copy on CPU has been disabled.
+ */
+static noinstr bool quirk_skylake_repmov(void)
+{
+	u64 mcgstatus   = mce_rdmsrl(MSR_IA32_MCG_STATUS);
+	u64 misc_enable = mce_rdmsrl(MSR_IA32_MISC_ENABLE);
+	u64 mc1_status;
+
+	/*
+	 * Apply the quirk only to local machine checks, i.e., no broadcast
+	 * sync is needed.
+	 */
+	if (!(mcgstatus & MCG_STATUS_LMCES) ||
+	    !(misc_enable & MSR_IA32_MISC_ENABLE_FAST_STRING))
+		return false;
+
+	mc1_status = mce_rdmsrl(MSR_IA32_MCx_STATUS(1));
+
+	/* Check for a software-recoverable data fetch error. */
+	if ((mc1_status &
+	     (MCI_STATUS_VAL | MCI_STATUS_OVER | MCI_STATUS_UC | MCI_STATUS_EN |
+	      MCI_STATUS_ADDRV | MCI_STATUS_MISCV | MCI_STATUS_PCC |
+	      MCI_STATUS_AR | MCI_STATUS_S)) ==
+	     (MCI_STATUS_VAL |                   MCI_STATUS_UC | MCI_STATUS_EN |
+	      MCI_STATUS_ADDRV | MCI_STATUS_MISCV |
+	      MCI_STATUS_AR | MCI_STATUS_S)) {
+		misc_enable &= ~MSR_IA32_MISC_ENABLE_FAST_STRING;
+		mce_wrmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
+		mce_wrmsrl(MSR_IA32_MCx_STATUS(1), 0);
+
+		instrumentation_begin();
+		pr_err_once("Erratum detected, disable fast string copy instructions.\n");
+		instrumentation_end();
+
+		return true;
+	}
+
+	return false;
+}
+
+/*
+ * The actual machine check handler. This only handles real exceptions when
+ * something got corrupted coming in through int 18.
+ *
+ * This is executed in #MC context not subject to normal locking rules.
+ * This implies that most kernel services cannot be safely used. Don't even
  * think about putting a printk in there!
  *
  * On Intel systems this is entered on all CPUs in parallel through
@@ -1335,6 +1430,14 @@ static void queue_task_work(struct mce *m, char *msg, void (*func)(struct callba
  * issues: if the machine check was due to a failure of the memory
  * backing the user stack, tracing that reads the user stack will cause
  * potentially infinite recursion.
+ *
+ * Currently, the #MC handler calls out to a number of external facilities
+ * and, therefore, allows instrumentation around them. The optimal thing to
+ * have would be to do the absolutely minimal work required in #MC context
+ * and have instrumentation disabled only around that. Further processing can
+ * then happen in process context where instrumentation is allowed. Achieving
+ * that requires careful auditing and modifications. Until then, the code
+ * allows instrumentation temporarily, where required. *
  */
 noinstr void do_machine_check(struct pt_regs *regs)
 {
@@ -1379,6 +1482,9 @@ noinstr void do_machine_check(struct pt_regs *regs)
 	if (ex_get_fixup_type(regs->ip) == EX_TYPE_FIX_MC &&
 			fixup_exception(regs, X86_TRAP_MC, 0, 0))
 		return;
+
+	if (mce_flags.skx_repmov_quirk && quirk_skylake_repmov())
+		goto clear;
 
 	this_cpu_inc(mce_exception_count);
 
@@ -1504,6 +1610,7 @@ noinstr void do_machine_check(struct pt_regs *regs)
 	instrumentation_end();
 
 out:
+clear:
 	mce_wrmsrl(MSR_IA32_MCG_STATUS, 0);
 }
 EXPORT_SYMBOL_GPL(do_machine_check);
@@ -1531,13 +1638,6 @@ static unsigned long check_interval = INITIAL_CHECK_INTERVAL;
 static DEFINE_PER_CPU(unsigned long, mce_next_interval); /* in jiffies */
 static DEFINE_PER_CPU(struct timer_list, mce_timer);
 
-static unsigned long mce_adjust_timer_default(unsigned long interval)
-{
-	return interval;
-}
-
-static unsigned long (*mce_adjust_timer)(unsigned long interval) = mce_adjust_timer_default;
-
 static void __start_timer(struct timer_list *t, unsigned long interval)
 {
 	unsigned long when = jiffies + interval;
@@ -1551,6 +1651,11 @@ static void __start_timer(struct timer_list *t, unsigned long interval)
 	local_irq_restore(flags);
 }
 
+static bool should_enable_timer(unsigned long iv)
+{
+	return !mca_cfg.ignore_ce && iv;
+}
+
 static void mce_timer_fn(struct timer_list *t)
 {
 	struct timer_list *cpu_t = this_cpu_ptr(&mce_timer);
@@ -1560,14 +1665,8 @@ static void mce_timer_fn(struct timer_list *t)
 
 	iv = __this_cpu_read(mce_next_interval);
 
-	if (mce_available(this_cpu_ptr(&cpu_info))) {
+	if (mce_available(this_cpu_ptr(&cpu_info)))
 		machine_check_poll(0, this_cpu_ptr(&mce_poll_banks));
-
-		if (mce_intel_cmci_poll()) {
-			iv = mce_adjust_timer(iv);
-			goto done;
-		}
-	}
 
 	/*
 	 * Alert userspace if needed. If we logged an MCE, reduce the polling
@@ -1578,23 +1677,29 @@ static void mce_timer_fn(struct timer_list *t)
 	else
 		iv = min(iv * 2, round_jiffies_relative(check_interval * HZ));
 
-done:
-	__this_cpu_write(mce_next_interval, iv);
-	__start_timer(t, iv);
+	if (mce_get_storm_mode()) {
+		__start_timer(t, HZ);
+	} else if (should_enable_timer(iv)) {
+		__this_cpu_write(mce_next_interval, iv);
+		__start_timer(t, iv);
+	}
 }
 
 /*
- * Ensure that the timer is firing in @interval from now.
+ * When a storm starts on any bank on this CPU, switch to polling
+ * once per second. When the storm ends, revert to the default
+ * polling interval.
  */
-void mce_timer_kick(unsigned long interval)
+void mce_timer_kick(bool storm)
 {
 	struct timer_list *t = this_cpu_ptr(&mce_timer);
-	unsigned long iv = __this_cpu_read(mce_next_interval);
 
-	__start_timer(t, interval);
+	mce_set_storm_mode(storm);
 
-	if (interval < iv)
-		__this_cpu_write(mce_next_interval, interval);
+	if (storm)
+		__start_timer(t, HZ);
+	else
+		__this_cpu_write(mce_next_interval, check_interval * HZ);
 }
 
 /* Must not be called in IRQ context where del_timer_sync() can deadlock */
@@ -1611,7 +1716,7 @@ static void mce_timer_delete_all(void)
  * Can be called from interrupt context, but not from machine check/NMI
  * context.
  */
-int mce_notify_irq(void)
+bool mce_notify_irq(void)
 {
 	/* Not more than two messages every minute */
 	static DEFINE_RATELIMIT_STATE(ratelimit, 60*HZ, 2);
@@ -1622,9 +1727,9 @@ int mce_notify_irq(void)
 		if (__ratelimit(&ratelimit))
 			pr_info(HW_ERR "Machine check events logged\n");
 
-		return 1;
+		return true;
 	}
-	return 0;
+	return false;
 }
 EXPORT_SYMBOL_GPL(mce_notify_irq);
 
@@ -1638,12 +1743,13 @@ static void __mcheck_cpu_mce_banks_init(void)
 		struct mce_bank *b = &mce_banks[i];
 
 		/*
-		 * Init them all, __mcheck_cpu_apply_quirks() is going to apply
-		 * the required vendor quirks before
+		 * Init them all by default.
+		 *
+		 * The required vendor quirks will be applied before
 		 * __mcheck_cpu_init_clear_banks() does the final bank setup.
 		 */
 		b->ctl = -1ULL;
-		b->init = 1;
+		b->init = true;
 	}
 }
 
@@ -1668,13 +1774,6 @@ static void __mcheck_cpu_cap_init(void)
 	this_cpu_write(mce_num_banks, b);
 
 	__mcheck_cpu_mce_banks_init();
-
-	/* Use accurate RIP reporting if available. */
-	if ((cap & MCG_EXT_P) && MCG_EXT_CNT(cap) >= 9)
-		mca_cfg.rip_msr = MSR_IA32_MCG_EIP;
-
-	if (cap & MCG_SER_P)
-		mca_cfg.ser = 1;
 }
 
 static void __mcheck_cpu_init_generic(void)
@@ -1693,8 +1792,6 @@ static void __mcheck_cpu_init_generic(void)
 	 */
 	bitmap_fill(all_banks, MAX_NR_BANKS);
 	machine_check_poll(MCP_UC | MCP_QUEUE_LOG | m_fl, &all_banks);
-
-	cr4_set_bits(X86_CR4_MCE);
 
 	rdmsrl(MSR_IA32_MCG_CAP, cap);
 	if (cap & MCG_CTL_P)
@@ -1771,135 +1868,82 @@ static void quirk_sandybridge_ifu(int bank, struct mce *m, struct pt_regs *regs)
 	m->cs = regs->cs;
 }
 
-/* Add per CPU specific workarounds here */
-static int __mcheck_cpu_apply_quirks(struct cpuinfo_x86 *c)
+static void amd_apply_global_quirks(struct cpuinfo_x86 *c)
 {
-	struct mce_bank *mce_banks = this_cpu_ptr(mce_banks_array);
-	struct mca_config *cfg = &mca_cfg;
-
-	if (c->x86_vendor == X86_VENDOR_UNKNOWN) {
-		pr_info("unknown CPU type - not enabling MCE support\n");
-		return -EOPNOTSUPP;
+	if (c->x86 < 0x11 && mca_cfg.bootlog < 0) {
+		/*
+		 * Lots of broken BIOS around that don't clear them
+		 * by default and leave crap in there. Don't log:
+		 */
+		mca_cfg.bootlog = 0;
 	}
 
-	/* This should be disabled by the BIOS, but isn't always */
-	if (c->x86_vendor == X86_VENDOR_AMD) {
-		if (c->x86 == 15 && this_cpu_read(mce_num_banks) > 4) {
-			/*
-			 * disable GART TBL walk error reporting, which
-			 * trips off incorrectly with the IOMMU & 3ware
-			 * & Cerberus:
-			 */
-			clear_bit(10, (unsigned long *)&mce_banks[4].ctl);
-		}
-		if (c->x86 < 0x11 && cfg->bootlog < 0) {
-			/*
-			 * Lots of broken BIOS around that don't clear them
-			 * by default and leave crap in there. Don't log:
-			 */
-			cfg->bootlog = 0;
-		}
-		/*
-		 * Various K7s with broken bank 0 around. Always disable
-		 * by default.
-		 */
-		if (c->x86 == 6 && this_cpu_read(mce_num_banks) > 0)
-			mce_banks[0].ctl = 0;
-
-		/*
-		 * overflow_recov is supported for F15h Models 00h-0fh
-		 * even though we don't have a CPUID bit for it.
-		 */
-		if (c->x86 == 0x15 && c->x86_model <= 0xf)
-			mce_flags.overflow_recov = 1;
-
-	}
-
-	if (c->x86_vendor == X86_VENDOR_INTEL) {
-		/*
-		 * SDM documents that on family 6 bank 0 should not be written
-		 * because it aliases to another special BIOS controlled
-		 * register.
-		 * But it's not aliased anymore on model 0x1a+
-		 * Don't ignore bank 0 completely because there could be a
-		 * valid event later, merely don't write CTL0.
-		 */
-
-		if (c->x86 == 6 && c->x86_model < 0x1A && this_cpu_read(mce_num_banks) > 0)
-			mce_banks[0].init = 0;
-
-		/*
-		 * All newer Intel systems support MCE broadcasting. Enable
-		 * synchronization with a one second timeout.
-		 */
-		if ((c->x86 > 6 || (c->x86 == 6 && c->x86_model >= 0xe)) &&
-			cfg->monarch_timeout < 0)
-			cfg->monarch_timeout = USEC_PER_SEC;
-
-		/*
-		 * There are also broken BIOSes on some Pentium M and
-		 * earlier systems:
-		 */
-		if (c->x86 == 6 && c->x86_model <= 13 && cfg->bootlog < 0)
-			cfg->bootlog = 0;
-
-		if (c->x86 == 6 && c->x86_model == 45)
-			quirk_no_way_out = quirk_sandybridge_ifu;
-	}
-
-	if (c->x86_vendor == X86_VENDOR_ZHAOXIN ||
-		c->x86_vendor == X86_VENDOR_CENTAUR) {
-		/*
-		 * All newer Zhaoxin CPUs support MCE broadcasting. Enable
-		 * synchronization with a one second timeout.
-		 */
-		if (c->x86 > 6 || (c->x86_model == 0x19 || c->x86_model == 0x1f)) {
-			if (cfg->monarch_timeout < 0)
-				cfg->monarch_timeout = USEC_PER_SEC;
-		}
-		mca_cfg.bios_cmci_threshold = 1;
-	}
-
-	if (cfg->monarch_timeout < 0)
-		cfg->monarch_timeout = 0;
-	if (cfg->bootlog != 0)
-		cfg->panic_timeout = 30;
-
-	return 0;
+	/*
+	 * overflow_recov is supported for F15h Models 00h-0fh
+	 * even though we don't have a CPUID bit for it.
+	 */
+	if (c->x86 == 0x15 && c->x86_model <= 0xf)
+		mce_flags.overflow_recov = 1;
 }
 
-static int __mcheck_cpu_ancient_init(struct cpuinfo_x86 *c)
+static void intel_apply_global_quirks(struct cpuinfo_x86 *c)
+{
+	/*
+	 * All newer Intel systems support MCE broadcasting. Enable
+	 * synchronization with a one second timeout.
+	 */
+	if ((c->x86 > 6 || (c->x86 == 6 && c->x86_model >= 0xe)) &&
+	    mca_cfg.monarch_timeout < 0)
+		mca_cfg.monarch_timeout = USEC_PER_SEC;
+
+	/*
+	 * There are also broken BIOSes on some Pentium M and
+	 * earlier systems:
+	 */
+	if (c->x86 == 6 && c->x86_model <= 13 && mca_cfg.bootlog < 0)
+		mca_cfg.bootlog = 0;
+
+	if (c->x86 == 6 && c->x86_model == 45)
+		quirk_no_way_out = quirk_sandybridge_ifu;
+
+	/*
+	 * Skylake, Cascacde Lake and Cooper Lake require a quirk on
+	 * rep movs.
+	 */
+	if (c->x86 == 6 && c->x86_model == INTEL_FAM6_SKYLAKE_X)
+		mce_flags.skx_repmov_quirk = 1;
+}
+
+static void zhaoxin_apply_global_quirks(struct cpuinfo_x86 *c)
+{
+	/*
+	 * All newer Zhaoxin CPUs support MCE broadcasting. Enable
+	 * synchronization with a one second timeout.
+	 */
+	if (c->x86 > 6 || (c->x86_model == 0x19 || c->x86_model == 0x1f)) {
+		if (mca_cfg.monarch_timeout < 0)
+			mca_cfg.monarch_timeout = USEC_PER_SEC;
+	}
+	mca_cfg.bios_cmci_threshold = 1;
+}
+
+static bool __mcheck_cpu_ancient_init(struct cpuinfo_x86 *c)
 {
 	if (c->x86 != 5)
-		return 0;
+		return false;
 
 	switch (c->x86_vendor) {
 	case X86_VENDOR_INTEL:
 		intel_p5_mcheck_init(c);
-		return 1;
-		break;
+		return true;
 	case X86_VENDOR_CENTAUR:
 		winchip_mcheck_init(c);
-		return 1;
-		break;
+		return true;
 	default:
-		return 0;
+		return false;
 	}
 
-	return 0;
-}
-
-/*
- * Init basic CPU features needed for early decoding of MCEs.
- */
-static void __mcheck_cpu_init_early(struct cpuinfo_x86 *c)
-{
-	if (c->x86_vendor == X86_VENDOR_AMD || c->x86_vendor == X86_VENDOR_HYGON) {
-		mce_flags.overflow_recov = !!cpu_has(c, X86_FEATURE_OVERFLOW_RECOV);
-		mce_flags.succor	 = !!cpu_has(c, X86_FEATURE_SUCCOR);
-		mce_flags.smca		 = !!cpu_has(c, X86_FEATURE_SMCA);
-		mce_flags.amd_threshold	 = 1;
-	}
+	return false;
 }
 
 static void mce_zhaoxin_feature_init(struct cpuinfo_x86 *c)
@@ -1923,7 +1967,6 @@ static void mce_zhaoxin_feature_init(struct cpuinfo_x86 *c)
 
 	intel_init_cmci();
 	intel_init_lmce();
-	mce_adjust_timer = cmci_intel_adjust_timer;
 }
 
 static void mce_zhaoxin_feature_clear(struct cpuinfo_x86 *c)
@@ -1936,7 +1979,6 @@ static void __mcheck_cpu_init_vendor(struct cpuinfo_x86 *c)
 	switch (c->x86_vendor) {
 	case X86_VENDOR_INTEL:
 		mce_intel_feature_init(c);
-		mce_adjust_timer = cmci_intel_adjust_timer;
 		break;
 
 	case X86_VENDOR_AMD: {
@@ -1978,11 +2020,10 @@ static void mce_start_timer(struct timer_list *t)
 {
 	unsigned long iv = check_interval * HZ;
 
-	if (mca_cfg.ignore_ce || !iv)
-		return;
-
-	this_cpu_write(mce_next_interval, iv);
-	__start_timer(t, iv);
+	if (should_enable_timer(iv)) {
+		this_cpu_write(mce_next_interval, iv);
+		__start_timer(t, iv);
+	}
 }
 
 static void __mcheck_cpu_setup_timer(void)
@@ -2098,6 +2139,54 @@ DEFINE_IDTENTRY_RAW(exc_machine_check)
 }
 #endif
 
+void mca_bsp_init(struct cpuinfo_x86 *c)
+{
+	u64 cap;
+
+	if (!mce_available(c))
+		return;
+
+	if (c->x86_vendor == X86_VENDOR_UNKNOWN) {
+		mca_cfg.disabled = 1;
+		pr_info("unknown CPU type - not enabling MCE support\n");
+		return;
+	}
+
+	mce_flags.overflow_recov = cpu_feature_enabled(X86_FEATURE_OVERFLOW_RECOV);
+	mce_flags.succor	 = cpu_feature_enabled(X86_FEATURE_SUCCOR);
+	mce_flags.smca		 = cpu_feature_enabled(X86_FEATURE_SMCA);
+
+	if (mce_flags.smca)
+		smca_bsp_init();
+
+	rdmsrl(MSR_IA32_MCG_CAP, cap);
+
+	/* Use accurate RIP reporting if available. */
+	if ((cap & MCG_EXT_P) && MCG_EXT_CNT(cap) >= 9)
+		mca_cfg.rip_msr = MSR_IA32_MCG_EIP;
+
+	if (cap & MCG_SER_P)
+		mca_cfg.ser = 1;
+
+	switch (c->x86_vendor) {
+	case X86_VENDOR_AMD:
+		amd_apply_global_quirks(c);
+		break;
+	case X86_VENDOR_INTEL:
+		intel_apply_global_quirks(c);
+		break;
+	case X86_VENDOR_ZHAOXIN:
+	case X86_VENDOR_CENTAUR:
+		zhaoxin_apply_global_quirks(c);
+		break;
+	}
+
+	if (mca_cfg.monarch_timeout < 0)
+		mca_cfg.monarch_timeout = 0;
+	if (mca_cfg.bootlog != 0)
+		mca_cfg.panic_timeout = 30;
+}
+
 /*
  * Called for each booted CPU to set up machine checks.
  * Must be called with preempt off:
@@ -2115,12 +2204,7 @@ void mcheck_cpu_init(struct cpuinfo_x86 *c)
 
 	__mcheck_cpu_cap_init();
 
-	if (__mcheck_cpu_apply_quirks(c) < 0) {
-		mca_cfg.disabled = 1;
-		return;
-	}
-
-	if (mce_gen_pool_init()) {
+	if (!mce_gen_pool_init()) {
 		mca_cfg.disabled = 1;
 		pr_emerg("Couldn't allocate MCE records pool!\n");
 		return;
@@ -2128,12 +2212,12 @@ void mcheck_cpu_init(struct cpuinfo_x86 *c)
 
 	machine_check_vector = do_machine_check;
 
-	__mcheck_cpu_init_early(c);
+	__mcheck_cpu_setup_timer();
 	__mcheck_cpu_init_generic();
 	__mcheck_cpu_init_vendor(c);
 	__mcheck_cpu_init_clear_banks();
 	__mcheck_cpu_check_banks();
-	__mcheck_cpu_setup_timer();
+	cr4_set_bits(X86_CR4_MCE);
 }
 
 /*
@@ -2304,6 +2388,7 @@ static void mce_syscore_resume(void)
 	__mcheck_cpu_init_generic();
 	__mcheck_cpu_init_vendor(raw_cpu_ptr(&cpu_info));
 	__mcheck_cpu_init_clear_banks();
+	cr4_set_bits(X86_CR4_MCE);
 }
 
 static struct syscore_ops mce_syscore_ops = {
@@ -2323,6 +2408,7 @@ static void mce_cpu_restart(void *data)
 	__mcheck_cpu_init_generic();
 	__mcheck_cpu_init_clear_banks();
 	__mcheck_cpu_init_timer();
+	cr4_set_bits(X86_CR4_MCE);
 }
 
 /* Reinit MCEs after user configuration changes */
@@ -2621,8 +2707,6 @@ static void mce_reenable_cpu(void)
 
 static int mce_cpu_dead(unsigned int cpu)
 {
-	mce_intel_hcpu_update(cpu);
-
 	/* intentionally ignoring frozen here */
 	if (!cpuhp_tasks_frozen)
 		cmci_rediscover();
@@ -2632,15 +2716,9 @@ static int mce_cpu_dead(unsigned int cpu)
 static int mce_cpu_online(unsigned int cpu)
 {
 	struct timer_list *t = this_cpu_ptr(&mce_timer);
-	int ret;
 
 	mce_device_create(cpu);
-
-	ret = mce_threshold_create_device(cpu);
-	if (ret) {
-		mce_device_remove(cpu);
-		return ret;
-	}
+	mce_threshold_create_device(cpu);
 	mce_reenable_cpu();
 	mce_start_timer(t);
 	return 0;

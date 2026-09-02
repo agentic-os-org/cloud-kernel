@@ -7,6 +7,7 @@
  */
 #include <linux/smp.h>
 #include <linux/mm.h>
+#include <linux/slab.h>
 #include <linux/genalloc.h>
 #include <linux/llist.h>
 #include "internal.h"
@@ -16,14 +17,14 @@
  * used to save error information organized in a lock-less list.
  *
  * This memory pool is only to be used to save MCE records in MCE context.
- * MCE events are rare, so a fixed size memory pool should be enough. Use
- * 2 pages to save MCE events for now (~80 MCE records at most).
+ * MCE events are rare, so a fixed size memory pool should be enough.
+ * Allocate on a sliding scale based on number of CPUs.
  */
-#define MCE_POOLSZ	(2 * PAGE_SIZE)
+#define MCE_MIN_ENTRIES	80
+#define MCE_PER_CPU	2
 
 static struct gen_pool *mce_evt_pool;
 static LLIST_HEAD(mce_event_llist);
-static char gen_pool_buf[MCE_POOLSZ];
 
 /*
  * Compare the record "t" with each of the records on list "l" to see if
@@ -94,54 +95,63 @@ bool mce_gen_pool_empty(void)
 	return llist_empty(&mce_event_llist);
 }
 
-int mce_gen_pool_add(struct mce *mce)
+bool mce_gen_pool_add(struct mce *mce)
 {
 	struct mce_evt_llist *node;
 
 	if (filter_mce(mce))
-		return -EINVAL;
+		return false;
 
 	if (!mce_evt_pool)
-		return -EINVAL;
+		return false;
 
 	node = (void *)gen_pool_alloc(mce_evt_pool, sizeof(*node));
 	if (!node) {
 		pr_warn_ratelimited("MCE records pool full!\n");
-		return -ENOMEM;
+		return false;
 	}
 
 	memcpy(&node->mce, mce, sizeof(*mce));
 	llist_add(&node->llnode, &mce_event_llist);
 
-	return 0;
+	return true;
 }
 
-static int mce_gen_pool_create(void)
+static bool mce_gen_pool_create(void)
 {
-	struct gen_pool *tmpp;
-	int ret = -ENOMEM;
+	int mce_numrecords, mce_poolsz, order;
+	struct gen_pool *gpool;
+	void *mce_pool;
 
-	tmpp = gen_pool_create(ilog2(sizeof(struct mce_evt_llist)), -1);
-	if (!tmpp)
-		goto out;
+	order = order_base_2(sizeof(struct mce_evt_llist));
+	gpool = gen_pool_create(order, -1);
+	if (!gpool)
+		return false;
 
-	ret = gen_pool_add(tmpp, (unsigned long)gen_pool_buf, MCE_POOLSZ, -1);
-	if (ret) {
-		gen_pool_destroy(tmpp);
-		goto out;
+	mce_numrecords = max_t(unsigned int, MCE_MIN_ENTRIES, num_possible_cpus() * MCE_PER_CPU);
+	mce_poolsz = mce_numrecords * (1 << order);
+	mce_pool = kmalloc(mce_poolsz, GFP_KERNEL);
+	if (!mce_pool) {
+		gen_pool_destroy(gpool);
+		return false;
 	}
 
-	mce_evt_pool = tmpp;
+	if (gen_pool_add(gpool, (unsigned long)mce_pool, mce_poolsz, -1)) {
+		gen_pool_destroy(gpool);
+		kfree(mce_pool);
+		return false;
+	}
 
-out:
-	return ret;
+	mce_evt_pool = gpool;
+
+	return true;
 }
 
-int mce_gen_pool_init(void)
+bool mce_gen_pool_init(void)
 {
 	/* Just init mce_gen_pool once. */
 	if (mce_evt_pool)
-		return 0;
+		return true;
 
 	return mce_gen_pool_create();
 }
