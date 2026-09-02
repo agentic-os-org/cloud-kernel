@@ -538,6 +538,13 @@ sched_core_dequeue(struct rq *rq, struct task_struct *p, int flags) { }
 
 #endif /* CONFIG_SCHED_CORE */
 
+#ifdef CONFIG_SMP
+int task_llc(const struct task_struct *p)
+{
+	return per_cpu(sd_llc_id, task_cpu(p));
+}
+#endif /* CONFIG_SMP */
+
 /*
  * Serialization rules:
  *
@@ -4518,6 +4525,7 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 #ifdef CONFIG_GROUP_IDENTITY
 	INIT_LIST_HEAD(&p->se.expel_node);
 #endif
+	init_sched_mm(p);
 }
 
 DEFINE_STATIC_KEY_FALSE(sched_numa_balancing);
@@ -8412,6 +8420,8 @@ int sched_cpu_deactivate(unsigned int cpu)
 	 */
 	synchronize_rcu();
 
+	sched_domains_free_llc_id(cpu);
+
 	sched_set_rq_offline(rq, cpu);
 
 	scx_rq_deactivate(rq);
@@ -8552,9 +8562,9 @@ void __init sched_init_smp(void)
 	 * CPU masks are stable and all blatant races in the below code cannot
 	 * happen.
 	 */
-	mutex_lock(&sched_domains_mutex);
+	sched_domains_mutex_lock();
 	sched_init_domains(cpu_active_mask);
-	mutex_unlock(&sched_domains_mutex);
+	sched_domains_mutex_unlock();
 
 #ifdef CONFIG_GROUP_BALANCER
 	cpumask_copy(&root_task_group.soft_cpus_allowed, cpu_online_mask);
@@ -8809,6 +8819,11 @@ void __init sched_init(void)
 #ifdef CONFIG_GROUP_BALANCER
 		rq->gb_sd = NULL;
 #endif
+#ifdef CONFIG_SCHED_CACHE
+		raw_spin_lock_init(&rq->cpu_epoch_lock);
+		rq->cpu_epoch_next = jiffies;
+#endif
+
 		zalloc_cpumask_var_node(&rq->scratch_mask, GFP_KERNEL, cpu_to_node(i));
 #ifdef CONFIG_GROUP_BALANCER
 		zalloc_cpumask_var_node(

@@ -986,7 +986,7 @@ static bool shared_caches __ro_after_init;
 /* cpumask of CPUs with asymmetric SMT dependency */
 static int powerpc_smt_flags(void)
 {
-	int flags = SD_SHARE_CPUCAPACITY | SD_SHARE_PKG_RESOURCES;
+	int flags = SD_SHARE_CPUCAPACITY | SD_SHARE_LLC;
 
 	if (cpu_has_feature(CPU_FTR_ASYM_SMT)) {
 		printk_once(KERN_INFO "Enabling Asymmetric SMT scheduling\n");
@@ -1012,9 +1012,9 @@ static __ro_after_init DEFINE_STATIC_KEY_FALSE(splpar_asym_pack);
 static int powerpc_shared_cache_flags(void)
 {
 	if (static_branch_unlikely(&splpar_asym_pack))
-		return SD_SHARE_PKG_RESOURCES | SD_ASYM_PACKING;
+		return SD_SHARE_LLC | SD_ASYM_PACKING;
 
-	return SD_SHARE_PKG_RESOURCES;
+	return SD_SHARE_LLC;
 }
 
 static int powerpc_shared_proc_flags(void)
@@ -1090,6 +1090,29 @@ static int __init init_big_cores(void)
 
 	return 0;
 }
+
+/*
+ * die_mask and die_id are only available on systems which support
+ * multiple coregroups within a same package. On all other systems, die_mask
+ * would be same as package mask and die_id would be set to -1.
+ */
+const struct cpumask *cpu_die_mask(int cpu)
+{
+	if (has_coregroup_support())
+		return per_cpu(cpu_coregroup_map, cpu);
+	else
+		return cpu_node_mask(cpu);
+}
+EXPORT_SYMBOL_GPL(cpu_die_mask);
+
+int cpu_die_id(int cpu)
+{
+	if (has_coregroup_support())
+		return cpu_to_coregroup_id(cpu);
+	else
+		return -1;
+}
+EXPORT_SYMBOL_GPL(cpu_die_id);
 
 void __init smp_prepare_cpus(unsigned int max_cpus)
 {

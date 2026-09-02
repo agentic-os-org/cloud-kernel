@@ -38,21 +38,21 @@ extern const struct sd_flag_debug sd_flag_debug[];
 #ifdef CONFIG_SCHED_SMT
 static inline int cpu_smt_flags(void)
 {
-	return SD_SHARE_CPUCAPACITY | SD_SHARE_PKG_RESOURCES;
+	return SD_SHARE_CPUCAPACITY | SD_SHARE_LLC;
 }
 #endif
 
 #ifdef CONFIG_SCHED_CLUSTER
 static inline int cpu_cluster_flags(void)
 {
-	return SD_CLUSTER | SD_SHARE_PKG_RESOURCES;
+	return SD_CLUSTER | SD_SHARE_LLC;
 }
 #endif
 
 #ifdef CONFIG_SCHED_MC
 static inline int cpu_core_flags(void)
 {
-	return SD_SHARE_PKG_RESOURCES;
+	return SD_SHARE_LLC;
 }
 #endif
 
@@ -81,7 +81,26 @@ struct sched_domain_shared {
 	atomic_t	ref;
 	atomic_t	nr_busy_cpus;
 	int		has_idle_cores;
-	int		nr_idle_scan;
+	union {
+		int	nr_idle_scan;
+		/*
+		 * Used during allocation to claim the sched_domain_shared
+		 * object at multiple levels.
+		 *
+		 * Note: between build and the first periodic LB tick, which
+		 * rewrites the union via update_idle_cpu_scan(), readers of
+		 * nr_idle_scan may observe the transient SD_* flag value as
+		 * the scan bound. The flag bits are small positive integers,
+		 * so the effect is just a slightly relaxed scan bound for one
+		 * window and self-heals on the first tick.
+		 */
+		int	alloc_flags;
+	};
+#ifdef CONFIG_SCHED_CACHE
+	unsigned long	util_avg;
+	unsigned long	capacity;
+#endif
+
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -119,12 +138,21 @@ struct sched_domain {
 
 	u64 avg_scan_cost;		/* select_idle_sibling */
 
+#ifdef CONFIG_SCHED_CACHE
+	unsigned int llc_max;
+	unsigned int *llc_counts;
+	unsigned long llc_bytes;
+#endif
+
 #ifdef CONFIG_SCHEDSTATS
 	/* load_balance() stats */
 	unsigned int lb_count[CPU_MAX_IDLE_TYPES];
 	unsigned int lb_failed[CPU_MAX_IDLE_TYPES];
 	unsigned int lb_balanced[CPU_MAX_IDLE_TYPES];
-	unsigned int lb_imbalance[CPU_MAX_IDLE_TYPES];
+	unsigned int lb_imbalance_load[CPU_MAX_IDLE_TYPES];
+	unsigned int lb_imbalance_util[CPU_MAX_IDLE_TYPES];
+	unsigned int lb_imbalance_task[CPU_MAX_IDLE_TYPES];
+	unsigned int lb_imbalance_misfit[CPU_MAX_IDLE_TYPES];
 	unsigned int lb_gained[CPU_MAX_IDLE_TYPES];
 	unsigned int lb_hot_gained[CPU_MAX_IDLE_TYPES];
 	unsigned int lb_nobusyg[CPU_MAX_IDLE_TYPES];
@@ -196,11 +224,8 @@ bool cpus_share_resources(int this_cpu, int that_cpu);
 typedef const struct cpumask *(*sched_domain_mask_f)(int cpu);
 typedef int (*sched_domain_flags_f)(void);
 
-#define SDTL_OVERLAP	0x01
-
 struct sd_data {
 	struct sched_domain *__percpu *sd;
-	struct sched_domain_shared *__percpu *sds;
 	struct sched_group *__percpu *sg;
 	struct sched_group_capacity *__percpu *sgc;
 };
@@ -208,7 +233,6 @@ struct sd_data {
 struct sched_domain_topology_level {
 	sched_domain_mask_f mask;
 	sched_domain_flags_f sd_flags;
-	int		    flags;
 	int		    numa_level;
 	struct sd_data      data;
 	char                *name;
@@ -305,5 +329,11 @@ static inline int task_node(const struct task_struct *p)
 {
 	return cpu_to_node(task_cpu(p));
 }
+
+#ifdef CONFIG_SCHED_CACHE
+extern void sched_update_llc_bytes(unsigned int cpu);
+#else
+static inline void sched_update_llc_bytes(unsigned int cpu) { }
+#endif
 
 #endif /* _LINUX_SCHED_TOPOLOGY_H */

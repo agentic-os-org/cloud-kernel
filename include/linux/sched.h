@@ -372,10 +372,10 @@ enum uclamp_id {
 	UCLAMP_CNT
 };
 
-#ifdef CONFIG_SMP
 extern struct root_domain def_root_domain;
 extern struct mutex sched_domains_mutex;
-#endif
+extern void sched_domains_mutex_lock(void);
+extern void sched_domains_mutex_unlock(void);
 
 struct sched_param {
 	int sched_priority;
@@ -1441,6 +1441,13 @@ struct task_struct {
 	int				migrate_from_cpu;
 	int				mm_cid_active;	/* Whether cid bitmap is active */
 	struct callback_head		cid_work;
+#endif
+
+#ifdef CONFIG_SCHED_CACHE
+	struct callback_head		cache_work;
+	int				preferred_llc;
+	/* 1: task was enqueued to its preferred LLC, 0 otherwise */
+	int				pref_llc_queued;
 #endif
 
 	struct tlbflush_unmap_batch	tlb_ubc;
