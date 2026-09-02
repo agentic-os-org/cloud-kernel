@@ -23,6 +23,7 @@
 #include <asm/amd_nb.h>
 #include <asm/amd_node.h>
 #include <asm/processor.h>
+#include <asm/hygon/hygon_nb.h>
 
 MODULE_DESCRIPTION("AMD Family 10h+ CPU core temperature monitor");
 MODULE_AUTHOR("Clemens Ladisch <clemens@ladisch.de>");
@@ -168,6 +169,20 @@ static void read_tempreg_nb_zen(struct pci_dev *pdev, u32 *regval)
 		*regval = 0;
 }
 
+static void read_tempreg_nb_hygon(struct pci_dev *pdev, u32 *regval)
+{
+	if (hygon_smn_read(hygon_pci_dev_to_node_id(pdev),
+			 ZEN_REPORTED_TEMP_CTRL_BASE, regval))
+		*regval = 0;
+}
+
+static int read_hygon_ccd_temp_reg(struct k10temp_data *data, int ccd, u32 *regval)
+{
+	u16 node_id = hygon_pci_dev_to_node_id(data->pdev);
+
+	return hygon_smn_read(node_id, ZEN_CCD_TEMP(data->ccd_offset, ccd), regval);
+}
+
 static long get_raw_temp(struct k10temp_data *data)
 {
 	u32 regval;
@@ -211,21 +226,21 @@ static int k10temp_read_labels(struct device *dev,
 	return 0;
 }
 
-static void hygon_read_temp(struct k10temp_data *data, int channel,
+static int hygon_read_temp(struct k10temp_data *data, int channel,
 			       u32 *regval)
 {
 	struct hygon_private *h_priv;
 
 	h_priv = (struct hygon_private *)data->priv;
 	if ((channel - 2) < h_priv->index_2nd)
-		amd_smn_read(amd_pci_dev_to_node_id(data->pdev),
-			     ZEN_CCD_TEMP(data->ccd_offset, channel - 2),
-					  regval);
+		return hygon_smn_read(hygon_pci_dev_to_node_id(data->pdev),
+				ZEN_CCD_TEMP(data->ccd_offset, channel - 2),
+					     regval);
 	else
-		amd_smn_read(amd_pci_dev_to_node_id(data->pdev),
-			     ZEN_CCD_TEMP(h_priv->offset_2nd,
-					  channel - 2 - h_priv->index_2nd),
-					  regval);
+		return hygon_smn_read(hygon_pci_dev_to_node_id(data->pdev),
+				ZEN_CCD_TEMP(h_priv->offset_2nd,
+					     channel - 2 - h_priv->index_2nd),
+					     regval);
 }
 
 static int k10temp_read_temp(struct device *dev, u32 attr, int channel,
@@ -250,7 +265,9 @@ static int k10temp_read_temp(struct device *dev, u32 attr, int channel,
 			break;
 		case 2 ... 13:		/* Tccd{1-12} */
 			if (hygon_f18h_m4h()) {
-				hygon_read_temp(data, channel, &regval);
+				ret = hygon_read_temp(data, channel, &regval);
+				if (ret)
+					return ret;
 			} else {
 				ret = amd_smn_read(amd_pci_dev_to_node_id(data->pdev),
 						   ZEN_CCD_TEMP(data->ccd_offset, channel - 2),
@@ -426,9 +443,15 @@ static void k10temp_get_ccd_support(struct pci_dev *pdev,
 		 * the register value. And this will incorrectly pass the TEMP_VALID
 		 * bit check.
 		 */
-		if (amd_smn_read(amd_pci_dev_to_node_id(pdev),
-				 ZEN_CCD_TEMP(data->ccd_offset, i), &regval))
-			continue;
+		if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON &&
+		    boot_cpu_data.x86 == 0x18) {
+			if (read_hygon_ccd_temp_reg(data, i, &regval))
+				continue;
+		} else {
+			if (amd_smn_read(amd_pci_dev_to_node_id(pdev),
+					ZEN_CCD_TEMP(data->ccd_offset, i), &regval))
+				continue;
+		}
 
 		if (regval & ZEN_CCD_TEMP_VALID)
 			data->show_temp |= BIT(TCCD_BIT(i));
@@ -444,10 +467,11 @@ static void k10temp_get_ccd_support_2nd(struct pci_dev *pdev,
 
 	h_priv = (struct hygon_private *)data->priv;
 	for (i = h_priv->index_2nd; i < limit; i++) {
-		amd_smn_read(amd_pci_dev_to_node_id(pdev),
-			     ZEN_CCD_TEMP(h_priv->offset_2nd,
-			     i - h_priv->index_2nd),
-			     &regval);
+		if (hygon_smn_read(hygon_pci_dev_to_node_id(pdev),
+				   ZEN_CCD_TEMP(h_priv->offset_2nd,
+					i - h_priv->index_2nd),
+					&regval))
+			continue;
 		if (regval & ZEN_CCD_TEMP_VALID)
 			data->show_temp |= BIT(TCCD_BIT(i));
 	}
@@ -523,7 +547,7 @@ static int k10temp_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	} else if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON &&
 		   boot_cpu_data.x86 == 0x18) {
 		data->temp_adjust_mask = ZEN_CUR_TEMP_RANGE_SEL_MASK;
-		data->read_tempreg = read_tempreg_nb_zen;
+		data->read_tempreg = read_tempreg_nb_hygon;
 		data->is_zen = true;
 
 		switch (boot_cpu_data.x86_model) {
@@ -614,7 +638,7 @@ static const struct pci_device_id k10temp_id_table[] = {
 	{ PCI_VDEVICE(AMD, PCI_DEVICE_ID_AMD_1AH_M50H_DF_F3) },
 	{ PCI_VDEVICE(AMD, PCI_DEVICE_ID_AMD_1AH_M90H_DF_F3) },
 	{ PCI_VDEVICE(HYGON, PCI_DEVICE_ID_AMD_17H_DF_F3) },
-	{ PCI_VDEVICE(HYGON, PCI_DEVICE_ID_AMD_17H_M30H_DF_F3) },
+	{ PCI_VDEVICE(HYGON, PCI_DEVICE_ID_HYGON_18H_M04H_DF_F3) },
 	{ PCI_VDEVICE(HYGON, PCI_DEVICE_ID_HYGON_18H_M05H_DF_F3) },
 	{ PCI_VDEVICE(HYGON, PCI_DEVICE_ID_HYGON_18H_M10H_DF_F3) },
 	{ PCI_VDEVICE(HYGON, PCI_DEVICE_ID_HYGON_18H_M18H_DF_F3) },
