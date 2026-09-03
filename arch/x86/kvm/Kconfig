@@ -101,6 +101,8 @@ config KVM_INTEL
 	tristate "KVM for Intel (and compatible) processors support"
 	depends on KVM && IA32_FEAT_CTL
 	select X86_FRED if X86_64
+	select KVM_GENERIC_PRIVATE_MEM if INTEL_TDX_HOST
+	select KVM_GENERIC_MEMORY_ATTRIBUTES if INTEL_TDX_HOST
 	help
 	  Provides support for KVM on processors equipped with Intel's VT
 	  extensions, a.k.a. Virtual Machine Extensions (VMX).
@@ -132,6 +134,16 @@ config X86_SGX_KVM
 
 	  This includes support to expose "raw" unreclaimable enclave memory to
 	  guests via a device node, e.g. /dev/sgx_vepc.
+
+	  If unsure, say N.
+
+config KVM_INTEL_TDX
+	bool "Intel Trust Domain Extensions (TDX) support"
+	default y
+	depends on INTEL_TDX_HOST
+	help
+	  Provides support for launching Intel Trust Domain Extensions (TDX)
+	  confidential VMs on Intel processors.
 
 	  If unsure, say N.
 
@@ -219,5 +231,15 @@ config KVM_SUPPORTS_CSV_REUSE_ASID
 	  Provide support for reuse the same ASID for difference HYGON
 	  CSV guests, this allow the user to create more CSV guests on
 	  HYGON CPUs with limited ASIDs.
+config KVM_MAX_NR_VCPUS
+	int "Maximum number of vCPUs per KVM guest"
+	depends on KVM
+	range 1024 4096
+	default 4096 if MAXSMP
+	default 1024
+	help
+	  Set the maximum number of vCPUs per KVM guest. Larger values will increase
+	  the memory footprint of each KVM guest, regardless of how many vCPUs are
+	  created for a given VM.
 
 endif # VIRTUALIZATION
