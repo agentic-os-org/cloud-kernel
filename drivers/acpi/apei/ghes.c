@@ -40,6 +40,7 @@
 #include <linux/sched/clock.h>
 #include <linux/uuid.h>
 #include <linux/ras.h>
+#include <linux/memory_hotplug.h>
 #include <linux/task_work.h>
 #include <linux/set_memory.h>
 
@@ -480,20 +481,18 @@ static void memory_failure_cb(struct callback_head *twork)
 	unsigned long pfn = twcb->pfn;
 
 	rc = memory_failure(pfn, twcb->flags);
+#ifdef CONFIG_ARM64
+	/*
+	 * Remove a successfully recovered online page from the arm64
+	 * linear map to prevent speculative access to corrupted memory.
+	 */
+	if (!rc && pfn_to_online_page(pfn))
+		set_memory_np((unsigned long)page_to_virt(pfn_to_page(pfn)), 1);
+#endif
 	kfree(twcb);
 
 	if (!rc)
 		return;
-
-	/*
-	 * If the pfn reported by ghes can not be recovered, set
-	 * the corresponding page table of linear mapping range
-	 * to be non-present, which avoids the speculative
-	 * access of corrupted memory.
-	 */
-#ifdef CONFIG_ARM64
-	set_memory_np((unsigned long)page_to_virt(pfn_to_page(pfn)), 1);
-#endif
 
 	/*
 	 * -EHWPOISON from memory_failure() means that it already sent SIGBUS
