@@ -1,0 +1,9 @@
+diff a/drivers/crypto/talitos.c b/drivers/crypto/talitos.c	(rejected hunks)
+@@ -2086,7 +2086,6 @@
+ 	ahash_request_complete(req_ctx->areq, err);
+ }
+ 
+-<<<<<<< HEAD
+ static int ahash_process_req(struct ahash_request *areq, unsigned int nbytes)
+ {
+ 	struct crypto_ahash *tfm = crypto_ahash_reqtfm(areq);
