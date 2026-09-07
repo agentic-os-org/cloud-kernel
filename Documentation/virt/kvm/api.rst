@@ -1990,7 +1990,7 @@ frequency is KHz.
 
 If the KVM_CAP_VM_TSC_CONTROL capability is advertised, this can also
 be used as a vm ioctl to set the initial tsc frequency of subsequently
-created vCPUs.
+created vCPUs.  Note, the vm ioctl is only allowed prior to creating vCPUs.
 
 For TSC protected Confidential Computing (CoCo) VMs where TSC frequency
 is configured once at VM scope and remains unchanged during VM's
@@ -6341,6 +6341,24 @@ into the guest_memfd instance.  For a given guest_memfd file, there can be at
 most one mapping per page, i.e. binding multiple memory regions to a single
 guest_memfd range is not allowed (any number of memory regions can be bound to
 a single guest_memfd file, but the bound ranges must not overlap).
+
+The capability KVM_CAP_GUEST_MEMFD_FLAGS enumerates the `flags` that can be
+specified via KVM_CREATE_GUEST_MEMFD.  Currently defined flags:
+
+  ============================ ================================================
+  GUEST_MEMFD_FLAG_MMAP        Enable using mmap() on the guest_memfd file
+                               descriptor.
+  GUEST_MEMFD_FLAG_INIT_SHARED Make all memory in the file shared during
+                               KVM_CREATE_GUEST_MEMFD (memory files created
+                               without INIT_SHARED will be marked private).
+                               Shared memory can be faulted into host userspace
+                               page tables. Private memory cannot.
+  ============================ ================================================
+
+When the KVM MMU performs a PFN lookup to service a guest fault and the backing
+guest_memfd has the GUEST_MEMFD_FLAG_MMAP set, then the fault will always be
+consumed from guest_memfd, regardless of whether it is a shared or a private
+fault.
 
 See KVM_SET_USER_MEMORY_REGION2 for additional details.
 

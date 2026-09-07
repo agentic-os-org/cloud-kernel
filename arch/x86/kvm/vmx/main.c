@@ -29,40 +29,8 @@ static __init int vt_hardware_setup(void)
 	if (ret)
 		return ret;
 
-	/*
-	 * Update vt_x86_ops::vm_size here so it is ready before
-	 * kvm_ops_update() is called in kvm_x86_vendor_init().
-	 *
-	 * Note, the actual bringing up of TDX must be done after
-	 * kvm_ops_update() because enabling TDX requires enabling
-	 * hardware virtualization first, i.e., all online CPUs must
-	 * be in post-VMXON state.  This means the @vm_size here
-	 * may be updated to TDX's size but TDX may fail to enable
-	 * at later time.
-	 *
-	 * The VMX/VT code could update kvm_x86_ops::vm_size again
-	 * after bringing up TDX, but this would require exporting
-	 * either kvm_x86_ops or kvm_ops_update() from the base KVM
-	 * module, which looks overkill.  Anyway, the worst case here
-	 * is KVM may allocate couple of more bytes than needed for
-	 * each VM.
-	 */
-	if (enable_tdx) {
-		vt_x86_ops.vm_size = max_t(unsigned int, vt_x86_ops.vm_size,
-				sizeof(struct kvm_tdx));
-		/*
-		 * Note, TDX may fail to initialize in a later time in
-		 * vt_init(), in which case it is not necessary to setup
-		 * those callbacks.  But making them valid here even
-		 * when TDX fails to init later is fine because those
-		 * callbacks won't be called if the VM isn't TDX guest.
-		 */
-		vt_x86_ops.link_external_spt = tdx_sept_link_private_spt;
-		vt_x86_ops.set_external_spte = tdx_sept_set_private_spte;
-		vt_x86_ops.free_external_spt = tdx_sept_free_private_spt;
-		vt_x86_ops.remove_external_spte = tdx_sept_remove_private_spte;
-		vt_x86_ops.protected_apic_has_interrupt = tdx_protected_apic_has_interrupt;
-	}
+	if (enable_tdx)
+		tdx_hardware_setup();
 
 	return 0;
 }
@@ -855,10 +823,19 @@ static int vt_vcpu_mem_enc_ioctl(struct kvm_vcpu *vcpu, void __user *argp)
 	return tdx_vcpu_ioctl(vcpu, argp);
 }
 
-static int vt_gmem_private_max_mapping_level(struct kvm *kvm, kvm_pfn_t pfn)
+static int vt_vcpu_mem_enc_unlocked_ioctl(struct kvm_vcpu *vcpu, void __user *argp)
+{
+	if (!is_td_vcpu(vcpu))
+		return -EINVAL;
+
+	return tdx_vcpu_unlocked_ioctl(vcpu, argp);
+}
+
+static int vt_gmem_max_mapping_level(struct kvm *kvm, kvm_pfn_t pfn,
+				     bool is_private)
 {
 	if (is_td(kvm))
-		return tdx_gmem_private_max_mapping_level(kvm, pfn);
+		return tdx_gmem_max_mapping_level(kvm, pfn, is_private);
 
 	return 0;
 }
@@ -1031,8 +1008,9 @@ struct kvm_x86_ops vt_x86_ops __initdata = {
 
 	.mem_enc_ioctl = vt_op_tdx_only(mem_enc_ioctl),
 	.vcpu_mem_enc_ioctl = vt_op_tdx_only(vcpu_mem_enc_ioctl),
+	.vcpu_mem_enc_unlocked_ioctl = vt_op_tdx_only(vcpu_mem_enc_unlocked_ioctl),
 
-	.private_max_mapping_level = vt_op_tdx_only(gmem_private_max_mapping_level)
+	.gmem_max_mapping_level = vt_op_tdx_only(gmem_max_mapping_level)
 };
 
 struct kvm_x86_init_ops vt_init_ops __initdata = {
