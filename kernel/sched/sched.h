@@ -115,6 +115,7 @@ enum migration_type {
 	migrate_util,
 	migrate_task,
 	migrate_misfit,
+	migrate_llc_task,
 	migrate_identity
 };
 
@@ -155,6 +156,16 @@ enum group_type {
 	 */
 	group_imbalanced,
 	/*
+	 * There are tasks running on non-preferred LLC, possible to move
+	 * them to their preferred LLC without creating too much imbalance.
+	 * The priority of group_llc_balance is lower than that of
+	 * group_overloaded and higher than that of all other group types.
+	 * This is because group_llc_balance may exacerbate load imbalance.
+	 * If the LLC balancing attempt fails, the nr_balance_failed
+	 * mechanism will trigger other group types to rebalance the load.
+	 */
+	group_llc_balance,
+	/*
 	 * The CPU is overloaded and can't provide expected CPU cycles to all
 	 * tasks.
 	 */
@@ -179,10 +190,14 @@ struct sg_lb_stats {
 	enum group_type group_type;
 	unsigned int group_asym_packing; /* Tasks should be moved to preferred CPU */
 	unsigned int group_smt_balance;  /* Task on busy SMT be moved */
+	unsigned int group_llc_balance;  /* Tasks should be moved to preferred LLC */
 	unsigned long group_misfit_task_load; /* A CPU has a task too big for its capacity */
 #ifdef CONFIG_NUMA_BALANCING
 	unsigned int nr_numa_running;
 	unsigned int nr_preferred_running;
+#endif
+#ifdef CONFIG_SCHED_CACHE
+	unsigned int nr_pref_dst_llc;
 #endif
 };
 
@@ -1404,12 +1419,23 @@ struct rq {
 #ifdef CONFIG_SCHED_CLASS_EXT
 	struct scx_rq		scx;
 #endif
+#ifdef CONFIG_SCHED_CACHE
+	raw_spinlock_t		cpu_epoch_lock ____cacheline_aligned;
+	u64			cpu_runtime;
+	unsigned long		cpu_epoch;
+	unsigned long		cpu_epoch_next;
+#endif
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	/* list of leaf cfs_rq on this CPU: */
 	struct list_head	leaf_cfs_rq_list;
 	struct list_head	*tmp_alone_branch;
 #endif /* CONFIG_FAIR_GROUP_SCHED */
+
+#ifdef CONFIG_SCHED_CACHE
+	unsigned int		nr_pref_llc_running;
+	unsigned int		nr_llc_running;
+#endif
 
 	/*
 	 * This is part of a global counter where only the total sum
@@ -1862,6 +1888,14 @@ extern bool task_is_expellee(struct task_struct *p);
 static inline void sched_core_identity_attach(struct cgroup_taskset *tset) { }
 #endif
 
+static inline bool task_has_sched_core(struct task_struct *p)
+{
+	if (sched_core_disabled())
+		return false;
+
+	return !!p->core_cookie;
+}
+
 #else /* !CONFIG_SCHED_CORE */
 
 static inline bool sched_core_enabled(struct rq *rq)
@@ -1901,6 +1935,12 @@ static inline bool sched_group_cookie_match(struct rq *rq,
 	return true;
 }
 static inline void sched_core_identity_attach(struct cgroup_taskset *tset) { }
+
+static inline bool task_has_sched_core(struct task_struct *p)
+{
+	return false;
+}
+
 #endif /* CONFIG_SCHED_CORE */
 #ifdef CONFIG_RT_GROUP_SCHED
 # ifdef CONFIG_RT_GROUP_SCHED_DEFAULT_DISABLED
@@ -2384,6 +2424,8 @@ init_numa_balancing(unsigned long clone_flags, struct task_struct *p)
 
 #ifdef CONFIG_SMP
 
+int task_llc(const struct task_struct *p);
+
 static inline void
 queue_balance_callback(struct rq *rq,
 		       struct balance_callback *head,
@@ -2473,7 +2515,7 @@ DECLARE_PER_CPU(struct sched_domain __rcu *, sd_llc);
 DECLARE_PER_CPU(int, sd_llc_size);
 DECLARE_PER_CPU(int, sd_llc_id);
 DECLARE_PER_CPU(int, sd_share_id);
-DECLARE_PER_CPU(struct sched_domain_shared __rcu *, sd_llc_shared);
+DECLARE_PER_CPU(struct sched_domain_shared __rcu *, sd_balance_shared);
 DECLARE_PER_CPU(struct sched_domain __rcu *, sd_numa);
 DECLARE_PER_CPU(struct sched_domain __rcu *, sd_asym_packing);
 DECLARE_PER_CPU(struct sched_domain __rcu *, sd_asym_cpucapacity);
@@ -4334,6 +4376,29 @@ static inline void sched_mm_cid_migrate_to(struct rq *dst_rq, struct task_struct
 static inline void task_tick_mm_cid(struct rq *rq, struct task_struct *curr) { }
 static inline void init_sched_mm_cid(struct task_struct *t) { }
 #endif
+
+#ifdef CONFIG_SCHED_CACHE
+DECLARE_STATIC_KEY_FALSE(sched_cache_present);
+DECLARE_STATIC_KEY_FALSE(sched_cache_active);
+extern int sysctl_sched_cache_user;
+extern unsigned int llc_aggr_tolerance;
+extern unsigned int llc_epoch_period;
+extern unsigned int llc_epoch_affinity_timeout;
+extern unsigned int llc_imb_pct;
+extern unsigned int llc_overaggr_pct;
+
+static inline bool sched_cache_enabled(void)
+{
+	return static_branch_unlikely(&sched_cache_active);
+}
+
+extern void sched_cache_active_set(void);
+
+#endif
+
+void sched_domains_free_llc_id(int cpu);
+
+extern void init_sched_mm(struct task_struct *p);
 
 extern u64 avg_vruntime(struct cfs_rq *cfs_rq);
 extern int entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se);

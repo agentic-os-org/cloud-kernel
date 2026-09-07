@@ -1443,6 +1443,13 @@ struct task_struct {
 	struct callback_head		cid_work;
 #endif
 
+#ifdef CONFIG_SCHED_CACHE
+	struct callback_head		cache_work;
+	int				preferred_llc;
+	/* 1: task was enqueued to its preferred LLC, 0 otherwise */
+	int				pref_llc_queued;
+#endif
+
 	struct tlbflush_unmap_batch	tlb_ubc;
 
 	/* Cache last used pipe for splice(): */
