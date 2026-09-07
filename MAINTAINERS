@@ -12559,11 +12559,11 @@ L:	linux-edac@vger.kernel.org
 S:	Maintained
 F:	drivers/edac/loongson_edac.c
 
-LRW DDR PMU DRIVER
+LPRS DDR PMU DRIVER
 M:	Jie Feng <feng.jie8@zte.com.cn>
 R:	Qingtao Liu <liu.qingtao2@zte.com.cn>
 S:	Maintained
-F:	drivers/perf/lrw_ddr_pmu.c
+F:	drivers/perf/lprs_ddr_pmu.c
 
 LSILOGIC MPT FUSION DRIVERS (FC/SAS/SPI)
 M:	Sathya Prakash <sathya.prakash@broadcom.com>
