@@ -1,0 +1,2 @@
+# UB Bus Core Driver
+CONFIG_UB_UBUS_BUS=m
