@@ -32,13 +32,15 @@
 #include <linux/kprobes.h>
 #include <linux/workqueue.h>
 #include <linux/pid_namespace.h>
+#include <linux/math64.h>
 #include <linux/vmalloc.h>
+#include <linux/pagemap.h>
 #ifdef CONFIG_TEXT_UNEVICTABLE
 #include <linux/unevictable.h>
 #endif
 
 #define PROC_NAME	"unevictable"
-#define NAME_BUF	8
+#define NAME_BUF	16
 
 #ifdef CONFIG_TEXT_UNEVICTABLE
 DEFINE_STATIC_KEY_FALSE(unevictable_enabled_key);
@@ -62,8 +64,34 @@ struct evict_pid_entry {
 	u64 unevict_size;
 #endif
 	struct task_struct *tsk;
+	u64 self_exec_id;
 	bool done;
 };
+
+/*
+ * Check if a VMA should be pinned as unevictable.
+ *
+ * .text:   file-backed, readable, executable
+ * .rodata: file-backed, readable, not writable, not executable, and the
+ *          backing file's address_space has AS_ELF_EXEC set (meaning it
+ *          was previously mmap'd with PROT_EXEC -- so it is an ELF
+ *          binary or shared library).
+ */
+static inline bool vma_is_lockable(struct vm_area_struct *vma)
+{
+	if (!vma->vm_file || !(vma->vm_flags & VM_READ))
+		return false;
+
+	if (vma->vm_flags & VM_EXEC)
+		return true;
+
+	if (!(vma->vm_flags & VM_WRITE) &&
+	    vma->vm_file->f_mapping &&
+	    mapping_elf_exec(vma->vm_file->f_mapping))
+		return true;
+
+	return false;
+}
 
 static void execute_vm_lock(struct work_struct *unused);
 static struct evict_pids_t *base_tree;
@@ -116,33 +144,28 @@ static void __evict_pid(struct evict_pid_entry *pid)
 				vm_flags_t flag;
 				int error;
 #ifdef CONFIG_TEXT_UNEVICTABLE
-				unsigned long size = 0;
 				struct mem_cgroup *memcg = get_mem_cgroup_from_mm(mm);
 #endif
 
 				mmap_write_lock(mm);
 				for_each_vma(vmi, vma) {
-					if (vma->vm_file &&
-					    (vma->vm_flags & VM_EXEC) &&
-					    (vma->vm_flags & VM_READ)) {
+					if (vma_is_lockable(vma)) {
 						flag = vma->vm_flags & ~VM_LOCKED_MASK;
 						error = mlock_fixup(&vmi, vma, &prev,
 							    vma->vm_start, vma->vm_end, flag);
 						/* Ignore errors, but prev needs fixing up. */
 						if (error)
 							prev = vma;
-#ifdef CONFIG_TEXT_UNEVICTABLE
-						size += vma->vm_end - vma->vm_start;
-#endif
 					}
 				}
 				mmap_write_unlock(mm);
 #ifdef CONFIG_TEXT_UNEVICTABLE
 				if (memcg) {
-					memcg_decrease_unevict_size(memcg, size);
+					memcg_decrease_unevict_size(memcg,
+								    pid->unevict_size);
 					css_put(&memcg->css);
 				}
-				pid->unevict_size -= size;
+				pid->unevict_size = 0;
 #endif
 			}
 			mmput(mm);
@@ -299,7 +322,17 @@ static void add_unevict_task(struct task_struct *tsk)
 			kfree(new_entry);
 			return;
 		} else if (tsk != result->tsk ||
-		    result->start_time != tsk->start_boottime) {
+			   result->start_time != tsk->start_boottime ||
+			   result->self_exec_id != tsk->self_exec_id) {
+			/*
+			 * self_exec_id detects execve(): after exec the task keeps
+			 * the same task_struct and start_boottime but gets a
+			 * new mm.  Comparing mm pointers is unreliable because
+			 * multiple execs without an intermediate re-add can
+			 * ABA: SLUB LIFO recycles the address of an mm freed
+			 * by an earlier exec for a later one.  self_exec_id
+			 * is monotonically increasing and immune to reuse.
+			 */
 			result->done = false;
 		}
 		put_task_struct(tsk);
@@ -450,6 +483,27 @@ static void execute_vm_lock(struct work_struct *unused)
 		goto out;
 	}
 
+#ifdef CONFIG_TEXT_UNEVICTABLE
+	/*
+	 * Global kill-switch turned off after this work was queued.
+	 * Drop pending (!done) entries that have not pinned anything;
+	 * keep done entries for the unpin paths to release.
+	 */
+	if (!unevictable_enabled()) {
+		struct evict_pid_entry *pid_entry, *n;
+
+		list_for_each_entry_safe(pid_entry, n, &pid_list, list) {
+			if (pid_entry->done)
+				continue;
+			list_del(&pid_entry->list);
+			__remove_entry(pid_entry);
+			kfree(pid_entry);
+		}
+		mutex_unlock(&pid_mutex);
+		goto out;
+	}
+#endif
+
 	list_for_each_entry_safe(result, tmp, &pid_list, list) {
 		rootpid = result->rootpid;
 		if (result->done || rootpid <= 0)
@@ -495,9 +549,7 @@ static void execute_vm_lock(struct work_struct *unused)
 					if (memcg && is_unevictable_size_overflow(memcg))
 						break;
 #endif
-					if (vma->vm_file &&
-					    (vma->vm_flags & VM_EXEC) &&
-					    (vma->vm_flags & VM_READ)) {
+					if (vma_is_lockable(vma)) {
 						flag = vma->vm_flags & ~VM_LOCKED_MASK;
 						flag |= (VM_LOCKED | VM_LOCKONFAULT);
 						error = mlock_fixup(&vmi, vma, &prev,
@@ -513,6 +565,7 @@ static void execute_vm_lock(struct work_struct *unused)
 
 				result->tsk = tsk;
 				result->start_time = tsk->start_boottime;
+				result->self_exec_id = tsk->self_exec_id;
 				result->done = true;
 				mmap_write_unlock(mm);
 #ifdef CONFIG_TEXT_UNEVICTABLE
@@ -678,15 +731,25 @@ void memcg_decrease_unevict_size(struct mem_cgroup *memcg, unsigned long size)
 
 bool is_unevictable_size_overflow(struct mem_cgroup *memcg)
 {
-	struct page_counter *counter;
+	struct page_counter *counter = &memcg->memory;
+	unsigned long max;
 	u64 res_limit;
+	long cur;
 	u64 size;
 
-	counter = &memcg->memory;
-	res_limit = (u64)counter->max * PAGE_SIZE;
-	size = atomic_long_read(&memcg->unevictable_size);
-	size = size * 100 / res_limit;
-	if (size >= memcg->unevictable_percent)
+	max = READ_ONCE(counter->max);
+	if (max == PAGE_COUNTER_MAX)
+		res_limit = (u64)totalram_pages() << PAGE_SHIFT;
+	else
+		res_limit = (u64)max * PAGE_SIZE;
+
+	if (!res_limit)
+		return true;
+
+	cur = atomic_long_read(&memcg->unevictable_size);
+	size = cur > 0 ? (u64)cur : 0;
+
+	if (div64_u64(size * 100, res_limit) >= memcg->unevictable_percent)
 		return true;
 
 	return false;
@@ -697,39 +760,21 @@ unsigned long memcg_exstat_text_unevict_gather(struct mem_cgroup *memcg)
 	return atomic_long_read(&memcg->unevictable_size);
 }
 
-void mem_cgroup_can_unevictable(struct task_struct *tsk, struct mem_cgroup *to)
+void mem_cgroup_attach_unevictable(struct cgroup_taskset *tset)
 {
-	struct mem_cgroup *from;
-
-	if (!unevictable_enabled())
-		return;
-
-	from = mem_cgroup_from_task(tsk);
-	VM_BUG_ON(from == to);
-
-	if (to->allow_unevictable && !from->allow_unevictable) {
-		add_unevict_task(tsk);
-		schedule_delayed_work(&evict_work, HZ);
-	}
-
-	if (!to->allow_unevictable && from->allow_unevictable)
-		del_unevict_task(tsk);
-}
-
-void mem_cgroup_cancel_unevictable(struct cgroup_taskset *tset)
-{
-	struct task_struct *tsk;
-	struct cgroup_subsys_state *dst_css;
+	struct task_struct *leader;
+	struct cgroup_subsys_state *css;
 	struct mem_cgroup *memcg;
 
-	if (!unevictable_enabled())
-		return;
+	cgroup_taskset_for_each_leader(leader, css, tset) {
+		memcg = mem_cgroup_from_css(css);
 
-	cgroup_taskset_for_each(tsk, dst_css, tset) {
-		memcg = mem_cgroup_from_task(tsk);
-
-		if (memcg && memcg->allow_unevictable)
-			del_unevict_task(tsk);
+		if (memcg->allow_unevictable && unevictable_enabled()) {
+			add_unevict_task(leader);
+			schedule_delayed_work(&evict_work, HZ);
+		} else if (!memcg->allow_unevictable) {
+			del_unevict_task(leader);
+		}
 	}
 }
 
@@ -755,10 +800,8 @@ static inline void make_all_memcg_evictable(void)
 	for_each_mem_cgroup(memcg) {
 		if (!memcg->allow_unevictable)
 			continue;
-		mem_cgroup_scan_tasks(memcg, schedule_unevict_task, NULL);
 		memcg->allow_unevictable = 0;
-		memcg->unevictable_percent = 100;
-		atomic_long_set(&memcg->unevictable_size, 0);
+		mem_cgroup_scan_tasks(memcg, schedule_evict_task, NULL);
 	}
 }
 
@@ -766,7 +809,7 @@ void memcg_all_processes_unevict(struct mem_cgroup *memcg, bool enable)
 {
 	struct mem_cgroup *tmp_memcg;
 
-	if (!unevictable_enabled())
+	if (enable && !unevictable_enabled())
 		return;
 
 	if (!memcg)
@@ -778,6 +821,25 @@ void memcg_all_processes_unevict(struct mem_cgroup *memcg, bool enable)
 		mem_cgroup_scan_tasks(tmp_memcg, schedule_unevict_task, NULL);
 	else
 		mem_cgroup_scan_tasks(tmp_memcg, schedule_evict_task, NULL);
+}
+
+void unevict_task_fork(struct task_struct *tsk)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_task(tsk);
+
+	if (!unevictable_enabled())
+		return;
+
+	/*
+	 * memcg is practically never NULL (every task belongs to at least root
+	 * memcg), but if it were, allow arming — only an explicit
+	 * allow_unevictable=0 should block it.
+	 */
+	if (memcg && !memcg->allow_unevictable)
+		return;
+
+	add_unevict_task(tsk);
+	schedule_delayed_work(&evict_work, HZ);
 }
 
 static int __init setup_unevictable(char *s)

@@ -6367,6 +6367,8 @@ static int mem_cgroup_allow_unevictable_write(struct cgroup_subsys_state *css,
 
 	if (val > 1)
 		return -EINVAL;
+	if (val && !unevictable_enabled())
+		return -EPERM;
 	if (memcg->allow_unevictable == val)
 		return 0;
 
@@ -8107,10 +8109,6 @@ static int mem_cgroup_can_attach(struct cgroup_taskset *tset)
 	if (!p)
 		return 0;
 
-#ifdef CONFIG_TEXT_UNEVICTABLE
-	mem_cgroup_can_unevictable(p, memcg);
-#endif
-
 	/*
 	 * We are now committed to this value whatever it is. Changes in this
 	 * tunable will only affect upcoming migrations, not the current one.
@@ -8154,9 +8152,6 @@ static int mem_cgroup_can_attach(struct cgroup_taskset *tset)
 
 static void mem_cgroup_cancel_attach(struct cgroup_taskset *tset)
 {
-#ifdef CONFIG_TEXT_UNEVICTABLE
-	mem_cgroup_cancel_unevictable(tset);
-#endif
 	if (mc.to)
 		mem_cgroup_clear_mc();
 }
@@ -8376,12 +8371,20 @@ static void mem_cgroup_attach(struct cgroup_taskset *tset)
 	if (task->mm && READ_ONCE(task->mm->owner) == task)
 		lru_gen_migrate_mm(task->mm);
 	task_unlock(task);
+
+	mem_cgroup_attach_unevictable(tset);
 }
 #else
 static void mem_cgroup_attach(struct cgroup_taskset *tset)
 {
+	mem_cgroup_attach_unevictable(tset);
 }
 #endif /* CONFIG_LRU_GEN */
+
+static void mem_cgroup_fork(struct task_struct *task)
+{
+	unevict_task_fork(task);
+}
 
 static int seq_puts_memcg_tunable(struct seq_file *m, unsigned long value)
 {
@@ -9031,6 +9034,7 @@ struct cgroup_subsys memory_cgrp_subsys = {
 	.can_attach = mem_cgroup_can_attach,
 	.attach = mem_cgroup_attach,
 	.cancel_attach = mem_cgroup_cancel_attach,
+	.fork = mem_cgroup_fork,
 	.post_attach = mem_cgroup_move_task,
 	.dfl_cftypes = memory_files,
 	.legacy_cftypes = mem_cgroup_legacy_files,
