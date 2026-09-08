@@ -1286,21 +1286,25 @@ int rxrpc_input_packet(struct sock *udp_sk, struct sk_buff *skb)
 			goto bad_message;
 
 		/* Unshare the packet so that it can be modified for in-place
-		 * decryption.
+		 * decryption.  skb_unshare() only copies cloned skbs, so a
+		 * packet that carries externally-owned paged frags or a frag
+		 * list must be copied here as well; otherwise the security
+		 * layer decrypts it in place and dirties the shared pages.
 		 */
-		if (sp->hdr.securityIndex != 0) {
-			struct sk_buff *nskb = skb_unshare(skb, GFP_ATOMIC);
+		if (sp->hdr.securityIndex != 0 &&
+		    (skb_cloned(skb) || skb_has_frag_list(skb) ||
+		     skb_has_shared_frag(skb))) {
+			struct sk_buff *nskb = skb_copy(skb, GFP_ATOMIC);
+
 			if (!nskb) {
-				rxrpc_eaten_skb(skb, rxrpc_skb_unshared_nomem);
+				rxrpc_free_skb(skb, rxrpc_skb_unshared_nomem);
 				goto out;
 			}
 
-			if (nskb != skb) {
-				rxrpc_eaten_skb(skb, rxrpc_skb_received);
-				skb = nskb;
-				rxrpc_new_skb(skb, rxrpc_skb_unshared);
-				sp = rxrpc_skb(skb);
-			}
+			rxrpc_free_skb(skb, rxrpc_skb_received);
+			skb = nskb;
+			rxrpc_new_skb(skb, rxrpc_skb_unshared);
+			sp = rxrpc_skb(skb);
 		}
 		break;
 
