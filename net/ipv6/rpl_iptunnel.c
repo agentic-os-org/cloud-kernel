@@ -281,7 +281,16 @@ static int rpl_input(struct sk_buff *skb)
 
 	if (!dst) {
 		ip6_route_input(skb);
+
+		/* ip6_route_input() sets a NOREF dst; force a refcount on it
+		 * before caching or further use.
+		 */
+		skb_dst_force(skb);
 		dst = skb_dst(skb);
+		if (unlikely(!dst)) {
+			kfree_skb(skb);
+			return -ENETUNREACH;
+		}
 		if (!dst->error) {
 			preempt_disable();
 			dst_cache_set_ip6(&rlwt->cache, dst,
