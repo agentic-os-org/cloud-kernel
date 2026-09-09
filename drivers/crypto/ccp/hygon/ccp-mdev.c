@@ -1851,6 +1851,9 @@ static int ccp_pci_device_create(struct pci_dev *pdev,
 	unsigned long i;
 	int ret = -EINVAL;
 
+	if (!iommu_present(&pci_bus_type))
+		return 0;
+
 	mutex_lock(&ccp_mdev_data.lock);
 	if (!ccp_mdev_data.domain) {
 		ccp_mdev_data.domain = iommu_paging_domain_alloc(&pdev->dev);
@@ -1941,7 +1944,6 @@ int ccp_dev_wrapper_alloc(struct pci_dev *pdev)
 	ret = ccp_pci_device_create(pdev, ccp_wrapper);
 	if (ret) {
 		pr_err("Error: ccp pci device create failed.\n");
-		kfree(ccp_wrapper);
 		return ret;
 	}
 	return 0;

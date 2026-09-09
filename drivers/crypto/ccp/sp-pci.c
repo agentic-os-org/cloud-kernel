@@ -367,6 +367,8 @@ static int sp_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		ret = ccp_dev_wrapper_alloc(pdev);
 		if (ret) {
 			dev_err(dev, "ccp_dev_wrapper_alloc failed (%d)\n", ret);
+			sp_destroy(sp);
+			ccp_dev_wrapper_free(pdev);
 			goto free_irqs;
 		}
 	}
