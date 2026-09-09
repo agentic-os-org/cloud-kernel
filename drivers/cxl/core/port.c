@@ -3,7 +3,6 @@
 #include <linux/platform_device.h>
 #include <linux/memregion.h>
 #include <linux/workqueue.h>
-#include <linux/einj-cxl.h>
 #include <linux/debugfs.h>
 #include <linux/device.h>
 #include <linux/module.h>
@@ -11,6 +10,7 @@
 #include <linux/slab.h>
 #include <linux/idr.h>
 #include <linux/node.h>
+#include <cxl/einj.h>
 #include <cxlmem.h>
 #include <cxlpci.h>
 #include <cxl.h>
@@ -812,18 +812,27 @@ static int cxl_einj_inject(void *data, u64 type)
 DEFINE_DEBUGFS_ATTRIBUTE(cxl_einj_inject_fops, NULL, cxl_einj_inject,
 			 "0x%llx\n");
 
+static inline struct cxl_port *parent_port_of(struct cxl_port *port)
+{
+	if (!port || !port->parent_dport)
+		return NULL;
+	return port->parent_dport->port;
+}
+
 static void cxl_debugfs_create_dport_dir(struct cxl_dport *dport)
 {
+	struct cxl_port *parent = parent_port_of(dport->port);
 	struct dentry *dir;
 
 	if (!einj_cxl_is_initialized())
 		return;
 
 	/*
-	 * dport_dev needs to be a PCIe port for CXL 2.0+ ports because
-	 * EINJ expects a dport SBDF to be specified for 2.0 error injection.
+	 * Protocol error injection is only available for CXL 2.0+ root ports
+	 * and CXL 1.1 downstream ports
 	 */
-	if (!dport->rch && !dev_is_pci(dport->dport_dev))
+	if (!dport->rch &&
+	    !(dev_is_pci(dport->dport_dev) && parent && is_cxl_root(parent)))
 		return;
 
 	dir = cxl_debugfs_create_dir(dev_name(dport->dport_dev));
@@ -1743,21 +1752,6 @@ static int decoder_populate_targets(struct cxl_switch_decoder *cxlsd,
 	return 0;
 }
 
-struct cxl_dport *cxl_hb_modulo(struct cxl_root_decoder *cxlrd, int pos)
-{
-	struct cxl_switch_decoder *cxlsd = &cxlrd->cxlsd;
-	struct cxl_decoder *cxld = &cxlsd->cxld;
-	int iw;
-
-	iw = cxld->interleave_ways;
-	if (dev_WARN_ONCE(&cxld->dev, iw != cxlsd->nr_targets,
-			  "misconfigured root decoder\n"))
-		return NULL;
-
-	return cxlrd->cxlsd.target[pos % iw];
-}
-EXPORT_SYMBOL_NS_GPL(cxl_hb_modulo, CXL);
-
 static struct lock_class_key cxl_decoder_key;
 
 /**
@@ -1817,7 +1811,6 @@ static int cxl_switch_decoder_init(struct cxl_port *port,
  * cxl_root_decoder_alloc - Allocate a root level decoder
  * @port: owning CXL root of this decoder
  * @nr_targets: static number of downstream targets
- * @calc_hb: which host bridge covers the n'th position by granularity
  *
  * Return: A new cxl decoder to be registered by cxl_decoder_add(). A
  * 'CXL root' decoder is one that decodes from a top-level / static platform
@@ -1825,8 +1818,7 @@ static int cxl_switch_decoder_init(struct cxl_port *port,
  * topology.
  */
 struct cxl_root_decoder *cxl_root_decoder_alloc(struct cxl_port *port,
-						unsigned int nr_targets,
-						cxl_calc_hb_fn calc_hb)
+						unsigned int nr_targets)
 {
 	struct cxl_root_decoder *cxlrd;
 	struct cxl_switch_decoder *cxlsd;
@@ -1848,7 +1840,6 @@ struct cxl_root_decoder *cxl_root_decoder_alloc(struct cxl_port *port,
 		return ERR_PTR(rc);
 	}
 
-	cxlrd->calc_hb = calc_hb;
 	mutex_init(&cxlrd->range_lock);
 
 	cxld = &cxlsd->cxld;

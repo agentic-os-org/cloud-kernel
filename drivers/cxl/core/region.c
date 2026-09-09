@@ -674,26 +674,50 @@ out:
 	return rc;
 }
 
+static int check_commit_order(struct device *dev, const void *data)
+{
+	struct cxl_decoder *cxld = to_cxl_decoder(dev);
+
+	/*
+	 * if port->commit_end is not the only free decoder, then out of
+	 * order shutdown has occurred, block further allocations until
+	 * that is resolved
+	 */
+	if (((cxld->flags & CXL_DECODER_F_ENABLE) == 0))
+		return -EBUSY;
+	return 0;
+}
+
 static int match_free_decoder(struct device *dev, void *data)
 {
+	struct cxl_port *port = to_cxl_port(dev->parent);
 	struct cxl_decoder *cxld;
-	int *id = data;
+	int rc;
 
 	if (!is_switch_decoder(dev))
 		return 0;
 
 	cxld = to_cxl_decoder(dev);
 
-	/* enforce ordered allocation */
-	if (cxld->id != *id)
+	if (cxld->id != port->commit_end + 1)
 		return 0;
 
-	if (!cxld->region)
-		return 1;
+	if (cxld->region) {
+		dev_dbg(dev->parent,
+			"next decoder to commit (%s) is already reserved (%s)\n",
+			dev_name(dev), dev_name(&cxld->region->dev));
+		return 0;
+	}
 
-	(*id)++;
-
-	return 0;
+	rc = device_for_each_child_reverse_from(dev->parent, dev, NULL,
+						check_commit_order);
+	if (rc) {
+		dev_dbg(dev->parent,
+			"unable to allocate %s due to out of order shutdown\n",
+			dev_name(dev));
+		return 0;
+	}
+	return 1;
 }
 
 static int match_auto_decoder(struct device *dev, void *data)
@@ -720,7 +744,6 @@ cxl_region_find_decoder(struct cxl_port *port,
 			struct cxl_region *cxlr)
 {
 	struct device *dev;
-	int id = 0;
 
 	if (port == cxled_to_port(cxled))
 		return &cxled->cxld;
@@ -729,7 +752,7 @@ cxl_region_find_decoder(struct cxl_port *port,
 		dev = device_find_child(&port->dev, &cxlr->params,
 					match_auto_decoder);
 	else
-		dev = device_find_child(&port->dev, &id, match_free_decoder);
+		dev = device_find_child(&port->dev, NULL, match_free_decoder);
 	if (!dev)
 		return NULL;
 	/*
@@ -1296,7 +1319,7 @@ static int cxl_port_setup_targets(struct cxl_port *port,
 
 	if (test_bit(CXL_REGION_F_AUTO, &cxlr->flags)) {
 		if (cxld->interleave_ways != iw ||
-		    cxld->interleave_granularity != ig ||
+		    (iw > 1 && cxld->interleave_granularity != ig) ||
 		    cxld->hpa_range.start != p->res->start ||
 		    cxld->hpa_range.end != p->res->end ||
 		    ((cxld->flags & CXL_DECODER_F_ENABLE) == 0)) {
@@ -1652,14 +1675,13 @@ static int find_pos_and_ways(struct cxl_port *port, struct range *range,
 			break;
 		}
 	}
-	put_device(dev);
-
 	if (rc)
 		dev_err(port->uport_dev,
 			"failed to find %s:%s in target list of %s\n",
 			dev_name(&port->dev),
-			dev_name(port->parent_dport->dport_dev),
-			dev_name(&cxlsd->cxld.dev));
+			dev_name(port->parent_dport->dport_dev), dev_name(dev));
+
+	put_device(dev);
 
 	return rc;
 }
@@ -2634,31 +2656,26 @@ static int __cxl_dpa_to_region(struct device *dev, void *arg)
 struct cxl_region *cxl_dpa_to_region(const struct cxl_memdev *cxlmd, u64 dpa)
 {
 	struct cxl_dpa_to_region_context ctx;
-	struct cxl_port *port;
+	struct cxl_port *port = cxlmd->endpoint;
+
+	if (!cxlmd->dev.driver)
+		return NULL;
 
 	ctx = (struct cxl_dpa_to_region_context) {
 		.dpa = dpa,
 	};
-	port = cxlmd->endpoint;
-	if (port && is_cxl_endpoint(port) && cxl_num_decoders_committed(port))
+	if (cxl_num_decoders_committed(port))
 		device_for_each_child(&port->dev, &ctx, __cxl_dpa_to_region);
 
 	return ctx.cxlr;
 }
 
-static bool cxl_is_hpa_in_range(u64 hpa, struct cxl_region *cxlr, int pos)
+static bool cxl_is_hpa_in_chunk(u64 hpa, struct cxl_region *cxlr, int pos)
 {
 	struct cxl_region_params *p = &cxlr->params;
 	int gran = p->interleave_granularity;
 	int ways = p->interleave_ways;
 	u64 offset;
-
-	/* Is the hpa within this region at all */
-	if (hpa < p->res->start || hpa > p->res->end) {
-		dev_dbg(&cxlr->dev,
-			"Addr trans fail: hpa 0x%llx not in region\n", hpa);
-		return false;
-	}
 
 	/* Is the hpa in an expected chunk for its pos(-ition) */
 	offset = hpa - p->res->start;
@@ -2672,15 +2689,26 @@ static bool cxl_is_hpa_in_range(u64 hpa, struct cxl_region *cxlr, int pos)
 	return false;
 }
 
-static u64 cxl_dpa_to_hpa(u64 dpa,  struct cxl_region *cxlr,
-			  struct cxl_endpoint_decoder *cxled)
+u64 cxl_dpa_to_hpa(struct cxl_region *cxlr, const struct cxl_memdev *cxlmd,
+		   u64 dpa)
 {
+	struct cxl_root_decoder *cxlrd = to_cxl_root_decoder(cxlr->dev.parent);
 	u64 dpa_offset, hpa_offset, bits_upper, mask_upper, hpa;
 	struct cxl_region_params *p = &cxlr->params;
-	int pos = cxled->pos;
+	struct cxl_endpoint_decoder *cxled = NULL;
 	u16 eig = 0;
 	u8 eiw = 0;
+	int pos;
 
+	for (int i = 0; i < p->nr_targets; i++) {
+		cxled = p->targets[i];
+		if (cxlmd == cxled_to_memdev(cxled))
+			break;
+	}
+	if (!cxled || cxlmd != cxled_to_memdev(cxled))
+		return ULLONG_MAX;
+
+	pos = cxled->pos;
 	ways_to_eiw(p->interleave_ways, &eiw);
 	granularity_to_eig(p->interleave_granularity, &eig);
 
@@ -2714,27 +2742,21 @@ static u64 cxl_dpa_to_hpa(u64 dpa,  struct cxl_region *cxlr,
 	/* Apply the hpa_offset to the region base address */
 	hpa = hpa_offset + p->res->start;
 
-	if (!cxl_is_hpa_in_range(hpa, cxlr, cxled->pos))
+	/* Root decoder translation overrides typical modulo decode */
+	if (cxlrd->hpa_to_spa)
+		hpa = cxlrd->hpa_to_spa(cxlrd, hpa);
+
+	if (hpa < p->res->start || hpa > p->res->end) {
+		dev_dbg(&cxlr->dev,
+			"Addr trans fail: hpa 0x%llx not in region\n", hpa);
+		return ULLONG_MAX;
+	}
+
+	/* Simple chunk check, by pos & gran, only applies to modulo decodes */
+	if (!cxlrd->hpa_to_spa && (!cxl_is_hpa_in_chunk(hpa, cxlr, pos)))
 		return ULLONG_MAX;
 
 	return hpa;
-}
-
-u64 cxl_trace_hpa(struct cxl_region *cxlr, const struct cxl_memdev *cxlmd,
-		  u64 dpa)
-{
-	struct cxl_region_params *p = &cxlr->params;
-	struct cxl_endpoint_decoder *cxled = NULL;
-
-	for (int i = 0; i <  p->nr_targets; i++) {
-		cxled = p->targets[i];
-		if (cxlmd == cxled_to_memdev(cxled))
-			break;
-	}
-	if (!cxled || cxlmd != cxled_to_memdev(cxled))
-		return ULLONG_MAX;
-
-	return cxl_dpa_to_hpa(dpa, cxlr, cxled);
 }
 
 static struct lock_class_key cxl_pmem_region_key;
