@@ -15,6 +15,7 @@
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/overflow.h>
+#include <asm/unaligned.h>
 #include <net/netlink.h>
 #include <net/pkt_sched.h>
 #include <linux/tc_act/tc_pedit.h>
@@ -231,17 +232,6 @@ static int tcf_pedit_init(struct net *net, struct nlattr *nla,
 	memcpy(p->tcfp_keys, parm->keys, ksize);
 
 	for (i = 0; i < p->tcfp_nkeys; ++i) {
-		u32 offmask = p->tcfp_keys[i].offmask;
-		u32 cur = p->tcfp_keys[i].off;
-
-		/* The AT option can be added to static offsets in the datapath */
-		if (!offmask && cur % 4) {
-			NL_SET_ERR_MSG_MOD(extack, "Offsets must be on 32bit boundaries");
-			spin_unlock_bh(&p->tcf_lock);
-			ret = -EINVAL;
-			goto put_chain;
-		}
-
 		/* sanitize the shift value for any later use */
 		p->tcfp_keys[i].shift = min_t(size_t, BITS_PER_TYPE(int) - 1,
 					      p->tcfp_keys[i].shift);
@@ -339,7 +329,7 @@ static int tcf_pedit_act(struct sk_buff *skb, const struct tc_action *a,
 		for (i = p->tcfp_nkeys; i > 0; i--, tkey++) {
 			int write_offset, write_len;
 			int offset = tkey->off;
-			int hoffset = 0;
+			int hoffset;
 			u32 cur_val, val;
 			u32 *ptr;
 			int rc;
@@ -372,12 +362,12 @@ static int tcf_pedit_act(struct sk_buff *skb, const struct tc_action *a,
 						       sizeof(_d), &_d);
 				if (!d)
 					goto bad;
-
 				offset += (*d & tkey->offmask) >> tkey->shift;
-				if (offset % 4) {
-					pr_info("tc action pedit offset must be on 32 bit boundaries\n");
-					goto bad;
-				}
+			}
+
+			if (offset % 4) {
+				pr_info("tc action pedit offset must be on 32 bit boundaries\n");
+				goto bad;
 			}
 
 			if (check_add_overflow(hoffset, offset, &write_offset)) {
@@ -437,7 +427,6 @@ bad:
 	p->tcf_qstats.overlimits++;
 done:
 	bstats_update(&p->tcf_bstats, skb);
-unlock:
 	spin_unlock(&p->tcf_lock);
 	return p->tcf_action;
 }
