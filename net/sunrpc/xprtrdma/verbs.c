@@ -1411,7 +1411,7 @@ void rpcrdma_post_recvs(struct rpcrdma_xprt *r_xprt, int needed, bool temp)
 		goto out;
 	needed -= ep->re_receive_count;
 	if (!temp)
-		needed += RPCRDMA_MAX_RECV_BATCH;
+		needed += ep->re_recv_batch;
 
 	/* fast path: all needed reps can be found on the free list */
 	wr = NULL;

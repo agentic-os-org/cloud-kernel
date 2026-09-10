@@ -91,6 +91,7 @@ struct rpcrdma_ep {
 	struct rdma_conn_param	re_remote_cma;
 	int			re_receive_count;
 	unsigned int		re_max_requests; /* depends on device */
+	unsigned int		re_recv_batch;
 	unsigned int		re_inline_send;	/* negotiated */
 	unsigned int		re_inline_recv;	/* negotiated */
 };
