@@ -1163,6 +1163,15 @@ __always_inline bool free_pages_prepare(struct page *page,
 		 * when the page is freed by unpoison_memory().
 		 */
 		clear_page_tag_ref(page);
+
+		/*
+		 * A KFENCE pool page must still be released to its pool,
+		 * otherwise its object slot is stranded forever; the pool
+		 * retires hwpoisoned pages instead of reusing them.
+		 */
+		if (unlikely(kfence_free_page(page)))
+			return false;
+
 		return false;
 	}
 

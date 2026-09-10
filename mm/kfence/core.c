@@ -359,6 +359,7 @@ enum kfence_counter_id {
 	KFENCE_COUNTER_ALLOCATED_PAGE,
 	KFENCE_COUNTER_ALLOCS_PAGE,
 	KFENCE_COUNTER_FREES_PAGE,
+	KFENCE_COUNTER_RETIRED,
 	KFENCE_COUNTER_BUGS,
 	KFENCE_COUNTER_SKIP_INCOMPAT,
 	KFENCE_COUNTER_SKIP_CAPACITY,
@@ -377,6 +378,7 @@ static const char *const counter_names[] = {
 	[KFENCE_COUNTER_ALLOCATED_PAGE]	= "currently page allocated",
 	[KFENCE_COUNTER_ALLOCS_PAGE]	= "total page allocations",
 	[KFENCE_COUNTER_FREES_PAGE]	= "total page frees",
+	[KFENCE_COUNTER_RETIRED]	= "retired objects (hwpoison)",
 	[KFENCE_COUNTER_BUGS]		= "total bugs",
 	[KFENCE_COUNTER_SKIP_INCOMPAT]	= "skipped allocations (incompatible)",
 	[KFENCE_COUNTER_SKIP_CAPACITY]	= "skipped allocations (capacity)",
@@ -786,6 +788,13 @@ static void *kfence_guarded_alloc(struct kmem_cache *cache, size_t size, gfp_t g
 		return NULL;
 	}
 
+	if (unlikely(PageHWPoison(virt_to_page((void *)metadata_to_pageaddr(meta))))) {
+		/* Broken memory: retire the object instead of handing it out. */
+		raw_spin_unlock_irqrestore(&meta->lock, flags);
+		put_free_meta(meta); /* Retires hwpoisoned objects. */
+		return NULL;
+	}
+
 	__init_meta(meta, size, cache, stack_entries, num_stack_entries, alloc_stack_hash);
 
 	raw_spin_unlock_irqrestore(&meta->lock, flags);
@@ -869,6 +878,13 @@ static struct page *kfence_guarded_alloc_page(int node, unsigned long *stack_ent
 
 	addr = (void *)metadata_to_pageaddr(meta);
 	page = virt_to_page(addr);
+	if (unlikely(PageHWPoison(page))) {
+		/* Broken memory: retire the object instead of handing it out. */
+		raw_spin_unlock_irqrestore(&meta->lock, flags);
+		put_free_meta(meta); /* Retires hwpoisoned objects. */
+		return NULL;
+	}
+
 	if (!page_ref_freeze(page, 1)) {
 		/*
 		 * This is extremely unlikely -- someone else has
@@ -947,6 +963,18 @@ static void put_free_meta(struct kfence_metadata *object)
 	struct kfence_freelist_node *kfence_freelist = &freelist.node[node];
 
 	KFENCE_WARN_ON(!list_empty(&object->list));
+
+	/*
+	 * An object whose page carries an uncorrectable memory error must
+	 * never be handed out again: retire it from the pool instead of
+	 * returning it to the freelist. The reference is still dropped so
+	 * that pool teardown is not blocked.
+	 */
+	if (unlikely(PageHWPoison(virt_to_page((void *)object->addr)))) {
+		percpu_ref_put(&object->kpa->refcnt);
+		raw_cpu_ptr(counters)->counter[KFENCE_COUNTER_RETIRED]++;
+		return;
+	}
 
 	/* If meta not on current node, just return it to its own nodelist */
 	if (unlikely(!kfence_node_map || node != kfence_node_map[numa_node_id()] ||
