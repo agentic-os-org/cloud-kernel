@@ -149,9 +149,14 @@ do {							\
 		__switch_to_vector(__prev, __next);	\
 	if (switch_to_should_flush_icache(__next))	\
 		local_flush_icache_all();		\
+	if (has_dtso())					\
+		__switch_to_dtso(__prev, __next);	\
 	__switch_to_envcfg(__next);			\
 	__switch_sse_entry_task(__next);			\
 	((last) = __switch_to(__prev, __next));		\
 } while (0)
+
+/* Included last: dtso.h needs envcfg_update_bits() from above. */
+#include <asm/dtso.h>
 
 #endif /* _ASM_RISCV_SWITCH_TO_H */

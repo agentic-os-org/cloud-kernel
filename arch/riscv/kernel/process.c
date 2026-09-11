@@ -198,6 +198,15 @@ void flush_thread(void)
 	if (riscv_has_extension_unlikely(RISCV_ISA_EXT_SUPM))
 		envcfg_update_bits(current, ENVCFG_PMM, ENVCFG_PMM_PMLEN_0);
 #endif
+#ifdef CONFIG_RISCV_ISA_XUANTIE_SSDTSO
+	/*
+	 * Reset the memory consistency model on exec so that a stronger
+	 * model cannot leak across the exec boundary (e.g. into a
+	 * setuid binary).
+	 */
+	set_memory_consistency_model(current, RISCV_MEMORY_CONSISTENCY_MODEL_WMO);
+	dtso_restore(current);
+#endif
 }
 
 void arch_release_task_struct(struct task_struct *tsk)

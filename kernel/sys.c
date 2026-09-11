@@ -149,6 +149,14 @@
 #ifndef RISCV_SET_ICACHE_FLUSH_CTX
 # define RISCV_SET_ICACHE_FLUSH_CTX(a, b)	(-EINVAL)
 #endif
+#ifdef CONFIG_DYNAMIC_MEMORY_CONSISTENCY_MODEL
+#ifndef SET_MEMORY_CONSISTENCY_MODEL
+# define SET_MEMORY_CONSISTENCY_MODEL(a)	(-EINVAL)
+#endif
+#ifndef GET_MEMORY_CONSISTENCY_MODEL
+# define GET_MEMORY_CONSISTENCY_MODEL()		(-EINVAL)
+#endif
+#endif /* CONFIG_DYNAMIC_MEMORY_CONSISTENCY_MODEL */
 
 /*
  * this is where the system-wide overflow UID and GID are defined, for
@@ -2839,6 +2847,18 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 			return -EINVAL;
 		error = arch_lock_shadow_stack_status(me, arg2);
 		break;
+#ifdef CONFIG_DYNAMIC_MEMORY_CONSISTENCY_MODEL
+	case PR_SET_MEMORY_CONSISTENCY_MODEL:
+		if (arg3 || arg4 || arg5)
+			return -EINVAL;
+		error = SET_MEMORY_CONSISTENCY_MODEL(arg2);
+		break;
+	case PR_GET_MEMORY_CONSISTENCY_MODEL:
+		if (arg3 || arg4 || arg5)
+			return -EINVAL;
+		error = GET_MEMORY_CONSISTENCY_MODEL();
+		break;
+#endif
 	default:
 		error = -EINVAL;
 		break;
