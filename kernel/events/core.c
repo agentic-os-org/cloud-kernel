@@ -11684,6 +11684,11 @@ static void perf_swevent_cancel_hrtimer(struct perf_event *event)
 	}
 }
 
+static void perf_swevent_destroy_hrtimer(struct perf_event *event)
+{
+	hrtimer_cancel(&event->hw.hrtimer);
+}
+
 static void perf_swevent_init_hrtimer(struct perf_event *event)
 {
 	struct hw_perf_event *hwc = &event->hw;
@@ -11693,6 +11698,7 @@ static void perf_swevent_init_hrtimer(struct perf_event *event)
 
 	hrtimer_init(&hwc->hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_HARD);
 	hwc->hrtimer.function = perf_swevent_hrtimer;
+	event->destroy = perf_swevent_destroy_hrtimer;
 
 	/*
 	 * Since hrtimers have a fixed rate, we can do a static freq->period
