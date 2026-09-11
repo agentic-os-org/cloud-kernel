@@ -386,12 +386,28 @@ static void reparent_memcg1_lruvec_state_local(struct mem_cgroup *memcg, struct 
 
 static void do_flush_stats(struct mem_cgroup *memcg);
 
+/*
+ * Reparent the non-hierarchical lruvec stats that count_shadow_nodes() reads
+ * to approximate the shadow node budget.  They are not exposed to userspace
+ * on cgroup v2, but they must follow the reparented folios; otherwise the
+ * ancestor would only receive the negative deltas when the folios are freed
+ * without ever having received the positive base, and its local stats would
+ * permanently underflow.
+ */
+static void reparent_v2_lruvec_state_local(struct mem_cgroup *memcg, struct mem_cgroup *parent)
+{
+	int i;
+
+	for (i = 0; i < NR_LRU_LISTS; i++)
+		reparent_memcg_lruvec_state_local(memcg, parent, NR_LRU_BASE + i);
+
+	reparent_memcg_lruvec_state_local(memcg, parent, NR_SLAB_RECLAIMABLE_B);
+	reparent_memcg_lruvec_state_local(memcg, parent, NR_SLAB_UNRECLAIMABLE_B);
+}
+ 
 static inline void reparent_state_local(struct mem_cgroup *memcg, struct mem_cgroup *parent)
 {
 	unsigned long flags;
-
-	if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
-		return;
 
 	/*
 	 * Reparent stats exposed non-hierarchically. Flush @memcg's stats first
@@ -423,8 +439,13 @@ static inline void reparent_state_local(struct mem_cgroup *memcg, struct mem_cgr
 	 * Keep do_flush_stats() outside the region -- it may sleep.
 	 */
 	local_irq_save(flags);
-	reparent_memcg1_state_local(memcg, parent);
-	reparent_memcg1_lruvec_state_local(memcg, parent);
+	if (cgroup_subsys_on_dfl(memory_cgrp_subsys)) {
+		reparent_v2_lruvec_state_local(memcg, parent);
+	} else {
+		/* The following counts are all non-hierarchical and need to be reparented. */
+		reparent_memcg1_state_local(memcg, parent);
+		reparent_memcg1_lruvec_state_local(memcg, parent);
+	}
 	local_irq_restore(flags);
 
 	do_flush_stats(parent);
