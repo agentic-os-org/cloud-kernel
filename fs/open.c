@@ -923,7 +923,8 @@ static int do_dentry_open(struct file *f,
 	f->f_sb_err = file_sample_sb_err(f);
 
 	if (unlikely(f->f_flags & O_PATH)) {
-		f->f_mode = FMODE_PATH | FMODE_OPENED | FMODE_NONOTIFY;
+		f->f_mode = FMODE_PATH | FMODE_OPENED;
+		file_set_fsnotify_mode(f, FMODE_NONOTIFY);
 		f->f_op = &empty_fops;
 		return 0;
 	}
@@ -952,12 +953,12 @@ static int do_dentry_open(struct file *f,
 		goto cleanup_all;
 
 	/*
-	 * Set FMODE_NONOTIFY_* bits according to existing permission watches.
-	 * If FMODE_NONOTIFY was already set for an fanotify fd, this doesn't
-	 * change anything.
+	 * Call fsnotify open permission hook and set FMODE_NONOTIFY_* bits
+	 * according to existing permission watches.
+	 * If FMODE_NONOTIFY mode was already set for an fanotify fd or for a
+	 * pseudo file, this call will not change the mode.
 	 */
-	file_set_fsnotify_mode(f);
-	error = fsnotify_open_perm(f);
+	error = fsnotify_open_perm_and_set_mode(f);
 	if (error)
 		goto cleanup_all;
 
@@ -1142,7 +1143,7 @@ struct file *dentry_open_nonotify(const struct path *path, int flags,
 	if (!IS_ERR(f)) {
 		int error;
 
-		f->f_mode |= FMODE_NONOTIFY;
+		file_set_fsnotify_mode(f, FMODE_NONOTIFY);
 		error = vfs_open(path, f);
 		if (error) {
 			fput(f);

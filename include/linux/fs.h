@@ -192,12 +192,12 @@ typedef int (dio_iodone_t)(struct kiocb *iocb, loff_t offset,
 
 /*
  * The two FMODE_NONOTIFY* define which fsnotify events should not be generated
- * for a file. These are the possible values of (f->f_mode &
- * FMODE_FSNOTIFY_MASK) and their meaning:
+ * for an open file. These are the possible values of
+ * (f->f_mode & FMODE_FSNOTIFY_MASK) and their meaning:
  *
  * FMODE_NONOTIFY - suppress all (incl. non-permission) events.
  * FMODE_NONOTIFY_PERM - suppress permission (incl. pre-content) events.
- * FMODE_NONOTIFY | FMODE_NONOTIFY_PERM - suppress only pre-content events.
+ * FMODE_NONOTIFY | FMODE_NONOTIFY_PERM - suppress only FAN_ACCESS_PERM.
  */
 #define FMODE_FSNOTIFY_MASK \
 	(FMODE_NONOTIFY | FMODE_NONOTIFY_PERM)
@@ -205,16 +205,15 @@ typedef int (dio_iodone_t)(struct kiocb *iocb, loff_t offset,
 #define FMODE_FSNOTIFY_NONE(mode) \
 	((mode & FMODE_FSNOTIFY_MASK) == FMODE_NONOTIFY)
 #ifdef CONFIG_FANOTIFY_ACCESS_PERMISSIONS
-#define FMODE_FSNOTIFY_PERM(mode) \
+#define FMODE_FSNOTIFY_HSM(mode) \
 	((mode & FMODE_FSNOTIFY_MASK) == 0 || \
 	 (mode & FMODE_FSNOTIFY_MASK) == (FMODE_NONOTIFY | FMODE_NONOTIFY_PERM))
-#define FMODE_FSNOTIFY_HSM(mode) \
+#define FMODE_FSNOTIFY_ACCESS_PERM(mode) \
 	((mode & FMODE_FSNOTIFY_MASK) == 0)
 #else
-#define FMODE_FSNOTIFY_PERM(mode)	0
+#define FMODE_FSNOTIFY_ACCESS_PERM(mode) 0
 #define FMODE_FSNOTIFY_HSM(mode)	0
 #endif
-
 
 /*
  * Attribute flags.  These should be or-ed together to figure out what
@@ -3067,6 +3066,12 @@ static inline void exe_file_allow_write_access(struct file *exe_file)
 	if (unlikely(!exe_file || FMODE_FSNOTIFY_HSM(exe_file->f_mode)))
 		return;
 	allow_write_access(exe_file);
+}
+
+static inline void file_set_fsnotify_mode(struct file *file, fmode_t mode)
+{
+	file->f_mode &= ~FMODE_FSNOTIFY_MASK;
+	file->f_mode |= mode;
 }
 
 static inline bool inode_is_open_for_write(const struct inode *inode)
