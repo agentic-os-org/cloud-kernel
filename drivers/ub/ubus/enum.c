@@ -1030,6 +1030,7 @@ static struct ub_entity *ub_enum_create_uent(struct ub_bus_controller *ubc)
 
 	uent->pue = uent;
 	uent->entity_idx = 0;
+	uent->is_mue = 1;
 	uent->ubc = ub_ubc_get(ubc);
 	uent->upi = UB_CP_UPI;
 	ret = message_probe_device(uent);
@@ -1077,6 +1078,57 @@ static void ub_enum_topo_ent_uninit(struct ub_entity *uent)
 		ub_cna_free(uent); /* alloc in na_cfg */
 		ub_ports_unset(uent); /* alloc in scan_device */
 	}
+}
+
+static int ub_enum_ports(struct ub_entity *uent, u16 start_port, u16 num,
+			 void *buf)
+{
+	u16 left = num, start = start_port, count;
+	struct enum_pld_scan_pdu_common *pc;
+	struct enum_tlv_info info = {};
+	u8 total_slice, slice_id = 0;
+	int tlv_len, ret, nums = 0;
+	void *rsp, *tlv;
+
+	do {
+		rsp = (void *)ub_enum_topo_query_and_check(uent, buf, slice_id);
+		if (!rsp)
+			return -EBUSY;
+
+		pc = rsp;
+		tlv_len = (int)pc->pdu_len * SZ_4 - ENUM_PLD_SCAN_PDU_COMMON_SIZE;
+		tlv = rsp + ENUM_PLD_SCAN_PDU_COMMON_SIZE;
+
+		ret = ub_enum_tlv_parse(tlv, tlv_len, &info);
+		if (ret)
+			return ret;
+
+		if (slice_id == 0) {
+			if (!info.si || !info.pi || !info.pn || !info.ci) {
+				dev_err(&uent->ubc->dev, "port tlv si/pi/pn/ci null\n");
+				return -EINVAL;
+			}
+
+			total_slice = info.si->total_slice;
+		}
+
+		if (start >= nums + info.port_nums)
+			goto next;
+
+		info.pi += start - nums;
+		count = min(left, nums + info.port_nums - start);
+		ub_enum_parse_port(uent, info.pi, count);
+		start += count;
+		left -= count;
+
+		if (left == 0)
+			break;
+next:
+		nums += info.port_nums;
+		slice_id++;
+	} while (slice_id < total_slice);
+
+	return 0;
 }
 
 static int ub_enum_and_configure_ent(struct ub_entity *uent, void *buf)
@@ -1142,6 +1194,175 @@ clear_list:
 	return ret;
 }
 
+static struct ub_entity *ub_enum_get_ent(guid_t *guid, struct list_head *dev_list)
+{
+	struct ub_entity *uent;
+
+	list_for_each_entry(uent, dev_list, node)
+		if (guid_equal(guid, &uent->guid.id))
+			return uent;
+
+	return NULL;
+}
+
+static bool ub_enum_port_recognise_check(struct ub_entity *root,
+					 struct ub_port *port)
+{
+	struct ub_port *tmp;
+
+	if (guid_equal(&port->r_guid, &root->guid.id)) {
+		tmp = root->ports + port->r_index;
+		if (guid_is_null(&tmp->r_guid)) {
+			port->r_index = 0;
+			guid_copy(&port->r_guid, &guid_null);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static bool port_need_scan(struct ub_entity *root, struct ub_port *port)
+{
+	if (port->r_uent)
+		return false;
+
+	if (guid_is_null(&port->r_guid))
+		return false;
+
+	if (root && ub_enum_port_recognise_check(root, port))
+		return false;
+
+	return true;
+}
+
+static struct ub_entity *ub_enum_create_entity(guid_t *guid, struct ub_entity *parent)
+{
+	struct ub_entity *uent;
+
+	if (parent->topo_rank + 1 > ENUM_MAX_HOPS) {
+		dev_err(&parent->ubc->dev, "ub support max hops: %d\n",
+			ENUM_MAX_HOPS);
+		return (struct ub_entity *)ERR_PTR(-EINVAL);
+	}
+
+	uent = ub_enum_create_uent(parent->ubc);
+	if (!uent)
+		return (struct ub_entity *)ERR_PTR(-ENOMEM);
+
+	guid_copy(&uent->guid.id, guid);
+
+	uent->topo_rank = parent->topo_rank + 1;
+	uent->dev.parent = &parent->dev;
+
+	return uent;
+}
+
+static int ub_enum_do_topo_scan(struct ub_entity *root, struct list_head *dev_list,
+				void *buf)
+{
+#define UB_TOPO_KFIFO_DEPTH SZ_128
+	DECLARE_KFIFO(kfifo, struct ub_entity *, UB_TOPO_KFIFO_DEPTH);
+	struct ub_entity *uent, *r_uent;
+	struct ub_port *port;
+	struct device *dev;
+	int ret = 0;
+
+	INIT_KFIFO(kfifo);
+
+	if (root)
+		kfifo_put(&kfifo, root);
+
+	list_for_each_entry(uent, dev_list, node)
+		kfifo_put(&kfifo, uent);
+
+	while (kfifo_get(&kfifo, &uent)) {
+		dev = &uent->ubc->dev;
+
+		for_each_uent_port(port, uent) {
+			if (!port_need_scan(root, port))
+				continue;
+
+			r_uent = ub_enum_get_ent(&port->r_guid, dev_list);
+			if (r_uent)
+				goto connect_port;
+
+			if (is_device(uent)) {
+				ret = -EINVAL;
+				dev_err(dev, "device connect to multi peer\n");
+				goto clear_list;
+			}
+
+			r_uent = ub_enum_create_entity(&port->r_guid, uent);
+			if (IS_ERR(r_uent)) {
+				ret = PTR_ERR(r_uent);
+				dev_err(dev, "enum create device failed, ret=%d\n",
+					ret);
+				goto clear_list;
+			}
+
+			/* set here to help enum find path */
+			port->r_uent = r_uent;
+			ret = ub_enum_and_configure_ent(r_uent, buf);
+			if (ret) {
+				dev_err(dev, "enum device failed, ret=%d\n",
+					ret);
+				ub_enum_destroy_entity(r_uent);
+				goto clear_port;
+			}
+
+			list_add_tail(&r_uent->node, dev_list);
+			if (!kfifo_put(&kfifo, r_uent))
+				dev_err(dev, "do topo scan kfifo put full\n");
+
+connect_port:
+			if (!ub_check_and_connect(port, r_uent)) {
+				dev_err(dev, "port%u wrong topo\n", port->index);
+				ret = -EINVAL;
+				goto clear_port;
+			}
+		}
+	}
+
+	return 0;
+clear_port:
+	port->r_uent = NULL;
+clear_list:
+	ub_enum_clear_ent_list(dev_list);
+	return ret;
+}
+
+int ub_enum_topo_scan_ports(struct ub_entity *uent, u16 start_port, u16 num,
+			    struct list_head *dev_list, void *buf)
+{
+	int ret;
+
+	if (!uent || !dev_list || !buf)
+		return -EINVAL;
+
+	ret = ub_enum_ports(uent, start_port, num, buf);
+	if (ret)
+		return ret;
+
+	return ub_enum_do_topo_scan(uent, dev_list, buf);
+}
+
+struct ub_entity *ub_enum_get_port_r_uent(struct ub_port *port, void *buf)
+{
+	struct ub_bus_controller *ubc;
+	int ret;
+
+	if (!port || !buf)
+		return NULL;
+
+	ret = ub_enum_ports(port->uent, port->index, 1, buf);
+	if (ret)
+		return NULL;
+
+	ubc = port->uent->ubc;
+	return ub_enum_get_ent(&port->r_guid, &ubc->devs);
+}
+
 /*
  * During topo scan, just alloc ub_entity, alloc ub_port, alloc cna,
  * so, when topo scan failed, just go to free devs in topo_scan.uents
@@ -1168,6 +1389,10 @@ static int ub_enum_topo_scan(struct list_head *dev_list)
 		goto out;
 	}
 
+	ret = ub_enum_do_topo_scan(NULL, dev_list, topo_scan.buf);
+	if (ret)
+		pr_err("enum scan devices failed, ret=%d\n", ret);
+
 out:
 	ub_enum_topo_scan_uninit();
 	return ret;
@@ -1182,6 +1407,33 @@ static void ub_enum_free_all(void)
 		ub_enum_topo_ent_uninit(uent);
 		ub_enum_destroy_entity(uent);
 	}
+
+	ub_stop_entities();
+	ub_remove_entities();
+}
+
+int ub_enum_entities_active(struct list_head *dev_list)
+{
+	struct ub_entity *uent, *tmp;
+	int ret;
+
+	list_for_each_entry_safe(uent, tmp, dev_list, node) {
+		if (uent->entity_idx != 0)
+			continue;
+
+		ub_route_sync_dev(uent);
+		ret = ub_setup_ent(uent);
+		if (ret) {
+			pr_err("setup dev err, ret=%d\n", ret);
+			return ret;
+		}
+
+		list_del(&uent->node);
+		ub_entity_add(uent, uent->ubc);
+		ub_start_ent(uent);
+	}
+
+	return 0;
 }
 
 int ub_enum_probe(void)
@@ -1202,6 +1454,12 @@ int ub_enum_probe(void)
 		goto err_out;
 	}
 
+	ret = ub_enum_entities_active(&topo_scan.dev_list);
+	if (ret) {
+		pr_err("devices start failed, ret=%d\n", ret);
+		goto err_out;
+	}
+
 	return 0;
 err_out:
 	ub_enum_free_all();
@@ -1210,5 +1468,6 @@ err_out:
 
 void ub_enum_remove(void)
 {
-	ub_enum_free_all();
+	ub_stop_entities();
+	ub_remove_entities();
 }

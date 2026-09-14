@@ -18,6 +18,13 @@
 #include "ubus_config.h"
 #include "ubus_controller.h"
 #include "ubus_inner.h"
+#include "ubus_entity.h"
+
+bool entity_flex_en;
+module_param(entity_flex_en, bool, 0444);
+MODULE_PARM_DESC(entity_flex_en, "Entity Flexible enable: default: 0");
+
+DECLARE_RWSEM(ub_bus_sem);
 
 static DEFINE_MUTEX(manage_subsystem_ops_mutex);
 static const struct ub_manage_subsystem_ops *manage_subsystem_ops;
@@ -166,6 +173,96 @@ const struct ub_device_id *ub_match_id(const struct ub_device_id *ids,
 	return NULL;
 }
 
+static struct ub_entity *
+ub_get_dev_by_id_inner(struct ub_entity *from, const void *data,
+		       int (*match)(struct device *dev, const void *data))
+{
+	struct device *dev, *dev_start = NULL;
+	struct ub_entity *fdev = NULL;
+
+	if (from)
+		dev_start = &from->dev;
+
+	dev = bus_find_device(&ub_bus_type, dev_start, (void *)data, match);
+	if (dev)
+		fdev = to_ub_entity(dev);
+
+	ub_entity_put(from);
+	return fdev;
+}
+
+static int ub_entity_match_by_id(struct device *dev, const void *data)
+{
+	const struct ub_device_id *id = (const struct ub_device_id *)data;
+	struct ub_entity *pue = to_ub_entity(dev);
+
+	if (ub_match_one_device(id, pue))
+		return 1;
+	return 0;
+}
+
+struct ub_entity *ub_get_entity(unsigned int vendor, unsigned int device,
+			     struct ub_entity *from)
+{
+	struct ub_device_id id = {
+		.vendor = vendor,
+		.device = device,
+	};
+
+	return ub_get_dev_by_id_inner(from, &id, ub_entity_match_by_id);
+}
+EXPORT_SYMBOL_GPL(ub_get_entity);
+
+static int ub_entity_match_by_guid(struct device *dev, const void *data)
+{
+	const struct ub_guid *guid = (const struct ub_guid *)data;
+	struct ub_entity *uent = to_ub_entity(dev);
+
+	if (guid_equal(&uent->guid.id, &guid->id))
+		return 1;
+	return 0;
+}
+
+struct ub_entity *ub_get_ent_by_guid(const struct ub_guid *guid)
+{
+	return ub_get_dev_by_id_inner(NULL, guid, ub_entity_match_by_guid);
+}
+EXPORT_SYMBOL_GPL(ub_get_ent_by_guid);
+
+static int ub_entity_match_by_eid(struct device *dev, const void *data)
+{
+	struct ub_entity *uent = to_ub_entity(dev);
+	const u32 eid = *((const u32 *)data);
+
+	if (uent->eid == eid)
+		return 1;
+
+	return 0;
+}
+
+struct ub_entity *ub_get_ent_by_eid(unsigned int eid)
+{
+	return ub_get_dev_by_id_inner(NULL, &eid, ub_entity_match_by_eid);
+}
+EXPORT_SYMBOL_GPL(ub_get_ent_by_eid);
+
+static int ub_entity_match_by_uent_num(struct device *dev, const void *data)
+{
+	const u32 uent_num = *((const u32 *)data);
+	struct ub_entity *uent = to_ub_entity(dev);
+
+	if (uent->uent_num == uent_num)
+		return 1;
+
+	return 0;
+}
+
+struct ub_entity *ub_get_ent_by_uent_num(unsigned int uent_num)
+{
+	return ub_get_dev_by_id_inner(NULL, &uent_num, ub_entity_match_by_uent_num);
+}
+EXPORT_SYMBOL_GPL(ub_get_ent_by_uent_num);
+
 static const struct ub_device_id *ub_match_device(struct ub_driver *drv,
 						  struct ub_entity *dev)
 {
@@ -264,9 +361,17 @@ static int ub_entity_probe(struct device *dev)
 {
 	struct ub_driver *drv = to_ub_driver(dev->driver);
 	struct ub_entity *ub_entity = to_ub_entity(dev);
+	struct ub_entity *pue;
+	u16 entity_idx;
 	int ret;
 
 	ub_entity_get(ub_entity);
+	if (!ub_entity->is_mue) {
+		pue = ub_entity->pue;
+		entity_idx = ub_entity->entity_idx;
+		ub_virt_notify(pue, entity_idx, true);
+	}
+
 	ret = __ub_entity_probe(drv, ub_entity);
 	if (ret)
 		ub_entity_put(ub_entity);
@@ -483,6 +588,11 @@ static struct attribute *ub_drv_attrs[] = {
 };
 ATTRIBUTE_GROUPS(ub_drv);
 
+static int ub_bus_num_ue(struct device *dev)
+{
+	return ub_num_ue(to_ub_entity(dev));
+}
+
 void ub_bus_type_init(void)
 {
 	ub_bus_type.match = ub_bus_match;
@@ -493,6 +603,7 @@ void ub_bus_type_init(void)
 	ub_bus_type.dev_groups = ub_entity_groups;
 	ub_bus_type.bus_groups = ub_bus_groups;
 	ub_bus_type.drv_groups = ub_drv_groups;
+	ub_bus_type.num_vf = ub_bus_num_ue;
 }
 
 void ub_bus_type_uninit(void)
@@ -505,6 +616,7 @@ void ub_bus_type_uninit(void)
 	ub_bus_type.dev_groups = NULL;
 	ub_bus_type.bus_groups = NULL;
 	ub_bus_type.drv_groups = NULL;
+	ub_bus_type.num_vf = NULL;
 }
 
 int ub_host_probe(void)
