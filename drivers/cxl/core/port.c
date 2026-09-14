@@ -2141,18 +2141,44 @@ bool schedule_cxl_memdev_detach(struct cxl_memdev *cxlmd)
 }
 EXPORT_SYMBOL_NS_GPL(schedule_cxl_memdev_detach, CXL);
 
-static void combine_coordinates(struct access_coordinate *c1,
-				struct access_coordinate *c2)
+static void add_latency(struct access_coordinate *c, long latency)
 {
-		if (c2->write_bandwidth)
-			c1->write_bandwidth = min(c1->write_bandwidth,
-						  c2->write_bandwidth);
-		c1->write_latency += c2->write_latency;
+	for (int i = 0; i < ACCESS_COORDINATE_MAX; i++) {
+		c[i].write_latency += latency;
+		c[i].read_latency += latency;
+	}
+}
 
-		if (c2->read_bandwidth)
-			c1->read_bandwidth = min(c1->read_bandwidth,
-						 c2->read_bandwidth);
-		c1->read_latency += c2->read_latency;
+static bool coordinates_valid(struct access_coordinate *c)
+{
+	for (int i = 0; i < ACCESS_COORDINATE_MAX; i++) {
+		if (c[i].read_bandwidth && c[i].write_bandwidth &&
+		    c[i].read_latency && c[i].write_latency)
+			continue;
+		return false;
+	}
+
+	return true;
+}
+
+static void set_min_bandwidth(struct access_coordinate *c, unsigned int bw)
+{
+	for (int i = 0; i < ACCESS_COORDINATE_MAX; i++) {
+		c[i].write_bandwidth = min(c[i].write_bandwidth, bw);
+		c[i].read_bandwidth = min(c[i].read_bandwidth, bw);
+	}
+}
+
+static void set_access_coordinates(struct access_coordinate *out,
+				   struct access_coordinate *in)
+{
+	for (int i = 0; i < ACCESS_COORDINATE_MAX; i++)
+		out[i] = in[i];
+}
+
+static bool parent_port_is_cxl_root(struct cxl_port *port)
+{
+	return is_cxl_root(to_cxl_port(port->dev.parent));
 }
 
 /**
@@ -2166,54 +2192,102 @@ static void combine_coordinates(struct access_coordinate *c1,
 int cxl_endpoint_get_perf_coordinates(struct cxl_port *port,
 				      struct access_coordinate *coord)
 {
-	struct access_coordinate c = {
-		.read_bandwidth = UINT_MAX,
-		.write_bandwidth = UINT_MAX,
+	struct cxl_memdev *cxlmd = to_cxl_memdev(port->uport_dev);
+	struct access_coordinate c[] = {
+		{
+			.read_bandwidth = UINT_MAX,
+			.write_bandwidth = UINT_MAX,
+		},
+		{
+			.read_bandwidth = UINT_MAX,
+			.write_bandwidth = UINT_MAX,
+		},
 	};
 	struct cxl_port *iter = port;
 	struct cxl_dport *dport;
 	struct pci_dev *pdev;
+	struct device *dev;
 	unsigned int bw;
+	bool is_cxl_root;
 
 	if (!is_cxl_endpoint(port))
 		return -EINVAL;
 
-	dport = iter->parent_dport;
-
 	/*
-	 * Exit the loop when the parent port of the current port is cxl root.
-	 * The iterative loop starts at the endpoint and gathers the
-	 * latency of the CXL link from the current iter to the next downstream
-	 * port each iteration. If the parent is cxl root then there is
-	 * nothing to gather.
+	 * Skip calculation for RCD. Expectation is HMAT already covers RCD case
+	 * since RCH does not support hotplug.
 	 */
-	while (iter && !is_cxl_root(to_cxl_port(iter->dev.parent))) {
-		combine_coordinates(&c, &dport->sw_coord);
-		c.write_latency += dport->link_latency;
-		c.read_latency += dport->link_latency;
-
-		iter = to_cxl_port(iter->dev.parent);
-		dport = iter->parent_dport;
+	if (cxlmd->cxlds->rcd) {
+		memset(coord, 0, sizeof(*coord) * ACCESS_COORDINATE_MAX);
+		return 0;
 	}
 
-	/* Augment with the generic port (host bridge) perf data */
-	combine_coordinates(&c, &dport->hb_coord);
+	/*
+	 * Exit the loop when the parent port of the current iter port is cxl
+	 * root. The iterative loop starts at the endpoint and gathers the
+	 * latency of the CXL link from the current device/port to the connected
+	 * downstream port each iteration.
+	 */
+	do {
+		dport = iter->parent_dport;
+		iter = to_cxl_port(iter->dev.parent);
+		is_cxl_root = parent_port_is_cxl_root(iter);
+
+		/*
+		 * There's no valid access_coordinate for a root port since RPs do not
+		 * have CDAT and therefore needs to be skipped.
+		 */
+		if (!is_cxl_root) {
+			if (!coordinates_valid(dport->coord))
+				return -EINVAL;
+			cxl_coordinates_combine(c, c, dport->coord);
+		}
+		add_latency(c, dport->link_latency);
+	} while (!is_cxl_root);
+
+	dport = iter->parent_dport;
+	/* Retrieve HB coords */
+	if (!coordinates_valid(dport->coord))
+		return -EINVAL;
+	cxl_coordinates_combine(c, c, dport->coord);
+
+	dev = port->uport_dev->parent;
+	if (!dev_is_pci(dev))
+		return -ENODEV;
 
 	/* Get the calculated PCI paths bandwidth */
-	pdev = to_pci_dev(port->uport_dev->parent);
+	pdev = to_pci_dev(dev);
 	bw = pcie_bandwidth_available(pdev, NULL, NULL, NULL);
 	if (bw == 0)
 		return -ENXIO;
 	bw /= BITS_PER_BYTE;
 
-	c.write_bandwidth = min(c.write_bandwidth, bw);
-	c.read_bandwidth = min(c.read_bandwidth, bw);
-
-	*coord = c;
+	set_min_bandwidth(c, bw);
+	set_access_coordinates(coord, c);
 
 	return 0;
 }
 EXPORT_SYMBOL_NS_GPL(cxl_endpoint_get_perf_coordinates, CXL);
+
+int cxl_port_get_switch_dport_bandwidth(struct cxl_port *port,
+					struct access_coordinate *c)
+{
+	struct cxl_dport *dport = port->parent_dport;
+
+	/* Check this port is connected to a switch DSP and not an RP */
+	if (parent_port_is_cxl_root(to_cxl_port(port->dev.parent)))
+		return -ENODEV;
+
+	if (!coordinates_valid(dport->coord))
+		return -EINVAL;
+
+	for (int i = 0; i < ACCESS_COORDINATE_MAX; i++) {
+		c[i].read_bandwidth = dport->coord[i].read_bandwidth;
+		c[i].write_bandwidth = dport->coord[i].write_bandwidth;
+	}
+
+	return 0;
+}
 
 /* for user tooling to ensure port disable work has completed */
 static ssize_t flush_store(const struct bus_type *bus, const char *buf, size_t count)
