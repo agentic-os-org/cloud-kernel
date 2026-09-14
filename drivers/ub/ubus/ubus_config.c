@@ -111,6 +111,7 @@ void ub_msg_pkt_header_init(struct msg_pkt_header *header, struct ub_entity *uen
 	cnth->nth_nlp = NTH_NLP_WITH_TPH;
 	cnth->scna = scna;
 	cnth->dcna = dcna;
+	cnth->mgmt = is_p_device(uent) ? 0 : 1;
 
 	header->ctph_nlp = CTPH_NLP_UPI_40BITS_UEID;
 	header->tp_opcode = CTPH_OPCODE_NOT_CNP;
@@ -307,7 +308,7 @@ int ub_send_cfg(struct ub_entity *uent, u8 size, u64 pos, u32 *val)
 			    req_pkt.header.msgetah.code);
 }
 
-int __ub_cfg_read_byte(struct ub_entity *uent, u64 pos, u8 *val)
+static int __ub_cfg_read_byte(struct ub_entity *uent, u64 pos, u8 *val)
 {
 	if (!uent || !uent->message || !uent->message->mdev || !val) {
 		pr_err("uent or message or mdev is null\n");
@@ -317,7 +318,7 @@ int __ub_cfg_read_byte(struct ub_entity *uent, u64 pos, u8 *val)
 	return ub_sync_cfg(uent, (u8)sizeof(u8), pos, false, (u32 *)val);
 }
 
-int __ub_cfg_read_word(struct ub_entity *uent, u64 pos, u16 *val)
+static int __ub_cfg_read_word(struct ub_entity *uent, u64 pos, u16 *val)
 {
 	if (!uent || !uent->message || !uent->message->mdev || !val) {
 		pr_err("uent or message or mdev is null\n");
@@ -327,7 +328,7 @@ int __ub_cfg_read_word(struct ub_entity *uent, u64 pos, u16 *val)
 	return ub_sync_cfg(uent, (u8)sizeof(u16), pos, false, (u32 *)val);
 }
 
-int __ub_cfg_read_dword(struct ub_entity *uent, u64 pos, u32 *val)
+static int __ub_cfg_read_dword(struct ub_entity *uent, u64 pos, u32 *val)
 {
 	if (!uent || !uent->message || !uent->message->mdev || !val) {
 		pr_err("uent or message or mdev is null\n");
@@ -337,7 +338,7 @@ int __ub_cfg_read_dword(struct ub_entity *uent, u64 pos, u32 *val)
 	return ub_sync_cfg(uent, (u8)sizeof(u32), pos, false, val);
 }
 
-int __ub_cfg_write_byte(struct ub_entity *uent, u64 pos, u8 val)
+static int __ub_cfg_write_byte(struct ub_entity *uent, u64 pos, u8 val)
 {
 	if (!uent || !uent->message || !uent->message->mdev) {
 		pr_err("uent or message or mdev is null\n");
@@ -347,7 +348,7 @@ int __ub_cfg_write_byte(struct ub_entity *uent, u64 pos, u8 val)
 	return ub_sync_cfg(uent, (u8)sizeof(u8), pos, true, (u32 *)&val);
 }
 
-int __ub_cfg_write_word(struct ub_entity *uent, u64 pos, u16 val)
+static int __ub_cfg_write_word(struct ub_entity *uent, u64 pos, u16 val)
 {
 	if (!uent || !uent->message || !uent->message->mdev) {
 		pr_err("uent or message or mdev is null\n");
@@ -357,7 +358,7 @@ int __ub_cfg_write_word(struct ub_entity *uent, u64 pos, u16 val)
 	return ub_sync_cfg(uent, (u8)sizeof(u16), pos, true, (u32 *)&val);
 }
 
-int __ub_cfg_write_dword(struct ub_entity *uent, u64 pos, u32 val)
+static int __ub_cfg_write_dword(struct ub_entity *uent, u64 pos, u32 val)
 {
 	if (!uent || !uent->message || !uent->message->mdev) {
 		pr_err("uent or message or mdev is null\n");

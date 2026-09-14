@@ -13,50 +13,31 @@
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 
+#include "services.h"
+#include "msg.h"
+#include "enum.h"
+#include "instance.h"
+#include "ioctl.h"
 #include "sysfs.h"
 #include "ubus.h"
 #include "ubus_config.h"
 #include "ubus_controller.h"
 #include "ubus_inner.h"
+#include "ubus_entity.h"
+#include "services/service.h"
+#include "ubus_driver.h"
+
+bool entity_flex_en;
+module_param(entity_flex_en, bool, 0444);
+MODULE_PARM_DESC(entity_flex_en, "Entity Flexible enable: default: 0");
+
+DECLARE_RWSEM(ub_bus_sem);
+
+#define UBC_GUID_VENDOR_SHIFT 48
+#define UBC_GUID_VENDOR_MASK GENMASK(15, 0)
 
 static DEFINE_MUTEX(manage_subsystem_ops_mutex);
 static const struct ub_manage_subsystem_ops *manage_subsystem_ops;
-
-int register_ub_manage_subsystem_ops(const struct ub_manage_subsystem_ops *ops)
-{
-	if (!ops)
-		return -EINVAL;
-
-	mutex_lock(&manage_subsystem_ops_mutex);
-	if (!manage_subsystem_ops) {
-		manage_subsystem_ops = ops;
-		mutex_unlock(&manage_subsystem_ops_mutex);
-		pr_info("ub manage subsystem ops register successfully\n");
-		return 0;
-	}
-
-	pr_warn("ub manage subsystem ops has been registered\n");
-	mutex_unlock(&manage_subsystem_ops_mutex);
-
-	return -EINVAL;
-}
-EXPORT_SYMBOL_GPL(register_ub_manage_subsystem_ops);
-
-void unregister_ub_manage_subsystem_ops(const struct ub_manage_subsystem_ops *ops)
-{
-	if (!ops)
-		return;
-
-	mutex_lock(&manage_subsystem_ops_mutex);
-	if (manage_subsystem_ops == ops) {
-		manage_subsystem_ops = NULL;
-		pr_info("ub manage subsystem ops unregister successfully\n");
-	} else {
-		pr_warn("ub manage subsystem ops is not registered by this vendor\n");
-	}
-	mutex_unlock(&manage_subsystem_ops_mutex);
-}
-EXPORT_SYMBOL_GPL(unregister_ub_manage_subsystem_ops);
 
 const struct ub_manage_subsystem_ops *get_ub_manage_subsystem_ops(void)
 {
@@ -153,7 +134,7 @@ ub_match_one_device(const struct ub_device_id *id, const struct ub_entity *dev)
 	return NULL;
 }
 
-const struct ub_device_id *ub_match_id(const struct ub_device_id *ids,
+static const struct ub_device_id *ub_match_id(const struct ub_device_id *ids,
 				       struct ub_entity *dev)
 {
 	if (ids && dev) {
@@ -165,6 +146,96 @@ const struct ub_device_id *ub_match_id(const struct ub_device_id *ids,
 	}
 	return NULL;
 }
+
+static struct ub_entity *
+ub_get_dev_by_id_inner(struct ub_entity *from, const void *data,
+		       int (*match)(struct device *dev, const void *data))
+{
+	struct device *dev, *dev_start = NULL;
+	struct ub_entity *fdev = NULL;
+
+	if (from)
+		dev_start = &from->dev;
+
+	dev = bus_find_device(&ub_bus_type, dev_start, (void *)data, match);
+	if (dev)
+		fdev = to_ub_entity(dev);
+
+	ub_entity_put(from);
+	return fdev;
+}
+
+static int ub_entity_match_by_id(struct device *dev, const void *data)
+{
+	const struct ub_device_id *id = (const struct ub_device_id *)data;
+	struct ub_entity *pue = to_ub_entity(dev);
+
+	if (ub_match_one_device(id, pue))
+		return 1;
+	return 0;
+}
+
+struct ub_entity *ub_get_entity(unsigned int vendor, unsigned int device,
+			     struct ub_entity *from)
+{
+	struct ub_device_id id = {
+		.vendor = vendor,
+		.device = device,
+	};
+
+	return ub_get_dev_by_id_inner(from, &id, ub_entity_match_by_id);
+}
+EXPORT_SYMBOL_GPL(ub_get_entity);
+
+static int ub_entity_match_by_guid(struct device *dev, const void *data)
+{
+	const struct ub_guid *guid = (const struct ub_guid *)data;
+	struct ub_entity *uent = to_ub_entity(dev);
+
+	if (guid_equal(&uent->guid.id, &guid->id))
+		return 1;
+	return 0;
+}
+
+struct ub_entity *ub_get_ent_by_guid(const struct ub_guid *guid)
+{
+	return ub_get_dev_by_id_inner(NULL, guid, ub_entity_match_by_guid);
+}
+EXPORT_SYMBOL_GPL(ub_get_ent_by_guid);
+
+static int ub_entity_match_by_eid(struct device *dev, const void *data)
+{
+	struct ub_entity *uent = to_ub_entity(dev);
+	const u32 eid = *((const u32 *)data);
+
+	if (uent->eid == eid)
+		return 1;
+
+	return 0;
+}
+
+struct ub_entity *ub_get_ent_by_eid(unsigned int eid)
+{
+	return ub_get_dev_by_id_inner(NULL, &eid, ub_entity_match_by_eid);
+}
+EXPORT_SYMBOL_GPL(ub_get_ent_by_eid);
+
+static int ub_entity_match_by_uent_num(struct device *dev, const void *data)
+{
+	const u32 uent_num = *((const u32 *)data);
+	struct ub_entity *uent = to_ub_entity(dev);
+
+	if (uent->uent_num == uent_num)
+		return 1;
+
+	return 0;
+}
+
+struct ub_entity *ub_get_ent_by_uent_num(unsigned int uent_num)
+{
+	return ub_get_dev_by_id_inner(NULL, &uent_num, ub_entity_match_by_uent_num);
+}
+EXPORT_SYMBOL_GPL(ub_get_ent_by_uent_num);
 
 static const struct ub_device_id *ub_match_device(struct ub_driver *drv,
 						  struct ub_entity *dev)
@@ -264,9 +335,17 @@ static int ub_entity_probe(struct device *dev)
 {
 	struct ub_driver *drv = to_ub_driver(dev->driver);
 	struct ub_entity *ub_entity = to_ub_entity(dev);
+	struct ub_entity *pue;
+	u16 entity_idx;
 	int ret;
 
 	ub_entity_get(ub_entity);
+	if (!ub_entity->is_mue) {
+		pue = ub_entity->pue;
+		entity_idx = ub_entity->entity_idx;
+		ub_virt_notify(pue, entity_idx, true);
+	}
+
 	ret = __ub_entity_probe(drv, ub_entity);
 	if (ret)
 		ub_entity_put(ub_entity);
@@ -483,7 +562,12 @@ static struct attribute *ub_drv_attrs[] = {
 };
 ATTRIBUTE_GROUPS(ub_drv);
 
-void ub_bus_type_init(void)
+static int ub_bus_num_ue(struct device *dev)
+{
+	return ub_num_ue(to_ub_entity(dev));
+}
+
+static void ub_bus_type_init(void)
 {
 	ub_bus_type.match = ub_bus_match;
 	ub_bus_type.uevent = ub_uevent;
@@ -493,9 +577,10 @@ void ub_bus_type_init(void)
 	ub_bus_type.dev_groups = ub_entity_groups;
 	ub_bus_type.bus_groups = ub_bus_groups;
 	ub_bus_type.drv_groups = ub_drv_groups;
+	ub_bus_type.num_vf = ub_bus_num_ue;
 }
 
-void ub_bus_type_uninit(void)
+static void ub_bus_type_uninit(void)
 {
 	ub_bus_type.match = NULL;
 	ub_bus_type.uevent = NULL;
@@ -505,9 +590,37 @@ void ub_bus_type_uninit(void)
 	ub_bus_type.dev_groups = NULL;
 	ub_bus_type.bus_groups = NULL;
 	ub_bus_type.drv_groups = NULL;
+	ub_bus_type.num_vf = NULL;
 }
 
-int ub_host_probe(void)
+static int ub_service_bus_match(struct device *dev, struct device_driver *drv)
+{
+	struct ub_service_device *sdev;
+	struct ub_service_driver *sdrv;
+
+	if (drv->bus != &ub_service_bus_type || dev->bus != &ub_service_bus_type)
+		return 0;
+
+	sdev = to_ub_service_device(dev);
+	sdrv = to_ub_service_driver(drv);
+	if (sdrv->service != sdev->service)
+		return 0;
+
+	return 1;
+}
+
+struct bus_type ub_service_bus_type = {
+	.name  = "ub_service",
+	.match = ub_service_bus_match,
+};
+
+static void ubus_driver_resource_drain(void)
+{
+	ub_dynamic_bus_instance_drain();
+	ub_static_cluster_instance_drain();
+}
+
+static int ub_host_probe(void)
 {
 	int ret;
 
@@ -516,20 +629,139 @@ int ub_host_probe(void)
 	if (ret)
 		goto ub_cfg_ops_init_fail;
 
+	ret = ub_bus_controllers_probe();
+	if (ret)
+		goto ubcs_probe_fail;
+
+	ret = ub_enum_probe();
+	if (ret)
+		goto ub_enum_probe_fail;
+
+	/*
+	 * Now ub_bus_type build-in, bus_attr_groups will not created,
+	 * so init it here.
+	 */
+	ret = ub_bus_attr_dynamic_init();
+	if (ret)
+		goto ub_bus_attr_dynamic_init_fail;
+
+	ret = bus_register(&ub_service_bus_type);
+	if (ret)
+		goto bus_register_fail;
+
+	ret = ub_services_init();
+	if (ret)
+		goto ub_services_init_fail;
+
+	ret = ub_cdev_init();
+	if (ret)
+		goto cdev_fail;
+
+	if (!manage_subsystem_ops || !manage_subsystem_ops->ras_handler_probe)
+		goto error_register_fail;
+
+	ret = manage_subsystem_ops->ras_handler_probe();
+	if (ret)
+		goto error_register_fail;
+
+	ret = message_rx_init();
+	if (ret)
+		goto message_init_fail;
+
 	return 0;
 
+message_init_fail:
+	if (manage_subsystem_ops && manage_subsystem_ops->ras_handler_remove)
+		manage_subsystem_ops->ras_handler_remove();
+error_register_fail:
+	ub_cdev_uninit();
+cdev_fail:
+	ub_services_exit();
+ub_services_init_fail:
+	bus_unregister(&ub_service_bus_type);
+bus_register_fail:
+	ub_bus_attr_dynamic_uninit();
+ub_bus_attr_dynamic_init_fail:
+	ub_enum_remove();
+ub_enum_probe_fail:
+	ub_bus_controllers_remove();
+ubcs_probe_fail:
+	unregister_ub_cfg_ops();
 ub_cfg_ops_init_fail:
 	ub_bus_type_uninit();
 	return ret;
 }
-EXPORT_SYMBOL_GPL(ub_host_probe);
 
-void ub_host_remove(void)
+static void ub_host_remove(void)
 {
+	message_rx_uninit();
+	if (manage_subsystem_ops && manage_subsystem_ops->ras_handler_remove)
+		manage_subsystem_ops->ras_handler_remove();
+	ub_cdev_uninit();
+	ub_services_exit();
+	bus_unregister(&ub_service_bus_type);
+	ub_bus_attr_dynamic_uninit();
+	ubus_driver_resource_drain();
+	ub_enum_remove();
+	ub_bus_controllers_remove();
 	unregister_ub_cfg_ops();
 	ub_bus_type_uninit();
 }
-EXPORT_SYMBOL_GPL(ub_host_remove);
+
+int register_ub_manage_subsystem_ops(const struct ub_manage_subsystem_ops *ops)
+{
+	struct ub_bus_controller *ubc;
+	int ret;
+
+	if (!ops) {
+		pr_err("ub manage subsystem ops is NULL\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&manage_subsystem_ops_mutex);
+	if (!manage_subsystem_ops) {
+		list_for_each_entry(ubc, &ubc_list, node) {
+			if (((ubc->attr.ubc_guid_high >> UBC_GUID_VENDOR_SHIFT) &
+			    UBC_GUID_VENDOR_MASK) == ops->vendor) {
+				manage_subsystem_ops = ops;
+				ret = ub_host_probe();
+				if (ret)
+					manage_subsystem_ops = NULL;
+				else
+					pr_info("ub manage subsystem ops register successfully\n");
+
+				mutex_unlock(&manage_subsystem_ops_mutex);
+				return ret;
+			}
+		}
+		pr_warn("ub manage subsystem ops is not match with any of ub controller\n");
+	} else {
+		pr_warn("ub manage subsystem ops has been registered\n");
+	}
+	mutex_unlock(&manage_subsystem_ops_mutex);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(register_ub_manage_subsystem_ops);
+
+void unregister_ub_manage_subsystem_ops(const struct ub_manage_subsystem_ops *ops)
+{
+	if (!ops) {
+		pr_err("ub manage subsystem ops is NULL\n");
+		return;
+	}
+
+	mutex_lock(&manage_subsystem_ops_mutex);
+	if (manage_subsystem_ops == ops) {
+		ub_host_remove();
+		manage_subsystem_ops = NULL;
+		pr_info("ub manage subsystem ops unregister successfully\n");
+	} else {
+		pr_warn("ub manage subsystem ops is not registered by this vendor\n");
+	}
+	mutex_unlock(&manage_subsystem_ops_mutex);
+}
+EXPORT_SYMBOL_GPL(unregister_ub_manage_subsystem_ops);
 
 static int __init ubus_driver_init(void)
 {
