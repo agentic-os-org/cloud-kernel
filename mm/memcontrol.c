@@ -7958,6 +7958,7 @@ static int mem_cgroup_move_account(struct page *page,
 				   struct mem_cgroup *to)
 {
 	struct folio *folio = page_folio(page);
+	struct obj_cgroup *objcg, *old_objcg;
 	struct lruvec *from_vec, *to_vec;
 	struct pglist_data *pgdat;
 	unsigned int nr_pages = compound ? folio_nr_pages(folio) : 1;
@@ -7969,7 +7970,21 @@ static int mem_cgroup_move_account(struct page *page,
 	VM_BUG_ON(compound && !folio_test_large(folio));
 
 	ret = -EINVAL;
-	if (folio_memcg(folio) != from)
+	rcu_read_lock();
+	if (folio_memcg(folio) != from) {
+		rcu_read_unlock();
+		goto out;
+	}
+	rcu_read_unlock();
+
+	/*
+	 * In the LRU-reparent model a folio pins its memory cgroup through an
+	 * obj_cgroup reference, not a css reference.  Grab an objcg for the
+	 * destination memcg so the switch below can transfer the folio's objcg
+	 * reference instead of (incorrectly) moving css references.
+	 */
+	objcg = get_obj_cgroup_from_memcg(to);
+	if (!objcg)
 		goto out;
 
 	pgdat = folio_pgdat(folio);
@@ -8041,12 +8056,18 @@ static int mem_cgroup_move_account(struct page *page,
 	 */
 	smp_mb();
 
-	css_get(&to->css);
-	css_put(&from->css);
-
 	/* Warning should never happen, so don't worry about refcount non-0 */
 	WARN_ON_ONCE(folio_unqueue_deferred_split(folio));
-	folio->memcg_data = (unsigned long)to;
+
+	/*
+	 * Transfer the folio's obj_cgroup reference: point memcg_data at the
+	 * destination memcg's objcg and drop the reference on the old one.
+	 * The folio stores an obj_cgroup pointer with the low flag bits clear,
+	 * preserving the encoding relied on by folio_objcg()/folio_memcg().
+	 */
+	old_objcg = folio_objcg(folio);
+	folio->memcg_data = (unsigned long)objcg;
+	obj_cgroup_put(old_objcg);
 
 	__folio_memcg_unlock(from);
 
