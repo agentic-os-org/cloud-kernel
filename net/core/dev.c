@@ -3747,7 +3747,7 @@ struct sk_buff *validate_xmit_skb_list(struct sk_buff *skb, struct net_device *d
 }
 EXPORT_SYMBOL_GPL(validate_xmit_skb_list);
 
-static void qdisc_pkt_len_init(struct sk_buff *skb)
+static bool qdisc_pkt_len_init(struct sk_buff *skb)
 {
 	const struct skb_shared_info *shinfo = skb_shinfo(skb);
 
@@ -3757,7 +3757,7 @@ static void qdisc_pkt_len_init(struct sk_buff *skb)
 	 * we add to pkt_len the headers size of all segments
 	 */
 	if (shinfo->gso_size && skb_transport_header_was_set(skb)) {
-		unsigned int hdr_len;
+		unsigned int hdr_len, tlen;
 		u16 gso_segs = shinfo->gso_segs;
 
 		/* mac layer + network layer */
@@ -3766,30 +3766,36 @@ static void qdisc_pkt_len_init(struct sk_buff *skb)
 		/* + transport layer */
 		if (likely(shinfo->gso_type & (SKB_GSO_TCPV4 | SKB_GSO_TCPV6))) {
 			const struct tcphdr *th;
-			struct tcphdr _tcphdr;
 
-			th = skb_header_pointer(skb, skb_transport_offset(skb),
-						sizeof(_tcphdr), &_tcphdr);
-			if (likely(th))
-				hdr_len += __tcp_hdrlen(th);
+			if (!pskb_may_pull(skb, hdr_len + sizeof(struct tcphdr)))
+				return true;
+
+			th = (const struct tcphdr *)(skb->data + hdr_len);
+			tlen = __tcp_hdrlen(th);
+			if (tlen < sizeof(*th))
+				return true;
+			hdr_len += tlen;
+			if (!pskb_may_pull(skb, hdr_len))
+				return true;
 		} else if (shinfo->gso_type & SKB_GSO_UDP_L4) {
-			struct udphdr _udphdr;
-
-			if (skb_header_pointer(skb, skb_transport_offset(skb),
-					       sizeof(_udphdr), &_udphdr))
-				hdr_len += sizeof(struct udphdr);
+			if (!pskb_may_pull(skb, hdr_len + sizeof(struct udphdr)))
+				return true;
+			hdr_len += sizeof(struct udphdr);
 		}
 
+		/* prior pskb_may_pull() might have changed skb->head. */
+		shinfo = skb_shinfo(skb);
 		if (unlikely(shinfo->gso_type & SKB_GSO_DODGY)) {
 			int payload = skb->len - hdr_len;
 
 			/* Malicious packet. */
 			if (payload <= 0)
-				return;
+				return true;
 			gso_segs = DIV_ROUND_UP(payload, shinfo->gso_size);
 		}
 		qdisc_skb_cb(skb)->pkt_len += (gso_segs - 1) * hdr_len;
 	}
+	return false;
 }
 
 static inline int __dev_xmit_skb(struct sk_buff *skb, struct Qdisc *q,
@@ -4131,6 +4137,11 @@ static int __dev_queue_xmit(struct sk_buff *skb, struct net_device *sb_dev)
 	if (unlikely(skb_shinfo(skb)->tx_flags & SKBTX_SCHED_TSTAMP))
 		__skb_tstamp_tx(skb, NULL, skb->sk, SCM_TSTAMP_SCHED);
 
+	if (unlikely(qdisc_pkt_len_init(skb))) {
+		atomic_long_inc(&dev->tx_dropped);
+		kfree_skb(skb);
+		return -EINVAL;
+	}
 	/* Disable soft irqs for various locks below. Also
 	 * stops preemption for RCU.
 	 */
@@ -4138,7 +4149,6 @@ static int __dev_queue_xmit(struct sk_buff *skb, struct net_device *sb_dev)
 
 	skb_update_prio(skb);
 
-	qdisc_pkt_len_init(skb);
 #ifdef CONFIG_NET_CLS_ACT
 	skb->tc_at_ingress = 0;
 # ifdef CONFIG_NET_EGRESS
