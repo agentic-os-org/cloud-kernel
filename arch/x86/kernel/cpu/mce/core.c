@@ -1584,7 +1584,7 @@ noinstr void do_machine_check(struct pt_regs *regs)
 		/* If this triggers there is no way to recover. Die hard. */
 		BUG_ON(!on_thread_stack() || !user_mode(regs));
 
-		if (kill_it)
+		if (!mce_usable_address(&m))
 			queue_task_work(&m, msg, kill_me_now);
 		else
 			queue_task_work(&m, msg, kill_me_maybe);
@@ -1868,6 +1868,24 @@ static void quirk_sandybridge_ifu(int bank, struct mce *m, struct pt_regs *regs)
 	m->cs = regs->cs;
 }
 
+/*
+ * Some Zen-based Instruction Fetch Units set EIPV=RIPV=0 on poison
+ * consumption errors. The exact instruction pointer is unknown, but the
+ * exception is guaranteed to be delivered in the same context. Save CS so
+ * that severity grading can distinguish user from kernel context.
+ *
+ * The Instruction Fetch Unit is at MCA bank 1 for all affected systems.
+ */
+static void quirk_zen_ifu(int bank, struct mce *m, struct pt_regs *regs)
+{
+	if (bank != 1)
+		return;
+	if (!(m->status & MCI_STATUS_POISON))
+		return;
+
+	m->cs = regs->cs;
+}
+
 static void amd_apply_global_quirks(struct cpuinfo_x86 *c)
 {
 	if (c->x86 < 0x11 && mca_cfg.bootlog < 0) {
@@ -1884,6 +1902,9 @@ static void amd_apply_global_quirks(struct cpuinfo_x86 *c)
 	 */
 	if (c->x86 == 0x15 && c->x86_model <= 0xf)
 		mce_flags.overflow_recov = 1;
+
+	if (c->x86 >= 0x17 && c->x86 <= 0x1a)
+		quirk_no_way_out = quirk_zen_ifu;
 }
 
 static void intel_apply_global_quirks(struct cpuinfo_x86 *c)
