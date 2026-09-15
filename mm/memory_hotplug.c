@@ -536,23 +536,26 @@ static void update_pgdat_span(struct pglist_data *pgdat)
 	pgdat->node_spanned_pages = node_end_pfn - node_start_pfn;
 }
 
-void __ref remove_pfn_range_from_zone(struct zone *zone,
+void __ref __remove_pfn_range_from_zone(struct zone *zone,
 				      unsigned long start_pfn,
-				      unsigned long nr_pages)
+				      unsigned long nr_pages,
+					  int phase)
 {
 	const unsigned long end_pfn = start_pfn + nr_pages;
 	struct pglist_data *pgdat = zone->zone_pgdat;
 	unsigned long pfn, cur_nr_pages;
 
-	/* Poison struct pages because they are now uninitialized again. */
-	for (pfn = start_pfn; pfn < end_pfn; pfn += cur_nr_pages) {
-		cond_resched();
+	if (phase == MHP_PHASE_DEFAULT || phase == MHP_PHASE_DEFERRED) {
+		/* Poison struct pages because they are now uninitialized again. */
+		for (pfn = start_pfn; pfn < end_pfn; pfn += cur_nr_pages) {
+			cond_resched();
 
-		/* Select all remaining pages up to the next section boundary */
-		cur_nr_pages =
-			min(end_pfn - pfn, SECTION_ALIGN_UP(pfn + 1) - pfn);
-		page_init_poison(pfn_to_page(pfn),
-				 sizeof(struct page) * cur_nr_pages);
+			/* Select all remaining pages up to the next section boundary */
+			cur_nr_pages =
+				min(end_pfn - pfn, SECTION_ALIGN_UP(pfn + 1) - pfn);
+			page_init_poison(pfn_to_page(pfn),
+					sizeof(struct page) * cur_nr_pages);
+		}
 	}
 
 	/*
@@ -569,6 +572,13 @@ void __ref remove_pfn_range_from_zone(struct zone *zone,
 	update_pgdat_span(pgdat);
 
 	set_zone_contiguous(zone);
+}
+
+void __ref remove_pfn_range_from_zone(struct zone *zone,
+				      unsigned long start_pfn,
+				      unsigned long nr_pages)
+{
+	__remove_pfn_range_from_zone(zone, start_pfn, nr_pages, MHP_PHASE_DEFAULT);
 }
 
 /**
