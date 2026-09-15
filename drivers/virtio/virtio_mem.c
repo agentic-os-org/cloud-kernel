@@ -7,6 +7,7 @@
  * Author(s): David Hildenbrand <david@redhat.com>
  */
 
+#include <linux/pagemap.h>
 #include <linux/virtio.h>
 #include <linux/virtio_mem.h>
 #include <linux/workqueue.h>
@@ -38,6 +39,10 @@ static unsigned long bbm_block_size;
 module_param(bbm_block_size, ulong, 0444);
 MODULE_PARM_DESC(bbm_block_size,
 		 "Big Block size in bytes. Default is 0 (auto-detection).");
+
+static bool unplug_free_only __read_mostly;
+module_param(unplug_free_only, bool, 0644);
+MODULE_PARM_DESC(unplug_free_only, "Unplug free memory only. Default: false");
 
 /*
  * virtio-mem currently supports the following modes of operation:
@@ -564,16 +569,55 @@ static bool virtio_mem_sbm_test_sb_unplugged(struct virtio_mem *vm,
 }
 
 /*
+ * Find the next unplugged subblock. Returns vm->sbm.sbs_per_mb in case there is
+ * none.
+ */
+static int virtio_mem_sbm_next_unplugged_sb(struct virtio_mem *vm,
+					  unsigned long mb_id, int sb_id)
+{
+	const int bit = virtio_mem_sbm_sb_state_bit_nr(vm, mb_id, 0);
+
+	return find_next_zero_bit(vm->sbm.sb_states, bit + vm->sbm.sbs_per_mb,
+				  bit + sb_id) - bit;
+}
+
+/*
  * Find the first unplugged subblock. Returns vm->sbm.sbs_per_mb in case there is
  * none.
  */
 static int virtio_mem_sbm_first_unplugged_sb(struct virtio_mem *vm,
 					    unsigned long mb_id)
 {
+	return virtio_mem_sbm_next_unplugged_sb(vm, mb_id, 0);
+}
+
+/*
+ * Find the next plugged subblock. Returns vm->sbm.sbs_per_mb in case there is
+ * none.
+ */
+static int virtio_mem_sbm_next_plugged_sb(struct virtio_mem *vm,
+					  unsigned long mb_id, int sb_id)
+{
 	const int bit = virtio_mem_sbm_sb_state_bit_nr(vm, mb_id, 0);
 
-	return find_next_zero_bit(vm->sbm.sb_states,
-				  bit + vm->sbm.sbs_per_mb, bit) - bit;
+	return find_next_bit(vm->sbm.sb_states, bit + vm->sbm.sbs_per_mb,
+			     bit + sb_id) - bit;
+}
+
+/*
+ * Find the next contiguous set of plugged subblocks. Returns false in case
+ * there is none.
+ */
+static bool virtio_mem_sbm_next_contig_plugged_sbs(struct virtio_mem *vm,
+						   unsigned long mb_id,
+						   int *sb_id, int *count)
+{
+	*sb_id = virtio_mem_sbm_next_plugged_sb(vm, mb_id, *sb_id);
+	if (*sb_id >= vm->sbm.sbs_per_mb)
+		return false;
+	*count = virtio_mem_sbm_next_unplugged_sb(vm, mb_id, *sb_id) - *sb_id;
+
+	return *count > 0;
 }
 
 /*
@@ -2255,6 +2299,142 @@ unplugged:
 }
 
 /*
+ * Similar to `virtio_mem_sbm_unplug_any_sb_offline`,
+ * but only for free memory that is above the order_per_sb.
+ */
+static int virtio_mem_sbm_unplug_any_free_sb_online(struct virtio_mem *vm,
+					       unsigned long mb_id, uint64_t *nb_sb)
+{
+	unsigned long block_addr = virtio_mem_mb_id_to_phys(mb_id);
+	unsigned long pages_per_sb = PFN_DOWN(vm->sbm.sb_size);
+	unsigned long order_per_sb = get_order(vm->sbm.sb_size);
+	unsigned long nr_vmemmap_pages = PFN_DOWN(get_memory_block_vmemmap_size(mb_id));
+	unsigned long nr_vmemmap_sbs = nr_vmemmap_pages / pages_per_sb;
+	unsigned long order, pfn;
+	struct page *page;
+	int rc, sb_id, contig_sbs = 0;
+
+	for (sb_id = 0; sb_id < vm->sbm.sbs_per_mb && *nb_sb; sb_id++) {
+		/* Count the maximum contiguous free subblocks starting from the sb_id */
+		while (sb_id + contig_sbs < vm->sbm.sbs_per_mb) {
+			pfn = PFN_DOWN(block_addr + (sb_id + contig_sbs) * vm->sbm.sb_size);
+			page = pfn_to_page(pfn);
+
+			/* If the page is not free, stop counting */
+			if (!PageBuddy(page))
+				break;
+			order = READ_ONCE(page_private(page));
+
+			if (order < order_per_sb || order > MAX_ORDER)
+				break;
+
+			contig_sbs += 1U << (order - order_per_sb);
+
+			if (contig_sbs > *nb_sb) {
+				contig_sbs = *nb_sb;
+				break;
+			}
+		}
+
+		if (contig_sbs) {
+			/*
+			 * No need to check if contiguous subblocks are plugged,
+			 * their presence in the Buddy allocator confirms they are.
+			 */
+			rc = virtio_mem_sbm_unplug_sb_online(vm, mb_id, sb_id,
+							     contig_sbs, false);
+			if (!rc) {
+				sb_id += contig_sbs;
+				*nb_sb -= contig_sbs;
+				contig_sbs = 0;
+			} else if (rc == -EBUSY) {
+				/* Fallback to single subblocks. */
+				while (contig_sbs) {
+					rc = virtio_mem_sbm_unplug_sb_online(
+						vm, mb_id, sb_id++, 1, false);
+					if (!rc)
+						*nb_sb -= 1;
+					else if (rc != -EBUSY)
+						return rc;
+					contig_sbs--;
+				}
+			} else
+				return rc;
+		}
+	}
+
+	/* unplug the vmemmap of the whole memblock if it exists. */
+	if (nr_vmemmap_sbs && *nb_sb >= nr_vmemmap_sbs &&
+	    virtio_mem_sbm_test_sb_unplugged(vm, mb_id, nr_vmemmap_sbs,
+					     vm->sbm.sbs_per_mb - nr_vmemmap_sbs)) {
+		rc = virtio_mem_sbm_unplug_sb_online(vm, mb_id, 0,
+						     nr_vmemmap_sbs, true);
+		if (!rc)
+			*nb_sb -= nr_vmemmap_sbs;
+	}
+
+	/* Once all subblocks of a memory block were unplugged, offline and remove it.*/
+	rc = virtio_mem_sbm_try_remove_unplugged_mb(vm, mb_id);
+	if (rc)
+		vm->sbm.have_unplugged_mb = 1;
+	/* Ignore errors, this is not critical. We'll retry later. */
+	return 0;
+}
+
+/*
+ * Pre-check if `virtio_mem_sbm_unplug_any_sb_online()` is slow.
+ * If the memory is shared by many processes, `alloc_contig_range`
+ * will be a time-consuming operation.
+ *
+ * Note: Currently, we consider it slow when the mapping count
+ * exceeds 50% of the plugged page count.
+ */
+bool virtio_mem_sbm_unplug_any_sb_online_may_slow(struct virtio_mem *vm,
+						  unsigned long mb_id)
+{
+	unsigned long block_addr = virtio_mem_mb_id_to_phys(mb_id);
+	unsigned long block_start_pfn = PFN_DOWN(block_addr);
+	unsigned long pages_per_sb = PFN_DOWN(vm->sbm.sb_size);
+	unsigned long map_counts = 0, nr_plugged_pages = 0;
+	unsigned long pfn, pfn_end, order;
+	struct page *page;
+	int sb_id, count;
+
+	for (sb_id = 0; sb_id < vm->sbm.sbs_per_mb; sb_id++) {
+		if (!virtio_mem_sbm_next_contig_plugged_sbs(vm, mb_id, &sb_id,
+							    &count))
+			break;
+
+		nr_plugged_pages += count * pages_per_sb;
+		for (pfn = block_start_pfn + sb_id * pages_per_sb,
+		    pfn_end = pfn + count * pages_per_sb;
+		     pfn < pfn_end; pfn++) {
+			page = pfn_to_page(pfn);
+
+			/* Skip free buddy pages */
+			if (PageBuddy(page)) {
+				order = READ_ONCE(page_private(page));
+				if (order < MAX_ORDER) {
+					pfn += (1UL << order) - 1;
+					continue;
+				}
+			}
+
+			/* Only care head page of THP and hugetlb */
+			if (PageTransHuge(page)) {
+				order = compound_order(page);
+				if (order < MAX_ORDER)
+					pfn += (1UL << order) - 1;
+			}
+
+			map_counts += page_mapcount(page);
+		}
+	}
+
+	return (map_counts << 1) > nr_plugged_pages;
+}
+
+/*
  * Unplug the desired number of plugged subblocks of a memory block that is
  * already added to Linux. Will skip subblock of online memory blocks that are
  * busy (by the OS). Will fail if any subblock that's not busy cannot get
@@ -2268,15 +2448,29 @@ unplugged:
  */
 static int virtio_mem_sbm_unplug_any_sb(struct virtio_mem *vm,
 					unsigned long mb_id,
-					uint64_t *nb_sb)
+					uint64_t *nb_sb,
+					bool free_only,
+					unsigned int min_order)
 {
 	const int old_state = virtio_mem_sbm_get_mb_state(vm, mb_id);
+	const unsigned int order_per_sb = get_order(vm->sbm.sb_size);
 
 	switch (old_state) {
 	case VIRTIO_MEM_SBM_MB_KERNEL_PARTIAL:
 	case VIRTIO_MEM_SBM_MB_KERNEL:
 	case VIRTIO_MEM_SBM_MB_MOVABLE_PARTIAL:
 	case VIRTIO_MEM_SBM_MB_MOVABLE:
+		if (free_only) {
+			if (min_order >= order_per_sb)
+				return virtio_mem_sbm_unplug_any_free_sb_online(
+					vm, mb_id, nb_sb);
+
+			/* If unplugging this memblock might be time-consuming, skip it. */
+			if (virtio_mem_sbm_unplug_any_sb_online_may_slow(vm, mb_id))
+				return 0;
+
+			return virtio_mem_sbm_unplug_any_sb_online(vm, mb_id, nb_sb);
+		}
 		return virtio_mem_sbm_unplug_any_sb_online(vm, mb_id, nb_sb);
 	case VIRTIO_MEM_SBM_MB_OFFLINE_PARTIAL:
 	case VIRTIO_MEM_SBM_MB_OFFLINE:
@@ -2285,7 +2479,9 @@ static int virtio_mem_sbm_unplug_any_sb(struct virtio_mem *vm,
 	return -EINVAL;
 }
 
-static int virtio_mem_sbm_unplug_request(struct virtio_mem *vm, uint64_t diff)
+static int __virtio_mem_sbm_unplug_request(struct virtio_mem *vm,
+					   uint64_t *nb_sb, bool free_only,
+					   unsigned int min_order)
 {
 	const int mb_states[] = {
 		VIRTIO_MEM_SBM_MB_OFFLINE_PARTIAL,
@@ -2295,11 +2491,10 @@ static int virtio_mem_sbm_unplug_request(struct virtio_mem *vm, uint64_t diff)
 		VIRTIO_MEM_SBM_MB_MOVABLE,
 		VIRTIO_MEM_SBM_MB_KERNEL,
 	};
-	uint64_t nb_sb = diff / vm->sbm.sb_size;
 	unsigned long mb_id;
 	int rc, i;
 
-	if (!nb_sb)
+	if (!*nb_sb)
 		return 0;
 
 	/*
@@ -2318,8 +2513,8 @@ static int virtio_mem_sbm_unplug_request(struct virtio_mem *vm, uint64_t diff)
 	 */
 	for (i = 0; i < ARRAY_SIZE(mb_states); i++) {
 		virtio_mem_sbm_for_each_mb_rev(vm, mb_id, mb_states[i]) {
-			rc = virtio_mem_sbm_unplug_any_sb(vm, mb_id, &nb_sb);
-			if (rc || !nb_sb)
+			rc = virtio_mem_sbm_unplug_any_sb(vm, mb_id, nb_sb, free_only, min_order);
+			if (rc || !*nb_sb)
 				goto out_unlock;
 			mutex_unlock(&vm->hotplug_mutex);
 			cond_resched();
@@ -2335,6 +2530,28 @@ static int virtio_mem_sbm_unplug_request(struct virtio_mem *vm, uint64_t diff)
 	return nb_sb ? -EBUSY : 0;
 out_unlock:
 	mutex_unlock(&vm->hotplug_mutex);
+	return rc;
+}
+
+static int virtio_mem_sbm_unplug_request(struct virtio_mem *vm, uint64_t diff)
+{
+	uint64_t nb_sb = diff / vm->sbm.sb_size;
+	unsigned int min_order[] = { get_order(vm->sbm.sb_size), 0 };
+	int i, rc;
+
+	if (!unplug_free_only)
+		return __virtio_mem_sbm_unplug_request(vm, &nb_sb, false, 0);
+
+	for (i = 0; i < ARRAY_SIZE(min_order); i++) {
+		rc = __virtio_mem_sbm_unplug_request(vm, &nb_sb, true,
+						     min_order[i]);
+		if (rc && rc != -EBUSY)
+			return rc;
+	}
+
+	if (nb_sb)
+		dev_warn_ratelimited(&vm->vdev->dev, "unpluggable size: 0x%llx",
+					nb_sb * vm->sbm.sb_size);
 	return rc;
 }
 
