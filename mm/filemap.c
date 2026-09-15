@@ -907,12 +907,16 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 	mapping_set_update(&xas, mapping);
 
 	if (!huge) {
+		struct mem_cgroup __maybe_unused *memcg;
 		int error = mem_cgroup_charge(folio, NULL, gfp);
+
 		if (error)
 			return error;
 		charged = true;
 #ifdef CONFIG_PAGECACHE_LIMIT
-		memcg_pagecache_shrink(folio_memcg(folio), gfp);
+		memcg = get_mem_cgroup_from_folio(folio);
+		memcg_pagecache_shrink(memcg, gfp);
+		mem_cgroup_put(memcg);
 #endif
 	}
 
