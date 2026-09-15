@@ -1107,6 +1107,9 @@ struct zone *zone_for_pfn_range(int online_type, int nid,
 	return default_zone_for_pfn(nid, start_pfn, nr_pages);
 }
 
+/*
+ * nr_pages can be negative, indicating that the page count can be rolled back.
+ */
 void __adjust_present_page_count(struct page *page, struct memory_group *group,
 			       long nr_pages, struct zone *zone, int phase)
 {
@@ -1129,6 +1132,11 @@ void __adjust_present_page_count(struct page *page, struct memory_group *group,
 		else if (group && !movable)
 			group->present_kernel_pages += nr_pages;
 	}
+
+	if (phase == MHP_PHASE_PREPARE)
+		atomic_long_add(nr_pages, &zone->deferred_pages);
+	else if (phase == MHP_PHASE_DEFERRED)
+		atomic_long_sub(nr_pages, &zone->deferred_pages);
 }
 
 /*
@@ -1238,7 +1246,6 @@ int __ref __online_pages(unsigned long pfn, unsigned long nr_pages,
 	if (phase == MHP_PHASE_PREPARE) {
 		__adjust_present_page_count(pfn_to_page(pfn), group, nr_pages,
 					    zone, phase);
-		atomic_long_add(nr_pages, &zone->deferred_pages);
 		return 0;
 	}
 
@@ -1272,8 +1279,6 @@ int __ref __online_pages(unsigned long pfn, unsigned long nr_pages,
 	online_pages_range(pfn, nr_pages);
 
 	__adjust_present_page_count(pfn_to_page(pfn), group, nr_pages, zone, phase);
-	if (phase == MHP_PHASE_DEFERRED)
-		atomic_long_sub(nr_pages, &zone->deferred_pages);
 
 	node_states_set_node(nid, &arg);
 	if (need_zonelists_rebuild)
@@ -1307,6 +1312,10 @@ failed_addition:
 		 (unsigned long long) pfn << PAGE_SHIFT,
 		 (((unsigned long long) pfn + nr_pages) << PAGE_SHIFT) - 1);
 	memory_notify(MEM_CANCEL_ONLINE, &arg);
+	/* Undo what we did in PREPARE phase when we failed in DEFERRED phase. */
+	if (phase == MHP_PHASE_DEFERRED)
+		__adjust_present_page_count(pfn_to_page(pfn), group, -nr_pages,
+					    zone, MHP_PHASE_PREPARE);
 	remove_pfn_range_from_zone(zone, pfn, nr_pages);
 	return ret;
 }
@@ -1351,9 +1360,13 @@ static int deferred_memory_block_online_pages(struct memory_block *mem,
 			     nr_pages - nr_vmemmap_pages, zone, mem->group,
 			     MHP_PHASE_DEFERRED);
 	if (ret) {
-		if (nr_vmemmap_pages)
+		if (nr_vmemmap_pages) {
+			/* Undo what we did in PREPARE phase when we failed in DEFERRED phase. */
+			__adjust_present_page_count(pfn_to_page(start_pfn), mem->group,
+						    -nr_vmemmap_pages, zone, MHP_PHASE_PREPARE);
 			__mhp_deinit_memmap_on_memory(start_pfn, nr_vmemmap_pages, zone,
 							MHP_PHASE_DEFERRED);
+		}
 		goto out;
 	}
 
