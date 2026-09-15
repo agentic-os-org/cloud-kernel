@@ -198,14 +198,14 @@ static int memory_block_online(struct memory_block *mem)
 				  start_pfn, nr_pages);
 
 	/*
-	 * Defer struct pages initialization and defer freeing pages to buddy
-	 * allocator starting from at least the second memory block of the zone,
-	 * as rebuilding the zone is not required from that point onwards.
+	 * If we defer initializing zone's first memory block, the zone will
+	 * remain in unpopulated state during the prepare phase. Since
+	 * `auto_movable_can_online_movable()` only traverses populated zones,
+	 * `movable_pages` will always be 0, causing subsequent memory blocks to be
+	 * determined as inserted into the movable zone during the prepare phase.
+	 * Alse rebuilding the zone is not required from that point onwards.
 	 */
-	if (parallel_hotplug_ratio &&
-	    start_pfn + nr_vmemmap_pages >=
-		    zone->zone_start_pfn +
-			    (memory_block_size_bytes() >> PAGE_SHIFT))
+	if (parallel_hotplug_ratio && populated_zone(zone))
 		phase = MHP_PHASE_PREPARE;
 
 	/*
