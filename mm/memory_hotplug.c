@@ -1340,14 +1340,26 @@ static int deferred_memory_block_online_pages(struct memory_block *mem,
 		nr_vmemmap_pages = mem->altmap->free;
 
 	mem_hotplug_begin();
+	if (nr_vmemmap_pages) {
+		ret = __mhp_init_memmap_on_memory(start_pfn, nr_vmemmap_pages,
+						  zone, MHP_PHASE_DEFERRED);
+		if (ret)
+			goto out;
+	}
+
 	ret = __online_pages(start_pfn + nr_vmemmap_pages,
 			     nr_pages - nr_vmemmap_pages, zone, mem->group,
 			     MHP_PHASE_DEFERRED);
 	if (ret) {
 		if (nr_vmemmap_pages)
-			mhp_deinit_memmap_on_memory(start_pfn, nr_vmemmap_pages);
+			__mhp_deinit_memmap_on_memory(start_pfn, nr_vmemmap_pages, zone,
+							MHP_PHASE_DEFERRED);
 		goto out;
 	}
+
+	if (nr_vmemmap_pages)
+		__adjust_present_page_count(pfn_to_page(start_pfn), mem->group,
+					  nr_vmemmap_pages, zone, MHP_PHASE_DEFERRED);
 
 	mem->state = MEM_ONLINE;
 out:
