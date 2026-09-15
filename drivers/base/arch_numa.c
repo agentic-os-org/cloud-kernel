@@ -13,6 +13,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/numa_memblks.h>
+#include <linux/numa_remote.h>
 
 #include <asm/sections.h>
 
@@ -228,13 +229,17 @@ static int __init numa_register_nodes(void)
 	if (!memblock_validate_numa_coverage(0))
 		return -EINVAL;
 
+	numa_register_remote_nodes();
+
 	/* Finally register nodes. */
 	for_each_node_mask(nid, numa_nodes_parsed) {
 		unsigned long start_pfn, end_pfn;
 
 		get_pfn_range_for_nid(nid, &start_pfn, &end_pfn);
 		setup_node_data(nid, start_pfn, end_pfn);
-		node_set_online(nid);
+
+		if (!numa_is_remote_node(nid))
+			node_set_online(nid);
 	}
 
 	/* Setup online nodes to actual nodes*/

@@ -13,12 +13,19 @@
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 
+#include "services.h"
+#include "msg.h"
+#include "enum.h"
+#include "instance.h"
+#include "ioctl.h"
 #include "sysfs.h"
 #include "ubus.h"
 #include "ubus_config.h"
 #include "ubus_controller.h"
 #include "ubus_inner.h"
 #include "ubus_entity.h"
+#include "services/service.h"
+#include "ubus_driver.h"
 
 bool entity_flex_en;
 module_param(entity_flex_en, bool, 0444);
@@ -160,7 +167,7 @@ ub_match_one_device(const struct ub_device_id *id, const struct ub_entity *dev)
 	return NULL;
 }
 
-const struct ub_device_id *ub_match_id(const struct ub_device_id *ids,
+static const struct ub_device_id *ub_match_id(const struct ub_device_id *ids,
 				       struct ub_entity *dev)
 {
 	if (ids && dev) {
@@ -593,7 +600,7 @@ static int ub_bus_num_ue(struct device *dev)
 	return ub_num_ue(to_ub_entity(dev));
 }
 
-void ub_bus_type_init(void)
+static void ub_bus_type_init(void)
 {
 	ub_bus_type.match = ub_bus_match;
 	ub_bus_type.uevent = ub_uevent;
@@ -606,7 +613,7 @@ void ub_bus_type_init(void)
 	ub_bus_type.num_vf = ub_bus_num_ue;
 }
 
-void ub_bus_type_uninit(void)
+static void ub_bus_type_uninit(void)
 {
 	ub_bus_type.match = NULL;
 	ub_bus_type.uevent = NULL;
@@ -619,6 +626,33 @@ void ub_bus_type_uninit(void)
 	ub_bus_type.num_vf = NULL;
 }
 
+static int ub_service_bus_match(struct device *dev, struct device_driver *drv)
+{
+	struct ub_service_device *sdev;
+	struct ub_service_driver *sdrv;
+
+	if (drv->bus != &ub_service_bus_type || dev->bus != &ub_service_bus_type)
+		return 0;
+
+	sdev = to_ub_service_device(dev);
+	sdrv = to_ub_service_driver(drv);
+	if (sdrv->service != sdev->service)
+		return 0;
+
+	return 1;
+}
+
+struct bus_type ub_service_bus_type = {
+	.name  = "ub_service",
+	.match = ub_service_bus_match,
+};
+
+static void ubus_driver_resource_drain(void)
+{
+	ub_dynamic_bus_instance_drain();
+	ub_static_cluster_instance_drain();
+}
+
 int ub_host_probe(void)
 {
 	int ret;
@@ -628,8 +662,64 @@ int ub_host_probe(void)
 	if (ret)
 		goto ub_cfg_ops_init_fail;
 
+	ret = ub_bus_controllers_probe();
+	if (ret)
+		goto ubcs_probe_fail;
+
+	ret = ub_enum_probe();
+	if (ret)
+		goto ub_enum_probe_fail;
+
+	/*
+	 * Now ub_bus_type build-in, bus_attr_groups will not created,
+	 * so init it here.
+	 */
+	ret = ub_bus_attr_dynamic_init();
+	if (ret)
+		goto ub_bus_attr_dynamic_init_fail;
+
+	ret = bus_register(&ub_service_bus_type);
+	if (ret)
+		goto bus_register_fail;
+
+	ret = ub_services_init();
+	if (ret)
+		goto ub_services_init_fail;
+
+	ret = ub_cdev_init();
+	if (ret)
+		goto cdev_fail;
+
+	if (!manage_subsystem_ops || !manage_subsystem_ops->ras_handler_probe)
+		goto error_register_fail;
+
+	ret = manage_subsystem_ops->ras_handler_probe();
+	if (ret)
+		goto error_register_fail;
+
+	ret = message_rx_init();
+	if (ret)
+		goto message_init_fail;
+
 	return 0;
 
+message_init_fail:
+	if (manage_subsystem_ops && manage_subsystem_ops->ras_handler_remove)
+		manage_subsystem_ops->ras_handler_remove();
+error_register_fail:
+	ub_cdev_uninit();
+cdev_fail:
+	ub_services_exit();
+ub_services_init_fail:
+	bus_unregister(&ub_service_bus_type);
+bus_register_fail:
+	ub_bus_attr_dynamic_uninit();
+ub_bus_attr_dynamic_init_fail:
+	ub_enum_remove();
+ub_enum_probe_fail:
+	ub_bus_controllers_remove();
+ubcs_probe_fail:
+	unregister_ub_cfg_ops();
 ub_cfg_ops_init_fail:
 	ub_bus_type_uninit();
 	return ret;
@@ -638,6 +728,16 @@ EXPORT_SYMBOL_GPL(ub_host_probe);
 
 void ub_host_remove(void)
 {
+	message_rx_uninit();
+	if (manage_subsystem_ops && manage_subsystem_ops->ras_handler_remove)
+		manage_subsystem_ops->ras_handler_remove();
+	ub_cdev_uninit();
+	ub_services_exit();
+	bus_unregister(&ub_service_bus_type);
+	ub_bus_attr_dynamic_uninit();
+	ubus_driver_resource_drain();
+	ub_enum_remove();
+	ub_bus_controllers_remove();
 	unregister_ub_cfg_ops();
 	ub_bus_type_uninit();
 }

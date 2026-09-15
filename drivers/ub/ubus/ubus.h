@@ -58,11 +58,14 @@ static inline bool ub_entity_test_priv_flag(struct ub_entity *uent, int bit)
 
 int ub_host_probe(void);
 void ub_host_remove(void);
+struct ub_bus_controller *ub_find_bus_controller(u32 ctl_no);
 
 struct ub_manage_subsystem_ops {
 	u32 vendor;
 	int (*controller_probe)(struct ub_bus_controller *ubc);
 	void (*controller_remove)(struct ub_bus_controller *ubc);
+	int (*ras_handler_probe)(void);
+	void (*ras_handler_remove)(void);
 };
 int register_ub_manage_subsystem_ops(const struct ub_manage_subsystem_ops *ops);
 void unregister_ub_manage_subsystem_ops(const struct ub_manage_subsystem_ops *ops);
