@@ -45,10 +45,6 @@ static inline bool cache_leaves_are_shared(struct cacheinfo *this_leaf,
 	if (!(IS_ENABLED(CONFIG_OF) || IS_ENABLED(CONFIG_ACPI)))
 		return !(this_leaf->level == 1);
 
-	if ((sib_leaf->attributes & CACHE_ID) &&
-	    (this_leaf->attributes & CACHE_ID))
-		return sib_leaf->id == this_leaf->id;
-
 	return sib_leaf->fw_token == this_leaf->fw_token;
 }
 
@@ -61,8 +57,7 @@ bool last_level_cache_is_valid(unsigned int cpu)
 
 	llc = per_cpu_cacheinfo_idx(cpu, cache_leaves(cpu) - 1);
 
-	return (llc->attributes & CACHE_ID) || !!llc->fw_token;
-
+	return !!llc->fw_token;
 }
 
 bool last_level_cache_is_shared(unsigned int cpu_x, unsigned int cpu_y)
