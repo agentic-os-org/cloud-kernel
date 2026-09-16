@@ -3735,8 +3735,7 @@ void __putback_isolated_page(struct page *page, unsigned int order, int mt)
  *
  * Must be called with interrupts disabled.
  */
-static inline void zone_statistics(struct zone *preferred_zone, struct zone *z,
-				   long nr_account)
+static inline void zone_statistics(struct zone *preferred_zone, struct zone *z)
 {
 #ifdef CONFIG_NUMA
 	enum numa_stat_item local_stat = NUMA_LOCAL;
@@ -3749,12 +3748,12 @@ static inline void zone_statistics(struct zone *preferred_zone, struct zone *z,
 		local_stat = NUMA_OTHER;
 
 	if (zone_to_nid(z) == zone_to_nid(preferred_zone))
-		__count_numa_events(z, NUMA_HIT, nr_account);
+		__count_numa_event(z, NUMA_HIT);
 	else {
-		__count_numa_events(z, NUMA_MISS, nr_account);
-		__count_numa_events(preferred_zone, NUMA_FOREIGN, nr_account);
+		__count_numa_event(z, NUMA_MISS);
+		__count_numa_event(preferred_zone, NUMA_FOREIGN);
 	}
-	__count_numa_events(z, local_stat, nr_account);
+	__count_numa_event(z, local_stat);
 #endif
 }
 
@@ -3816,7 +3815,7 @@ static struct page *rmqueue_pcplist(struct zone *preferred_zone,
 				 alloc_flags, pcp, list);
 	if (page) {
 		__count_zid_vm_events(PGALLOC, page_zonenum(page), 1 << order);
-		zone_statistics(preferred_zone, zone, 1);
+		zone_statistics(preferred_zone, zone);
 	}
 	local_unlock_irqrestore(&pagesets.lock, flags);
 	return page;
@@ -3886,7 +3885,7 @@ struct page *rmqueue(struct zone *preferred_zone,
 				  get_pcppage_migratetype(page));
 
 	__count_zid_vm_events(PGALLOC, page_zonenum(page), 1 << order);
-	zone_statistics(preferred_zone, zone, 1);
+	zone_statistics(preferred_zone, zone);
 	local_irq_restore(flags);
 
 out:
