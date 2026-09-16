@@ -3370,20 +3370,16 @@ void drain_zone_pages(struct zone *zone, struct per_cpu_pages *pcp)
 static void drain_pages_zone(unsigned int cpu, struct zone *zone)
 {
 	struct per_cpu_pages *pcp = per_cpu_ptr(zone->per_cpu_pageset, cpu);
-	int count;
+	int count = READ_ONCE(pcp->count);
 
-	do {
+	while (count) {
+		int to_drain = min(count, pcp->batch << CONFIG_PCP_BATCH_SCALE_MAX);
+		count -= to_drain;
+
 		spin_lock(&pcp->lock);
-		count = pcp->count;
-		if (count) {
-			int to_drain = min(count,
-				pcp->batch << CONFIG_PCP_BATCH_SCALE_MAX);
-
-			free_pcppages_bulk(zone, to_drain, pcp, 0);
-			count -= to_drain;
-		}
+		free_pcppages_bulk(zone, to_drain, pcp, 0);
 		spin_unlock(&pcp->lock);
-	} while (count);
+	}
 }
 
 /*
