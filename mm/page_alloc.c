@@ -7081,7 +7081,7 @@ static int zone_batchsize(struct zone *zone)
 #endif
 }
 
-static int zone_highsize(struct zone *zone, int batch, int cpu_online)
+static int zone_highsize(struct zone *zone, int batch)
 {
 #ifdef CONFIG_MMU
 	int high;
@@ -7092,10 +7092,9 @@ static int zone_highsize(struct zone *zone, int batch, int cpu_online)
 	 * so that if they are full then background reclaim will not be
 	 * started prematurely. The value is split across all online CPUs
 	 * local to the zone. Note that early in boot that CPUs may not be
-	 * online yet and that during CPU hotplug that the cpumask is not
-	 * yet updated when a CPU is being onlined.
+	 * online yet.
 	 */
-	nr_local_cpus = max(1U, cpumask_weight(cpumask_of_node(zone_to_nid(zone)))) + cpu_online;
+	nr_local_cpus = max(1U, cpumask_weight(cpumask_of_node(zone_to_nid(zone))));
 	high = low_wmark_pages(zone) / nr_local_cpus;
 
 	/*
@@ -7169,12 +7168,12 @@ void __zone_set_pageset_high_and_batch(struct zone *zone, unsigned long high,
  * Calculate and set new high and batch values for all per-cpu pageset of a
  * zone based on the zone's size.
  */
-static void zone_set_pageset_high_and_batch(struct zone *zone, int cpu_online)
+static void zone_set_pageset_high_and_batch(struct zone *zone)
 {
 	int new_high, new_batch;
 
 	new_batch = max(1, zone_batchsize(zone));
-	new_high = zone_highsize(zone, new_batch, cpu_online);
+	new_high = zone_highsize(zone, new_batch);
 
 	if (zone->pageset_high == new_high &&
 	    zone->pageset_batch == new_batch)
@@ -7204,7 +7203,7 @@ void __meminit setup_zone_pageset(struct zone *zone)
 		per_cpu_pages_init(pcp, pzstats);
 	}
 
-	zone_set_pageset_high_and_batch(zone, 0);
+	zone_set_pageset_high_and_batch(zone);
 }
 
 /*
@@ -8538,7 +8537,6 @@ void __init set_dma_reserve(unsigned long new_dma_reserve)
 
 static int page_alloc_cpu_dead(unsigned int cpu)
 {
-	struct zone *zone;
 
 	lru_add_drain_cpu(cpu);
 	drain_pages(cpu);
@@ -8559,19 +8557,6 @@ static int page_alloc_cpu_dead(unsigned int cpu)
 	 * race with what we are doing.
 	 */
 	cpu_vm_stats_fold(cpu);
-
-	for_each_populated_zone(zone)
-		zone_pcp_update(zone, 0);
-
-	return 0;
-}
-
-static int page_alloc_cpu_online(unsigned int cpu)
-{
-	struct zone *zone;
-
-	for_each_populated_zone(zone)
-		zone_pcp_update(zone, 1);
 	return 0;
 }
 
@@ -8597,9 +8582,8 @@ void __init page_alloc_init(void)
 		hashdist = 0;
 #endif
 
-	ret = cpuhp_setup_state_nocalls(CPUHP_PAGE_ALLOC,
-					"mm/page_alloc:pcp",
-					page_alloc_cpu_online,
+	ret = cpuhp_setup_state_nocalls(CPUHP_PAGE_ALLOC_DEAD,
+					"mm/page_alloc:dead", NULL,
 					page_alloc_cpu_dead);
 	WARN_ON(ret < 0);
 }
@@ -8761,7 +8745,7 @@ void setup_per_zone_wmarks(void)
 	 * and high limits or the limits may be inappropriate.
 	 */
 	for_each_zone(zone)
-		zone_pcp_update(zone, 0);
+		zone_pcp_update(zone);
 }
 
 /*
@@ -9502,10 +9486,10 @@ EXPORT_SYMBOL(free_contig_range);
  * The zone indicated has a new number of managed_pages; batch sizes and percpu
  * page high values need to be recalulated.
  */
-void zone_pcp_update(struct zone *zone, int cpu_online)
+void __meminit zone_pcp_update(struct zone *zone)
 {
 	mutex_lock(&pcp_batch_high_lock);
-	zone_set_pageset_high_and_batch(zone, cpu_online);
+	zone_set_pageset_high_and_batch(zone);
 	mutex_unlock(&pcp_batch_high_lock);
 }
 
