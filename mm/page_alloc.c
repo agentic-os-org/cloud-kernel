@@ -3814,11 +3814,11 @@ static struct page *rmqueue_pcplist(struct zone *preferred_zone,
 	list = &pcp->lists[order_to_pindex(migratetype, order)];
 	page = __rmqueue_pcplist(zone, gfp_flags, order, migratetype,
 				 alloc_flags, pcp, list);
-	local_unlock_irqrestore(&pagesets.lock, flags);
 	if (page) {
 		__count_zid_vm_events(PGALLOC, page_zonenum(page), 1 << order);
 		zone_statistics(preferred_zone, zone, 1);
 	}
+	local_unlock_irqrestore(&pagesets.lock, flags);
 	return page;
 }
 
@@ -3879,15 +3879,15 @@ struct page *rmqueue(struct zone *preferred_zone,
 	zone->alloc_zero = false;
 #endif
 
+	spin_unlock(&zone->lock);
 	if (!page)
 		goto failed;
-
 	__mod_zone_freepage_state(zone, -(1 << order),
 				  get_pcppage_migratetype(page));
-	spin_unlock_irqrestore(&zone->lock, flags);
 
 	__count_zid_vm_events(PGALLOC, page_zonenum(page), 1 << order);
 	zone_statistics(preferred_zone, zone, 1);
+	local_irq_restore(flags);
 
 out:
 	/* Separate test+clear to avoid unnecessary atomics */
@@ -3900,7 +3900,7 @@ out:
 	return page;
 
 failed:
-	spin_unlock_irqrestore(&zone->lock, flags);
+	local_irq_restore(flags);
 	return NULL;
 }
 
