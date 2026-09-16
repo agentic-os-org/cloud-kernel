@@ -65,7 +65,6 @@ Currently, these files are in /proc/sys/vm:
 - page-cluster
 - panic_on_oom
 - percpu_pagelist_high_fraction
-- percpu_pagelist_batch_scale_max
 - stat_interval
 - stat_refresh
 - numa_stat
@@ -849,15 +848,6 @@ The initial value is zero. Kernel uses this value to set the high pcp->high
 mark based on the low watermark for the zone and the number of local
 online CPUs.  If the user writes '0' to this sysctl, it will revert to
 this default behavior.
-
-
-percpu_pagelist_batch_scale_max
-==============================
-In page allocator, PCP (Per-CPU pageset) is refilled and drained in
-batches.  The batch number is scaled automatically to improve page
-allocation/free throughput.  But too large scale factor may hurt
-latency.  This option sets the upper limit of scale factor to limit
-the maximum latency.
 
 
 stat_interval

@@ -435,9 +435,6 @@ int watermark_boost_factor __read_mostly;
 int watermark_boost_factor __read_mostly = 15000;
 #endif
 int watermark_scale_factor = 10;
-int pcp_batch_scale_max __read_mostly = CONFIG_PCP_BATCH_SCALE_MAX;
-const int sysctl_pcp_batch_scale_min;
-const int sysctl_pcp_batch_scale_max = 6;
 
 static unsigned long nr_kernel_pages __initdata;
 static unsigned long nr_all_pages __initdata;
@@ -3320,19 +3317,17 @@ static int rmqueue_bulk(struct zone *zone, unsigned int order,
 int decay_pcp_high(struct zone *zone, struct per_cpu_pages *pcp)
 {
 	int high_min, to_drain, batch;
-	int todo = 0, batch_scale_max;
+	int todo = 0;
 
 	high_min = READ_ONCE(pcp->high_min);
 	batch = READ_ONCE(pcp->batch);
-	batch_scale_max = READ_ONCE(pcp_batch_scale_max);
-
 	/*
 	 * Decrease pcp->high periodically to try to free possible
 	 * idle PCP pages.  And, avoid to free too many pages to
 	 * control latency.  This caps pcp->high decrement too.
 	 */
 	if (pcp->high > high_min) {
-		pcp->high = max3(pcp->count - (batch << batch_scale_max),
+		pcp->high = max3(pcp->count - (batch << CONFIG_PCP_BATCH_SCALE_MAX),
 				 pcp->high - (pcp->high >> 3), high_min);
 		if (pcp->high > high_min)
 			todo++;
@@ -3375,13 +3370,14 @@ void drain_zone_pages(struct zone *zone, struct per_cpu_pages *pcp)
 static void drain_pages_zone(unsigned int cpu, struct zone *zone)
 {
 	struct per_cpu_pages *pcp = per_cpu_ptr(zone->per_cpu_pageset, cpu);
-	int count, batch_scale_max = READ_ONCE(pcp_batch_scale_max);
+	int count;
 
 	do {
 		spin_lock(&pcp->lock);
 		count = pcp->count;
 		if (count) {
-			int to_drain = min(count, pcp->batch << batch_scale_max);
+			int to_drain = min(count,
+				pcp->batch << CONFIG_PCP_BATCH_SCALE_MAX);
 
 			free_pcppages_bulk(zone, to_drain, pcp, 0);
 			count -= to_drain;
@@ -3574,11 +3570,10 @@ static bool free_unref_page_prepare(struct page *page, unsigned long pfn,
 static int nr_pcp_free(struct per_cpu_pages *pcp, int batch, int high, bool free_high)
 {
 	int min_nr_free, max_nr_free;
-	int batch_scale_max = READ_ONCE(pcp_batch_scale_max);
 
 	/* Free as much as possible if batch freeing high-order pages. */
 	if (unlikely(free_high))
-		return min(pcp->count, batch << batch_scale_max);
+		return min(pcp->count, batch << CONFIG_PCP_BATCH_SCALE_MAX);
 
 	/* Check for PCP disabled or boot pageset */
 	if (unlikely(high < batch))
@@ -3600,18 +3595,17 @@ static int nr_pcp_free(struct per_cpu_pages *pcp, int batch, int high, bool free
 static int nr_pcp_high(struct per_cpu_pages *pcp, struct zone *zone,
 		       int batch, bool free_high)
 {
-	int high, high_min, high_max, batch_scale_max;
+	int high, high_min, high_max;
 
 	high_min = READ_ONCE(pcp->high_min);
 	high_max = READ_ONCE(pcp->high_max);
 	high = pcp->high = clamp(pcp->high, high_min, high_max);
-	batch_scale_max = READ_ONCE(pcp_batch_scale_max);
 
 	if (unlikely(!high))
 		return 0;
 
 	if (unlikely(free_high)) {
-		pcp->high = max(high - (batch << batch_scale_max),
+		pcp->high = max(high - (batch << CONFIG_PCP_BATCH_SCALE_MAX),
 				high_min);
 		return 0;
 	}
@@ -3651,7 +3645,7 @@ static void free_unref_page_commit(struct zone *zone, struct per_cpu_pages *pcp,
 				   unsigned int order)
 {
 	int pindex;
-	int high, batch, batch_scale_max;
+	int high, batch;
 	bool free_high = false;
 
 	/*
@@ -3667,7 +3661,6 @@ static void free_unref_page_commit(struct zone *zone, struct per_cpu_pages *pcp,
 	pcp->count += 1 << order;
 
 	batch = READ_ONCE(pcp->batch);
-	batch_scale_max = READ_ONCE(pcp_batch_scale_max);
 	/*
 	 * As high-order pages other than THP's stored on PCP can contribute
 	 * to fragmentation, limit the number stored when PCP is heavily
@@ -3683,7 +3676,7 @@ static void free_unref_page_commit(struct zone *zone, struct per_cpu_pages *pcp,
 	} else if (pcp->flags & PCPF_PREV_FREE_HIGH_ORDER) {
 		pcp->flags &= ~PCPF_PREV_FREE_HIGH_ORDER;
 	}
-	if (pcp->free_count < (batch << batch_scale_max))
+	if (pcp->free_count < (batch << CONFIG_PCP_BATCH_SCALE_MAX))
 		pcp->free_count += (1 << order);
 	high = nr_pcp_high(pcp, zone, batch, free_high);
 	if (pcp->count >= high) {
@@ -4007,13 +4000,12 @@ struct page *rmqueue_buddy(struct zone *preferred_zone,
 static int nr_pcp_alloc(struct per_cpu_pages *pcp, struct zone *zone, int order)
 {
 	int high, base_batch, batch, max_nr_alloc;
-	int high_max, high_min, batch_scale_max;
+	int high_max, high_min;
 
 	base_batch = READ_ONCE(pcp->batch);
 	high_min = READ_ONCE(pcp->high_min);
 	high_max = READ_ONCE(pcp->high_max);
 	high = pcp->high = clamp(pcp->high, high_min, high_max);
-	batch_scale_max = READ_ONCE(pcp_batch_scale_max);
 
 	/* Check for PCP disabled or boot pageset */
 	if (unlikely(high < base_batch))
@@ -4038,7 +4030,7 @@ static int nr_pcp_alloc(struct per_cpu_pages *pcp, struct zone *zone, int order)
 		 * subsequent allocation of order-0 pages without any freeing.
 		 */
 		if (batch <= max_nr_alloc &&
-		    pcp->alloc_factor < batch_scale_max)
+		    pcp->alloc_factor < CONFIG_PCP_BATCH_SCALE_MAX)
 			pcp->alloc_factor++;
 		batch = min(batch, max_nr_alloc);
 	}
