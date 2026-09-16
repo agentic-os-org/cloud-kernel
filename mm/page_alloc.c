@@ -3536,23 +3536,6 @@ static int nr_pcp_free(struct per_cpu_pages *pcp, int high, int batch)
 	return batch;
 }
 
-static int nr_pcp_high(struct per_cpu_pages *pcp, struct zone *zone)
-{
-	int high = READ_ONCE(pcp->high);
-
-	if (unlikely(!high))
-		return 0;
-
-	if (!test_bit(ZONE_RECLAIM_ACTIVE, &zone->flags))
-		return high;
-
-	/*
-	 * If reclaim is active, limit the number of pages that can be
-	 * stored on pcp lists
-	 */
-	return min(READ_ONCE(pcp->batch) << 2, high);
-}
-
 static void free_unref_page_commit(struct page *page, int migratetype,
 				   unsigned int order)
 {
@@ -3567,7 +3550,7 @@ static void free_unref_page_commit(struct page *page, int migratetype,
 	pindex = order_to_pindex(migratetype, order);
 	list_add(&page->lru, &pcp->lists[pindex]);
 	pcp->count += 1 << order;
-	high = nr_pcp_high(pcp, zone);
+	high = READ_ONCE(pcp->high);
 	if (pcp->count >= high) {
 		int batch = READ_ONCE(pcp->batch);
 

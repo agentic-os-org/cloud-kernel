@@ -6968,38 +6968,6 @@ static bool kswapd_shrink_node(pg_data_t *pgdat,
 	return sc->nr_scanned >= sc->nr_to_reclaim;
 }
 
-/* Page allocator PCP high watermark is lowered if reclaim is active. */
-static inline void
-update_reclaim_active(pg_data_t *pgdat, int highest_zoneidx, bool active)
-{
-	int i;
-	struct zone *zone;
-
-	for (i = 0; i <= highest_zoneidx; i++) {
-		zone = pgdat->node_zones + i;
-
-		if (!managed_zone(zone))
-			continue;
-
-		if (active)
-			set_bit(ZONE_RECLAIM_ACTIVE, &zone->flags);
-		else
-			clear_bit(ZONE_RECLAIM_ACTIVE, &zone->flags);
-	}
-}
-
-static inline void
-set_reclaim_active(pg_data_t *pgdat, int highest_zoneidx)
-{
-	update_reclaim_active(pgdat, highest_zoneidx, true);
-}
-
-static inline void
-clear_reclaim_active(pg_data_t *pgdat, int highest_zoneidx)
-{
-	update_reclaim_active(pgdat, highest_zoneidx, false);
-}
-
 /*
  * For kswapd, balance_pgdat() will reclaim pages across a node from zones
  * that are eligible for use by the caller until at least one zone is
@@ -7053,7 +7021,6 @@ static int balance_pgdat(pg_data_t *pgdat, int order, int highest_zoneidx)
 	boosted = nr_boost_reclaim;
 
 restart:
-	set_reclaim_active(pgdat, highest_zoneidx);
 	sc.priority = DEF_PRIORITY;
 
 	if (should_degrade && priority_swap_is_enabled(sc.target_mem_cgroup)) {
@@ -7199,8 +7166,6 @@ restart:
 		pgdat->kswapd_failures++;
 
 out:
-	clear_reclaim_active(pgdat, highest_zoneidx);
-
 	/* If reclaim was boosted, account for the reclaim done in this pass */
 	if (boosted) {
 		unsigned long flags;
