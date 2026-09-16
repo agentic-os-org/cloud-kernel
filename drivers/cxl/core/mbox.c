@@ -914,7 +914,7 @@ void cxl_event_trace_record(struct cxl_memdev *cxlmd,
 		guard(rwsem_read)(&cxl_region_rwsem);
 		guard(rwsem_read)(&cxl_dpa_rwsem);
 
-		dpa = le64_to_cpu(evt->common.phys_addr) & CXL_DPA_MASK;
+		dpa = le64_to_cpu(evt->media_hdr.phys_addr) & CXL_DPA_MASK;
 		cxlr = cxl_dpa_to_region(cxlmd, dpa);
 		if (cxlr)
 			hpa = cxl_dpa_to_hpa(cxlr, cxlmd, dpa);
@@ -924,15 +924,33 @@ void cxl_event_trace_record(struct cxl_memdev *cxlmd,
 				dev_err(cxlds->dev, "General media fatal event detected: "
 					"DPA %#llx, event_descriptor %#x, "
 					"event_type %u, transaction_type %#x\n",
-					dpa, evt->gen_media.descriptor,
-					evt->gen_media.type,
-					evt->gen_media.transaction_type);
+					dpa, evt->gen_media.media_hdr.descriptor,
+					evt->gen_media.media_hdr.type,
+					evt->gen_media.media_hdr.transaction_type);
+
+			if (evt->gen_media.media_hdr.descriptor &
+			    CXL_GMER_EVT_DESC_THRESHOLD_EVENT)
+				WARN_ON_ONCE((evt->gen_media.media_hdr.type &
+					      CXL_GMER_MEM_EVT_TYPE_AP_CME_COUNTER_EXPIRE) &&
+					     !get_unaligned_le24(evt->gen_media.cme_count));
+			else
+				WARN_ON_ONCE(evt->gen_media.media_hdr.type &
+					     CXL_GMER_MEM_EVT_TYPE_AP_CME_COUNTER_EXPIRE);
 
 			trace_cxl_general_media(cxlmd, type, cxlr, hpa,
 						&evt->gen_media);
 		} else if (event_type == CXL_CPER_EVENT_DRAM) {
 			if (type == CXL_EVENT_TYPE_FATAL)
 				dev_err(cxlds->dev, "DRAM fatal event detected!\n");
+
+			if (evt->dram.media_hdr.descriptor &
+			    CXL_GMER_EVT_DESC_THRESHOLD_EVENT)
+				WARN_ON_ONCE((evt->dram.media_hdr.type &
+					      CXL_DER_MEM_EVT_TYPE_AP_CME_COUNTER_EXPIRE) &&
+					     !get_unaligned_le24(evt->dram.cvme_count));
+			else
+				WARN_ON_ONCE(evt->dram.media_hdr.type &
+					     CXL_DER_MEM_EVT_TYPE_AP_CME_COUNTER_EXPIRE);
 
 			trace_cxl_dram(cxlmd, type, cxlr, hpa, &evt->dram);
 		}
@@ -1354,6 +1372,45 @@ int cxl_mem_create_range_info(struct cxl_memdev_state *mds)
 			   mds->active_persistent_bytes, "pmem");
 }
 EXPORT_SYMBOL_NS_GPL(cxl_mem_create_range_info, CXL);
+
+int cxl_get_dirty_count(struct cxl_memdev_state *mds, u32 *count)
+{
+	struct cxl_mailbox *cxl_mbox = &mds->cxlds.cxl_mbox;
+	struct cxl_mbox_get_health_info_out hi;
+	struct cxl_mbox_cmd mbox_cmd;
+	int rc;
+
+	mbox_cmd = (struct cxl_mbox_cmd) {
+		.opcode = CXL_MBOX_OP_GET_HEALTH_INFO,
+		.size_out = sizeof(hi),
+		.payload_out = &hi,
+	};
+
+	rc = cxl_internal_send_cmd(cxl_mbox, &mbox_cmd);
+	if (!rc)
+		*count = le32_to_cpu(hi.dirty_shutdown_cnt);
+
+	return rc;
+}
+EXPORT_SYMBOL_NS_GPL(cxl_get_dirty_count, CXL);
+
+int cxl_arm_dirty_shutdown(struct cxl_memdev_state *mds)
+{
+	struct cxl_mailbox *cxl_mbox = &mds->cxlds.cxl_mbox;
+	struct cxl_mbox_cmd mbox_cmd;
+	struct cxl_mbox_set_shutdown_state_in in = {
+		.state = 1
+	};
+
+	mbox_cmd = (struct cxl_mbox_cmd) {
+		.opcode = CXL_MBOX_OP_SET_SHUTDOWN_STATE,
+		.size_in = sizeof(in),
+		.payload_in = &in,
+	};
+
+	return cxl_internal_send_cmd(cxl_mbox, &mbox_cmd);
+}
+EXPORT_SYMBOL_NS_GPL(cxl_arm_dirty_shutdown, CXL);
 
 int cxl_set_timestamp(struct cxl_memdev_state *mds)
 {

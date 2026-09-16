@@ -551,6 +551,7 @@ struct cxl_nvdimm {
 	struct device dev;
 	struct cxl_memdev *cxlmd;
 	u8 dev_id[CXL_DEV_ID_LEN]; /* for nvdimm, string of 'serial' */
+	u64 dirty_shutdowns;
 };
 
 struct cxl_pmem_region_mapping {
@@ -668,6 +669,7 @@ struct cxl_rcrb_info {
  * @regs: Dport parsed register blocks
  * @coord: access coordinates (bandwidth and latency performance attributes)
  * @link_latency: calculated PCIe downstream latency
+ * @gpf_dvsec: Cached GPF port DVSEC
  */
 struct cxl_dport {
 	struct device *dport_dev;
@@ -679,6 +681,7 @@ struct cxl_dport {
 	struct cxl_regs regs;
 	struct access_coordinate coord[ACCESS_COORDINATE_MAX];
 	long link_latency;
+	int gpf_dvsec;
 };
 
 /**
@@ -903,5 +906,7 @@ bool cxl_endpoint_decoder_reset_detected(struct cxl_port *port);
 #ifndef __mock
 #define __mock static
 #endif
+
+u16 cxl_gpf_get_dvsec(struct device *dev);
 
 #endif /* __CXL_H__ */
