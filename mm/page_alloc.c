@@ -3272,11 +3272,13 @@ void drain_zone_pages(struct zone *zone, struct per_cpu_pages *pcp)
 static void drain_pages_zone(unsigned int cpu, struct zone *zone)
 {
 	unsigned long flags;
+	struct per_cpu_pageset *pset;
 	struct per_cpu_pages *pcp;
 
 	local_irq_save(flags);
+	pset = per_cpu_ptr(zone->pageset, cpu);
 
-	pcp = per_cpu_ptr(zone->per_cpu_pageset, cpu);
+	pcp = &pset->pcp;
 	if (pcp->count)
 		free_pcppages_bulk(zone, pcp->count, pcp, 0);
 	local_irq_restore(flags);
@@ -3377,7 +3379,7 @@ void __drain_all_pages(struct zone *zone, bool force_all_cpus)
 	 * disables preemption as part of its processing
 	 */
 	for_each_online_cpu(cpu) {
-		struct per_cpu_pages *pcp;
+		struct per_cpu_pageset *pcp;
 		struct zone *z;
 		bool has_pcps = false;
 
@@ -3388,13 +3390,13 @@ void __drain_all_pages(struct zone *zone, bool force_all_cpus)
 			 */
 			has_pcps = true;
 		} else if (zone) {
-			pcp = per_cpu_ptr(zone->per_cpu_pageset, cpu);
-			if (pcp->count)
+			pcp = per_cpu_ptr(zone->pageset, cpu);
+			if (pcp->pcp.count)
 				has_pcps = true;
 		} else {
 			for_each_populated_zone(z) {
-				pcp = per_cpu_ptr(z->per_cpu_pageset, cpu);
-				if (pcp->count) {
+				pcp = per_cpu_ptr(z->pageset, cpu);
+				if (pcp->pcp.count) {
 					has_pcps = true;
 					break;
 				}
@@ -3509,7 +3511,7 @@ static void free_unref_page_commit(struct page *page, int migratetype,
 
 	__count_vm_events(PGFREE, 1 << order);
 
-	pcp = this_cpu_ptr(zone->per_cpu_pageset);
+	pcp = &this_cpu_ptr(zone->pageset)->pcp;
 	pindex = order_to_pindex(migratetype, order);
 	list_add(&page->lru, &pcp->lists[pindex]);
 	pcp->count += 1 << order;
@@ -3790,7 +3792,7 @@ static struct page *rmqueue_pcplist(struct zone *preferred_zone,
 	unsigned long flags;
 
 	local_irq_save(flags);
-	pcp = this_cpu_ptr(zone->per_cpu_pageset);
+	pcp = &this_cpu_ptr(zone->pageset)->pcp;
 	list = &pcp->lists[order_to_pindex(migratetype, order)];
 	page = __rmqueue_pcplist(zone, gfp_flags, order, migratetype,
 				 alloc_flags, pcp, list);
@@ -5995,7 +5997,7 @@ void show_free_areas(unsigned int filter, nodemask_t *nodemask)
 			continue;
 
 		for_each_online_cpu(cpu)
-			free_pcp += per_cpu_ptr(zone->per_cpu_pageset, cpu)->count;
+			free_pcp += per_cpu_ptr(zone->pageset, cpu)->pcp.count;
 	}
 
 	printk("active_anon:%lu inactive_anon:%lu isolated_anon:%lu\n"
@@ -6087,7 +6089,7 @@ void show_free_areas(unsigned int filter, nodemask_t *nodemask)
 
 		free_pcp = 0;
 		for_each_online_cpu(cpu)
-			free_pcp += per_cpu_ptr(zone->per_cpu_pageset, cpu)->count;
+			free_pcp += per_cpu_ptr(zone->pageset, cpu)->pcp.count;
 
 		show_node(zone);
 		printk(KERN_CONT
@@ -6128,7 +6130,7 @@ void show_free_areas(unsigned int filter, nodemask_t *nodemask)
 			K(zone_page_state(zone, NR_MLOCK)),
 			K(zone_page_state(zone, NR_BOUNCE)),
 			K(free_pcp),
-			K(this_cpu_read(zone->per_cpu_pageset->count)),
+			K(this_cpu_read(zone->pageset->pcp.count)),
 			K(zone_page_state(zone, NR_FREE_CMA_PAGES)));
 		printk("lowmem_reserve[]:");
 		for (i = 0; i < MAX_NR_ZONES; i++)
@@ -6455,12 +6457,11 @@ static void build_zonelists(pg_data_t *pgdat)
  * not check if the processor is online before following the pageset pointer.
  * Other parts of the kernel may not check if the zone is available.
  */
-static void per_cpu_pages_init(struct per_cpu_pages *pcp, struct per_cpu_zonestat *pzstats);
+static void pageset_init(struct per_cpu_pageset *p);
 /* These effectively disable the pcplists in the boot pageset completely */
 #define BOOT_PAGESET_HIGH	0
 #define BOOT_PAGESET_BATCH	1
-static DEFINE_PER_CPU(struct per_cpu_pages, boot_pageset);
-static DEFINE_PER_CPU(struct per_cpu_zonestat, boot_zonestats);
+static DEFINE_PER_CPU(struct per_cpu_pageset, boot_pageset);
 DEFINE_PER_CPU(struct per_cpu_nodestat, boot_nodestats);
 void __printk_safe_enter(void);
 void __printk_safe_exit(void);
@@ -6545,7 +6546,7 @@ build_all_zonelists_init(void)
 	 * (a chicken-egg dilemma).
 	 */
 	for_each_possible_cpu(cpu)
-		per_cpu_pages_init(&per_cpu(boot_pageset, cpu), &per_cpu(boot_zonestats, cpu));
+		pageset_init(&per_cpu(boot_pageset, cpu));
 
 	mminit_verify_zonelist();
 	cpuset_init_current_mems_allowed();
@@ -7098,13 +7099,14 @@ static void pageset_update(struct per_cpu_pages *pcp, unsigned long high,
 	pcp->batch = batch;
 }
 
-static void per_cpu_pages_init(struct per_cpu_pages *pcp, struct per_cpu_zonestat *pzstats)
+static void pageset_init(struct per_cpu_pageset *p)
 {
+	struct per_cpu_pages *pcp;
 	int pindex;
 
-	memset(pcp, 0, sizeof(*pcp));
-	memset(pzstats, 0, sizeof(*pzstats));
+	memset(p, 0, sizeof(*p));
 
+	pcp = &p->pcp;
 	for (pindex = 0; pindex < NR_PCP_LISTS; pindex++)
 		INIT_LIST_HEAD(&pcp->lists[pindex]);
 
@@ -7121,12 +7123,12 @@ static void per_cpu_pages_init(struct per_cpu_pages *pcp, struct per_cpu_zonesta
 void __zone_set_pageset_high_and_batch(struct zone *zone, unsigned long high,
 		unsigned long batch)
 {
-	struct per_cpu_pages *pcp;
+	struct per_cpu_pageset *p;
 	int cpu;
 
 	for_each_possible_cpu(cpu) {
-		pcp = per_cpu_ptr(zone->per_cpu_pageset, cpu);
-		pageset_update(pcp, high, batch);
+		p = per_cpu_ptr(zone->pageset, cpu);
+		pageset_update(&p->pcp, high, batch);
 	}
 }
 
@@ -7161,20 +7163,13 @@ static void zone_set_pageset_high_and_batch(struct zone *zone)
 
 void __meminit setup_zone_pageset(struct zone *zone)
 {
+	struct per_cpu_pageset *p;
 	int cpu;
 
-	/* Size may be 0 on !SMP && !NUMA */
-	if (sizeof(struct per_cpu_zonestat) > 0)
-		zone->per_cpu_zonestats = alloc_percpu(struct per_cpu_zonestat);
-
-	zone->per_cpu_pageset = alloc_percpu(struct per_cpu_pages);
+	zone->pageset = alloc_percpu(struct per_cpu_pageset);
 	for_each_possible_cpu(cpu) {
-		struct per_cpu_pages *pcp;
-		struct per_cpu_zonestat *pzstats;
-
-		pcp = per_cpu_ptr(zone->per_cpu_pageset, cpu);
-		pzstats = per_cpu_ptr(zone->per_cpu_zonestats, cpu);
-		per_cpu_pages_init(pcp, pzstats);
+		p = per_cpu_ptr(zone->pageset, cpu);
+		pageset_init(p);
 	}
 
 	zone_set_pageset_high_and_batch(zone);
@@ -7201,9 +7196,9 @@ void __init setup_per_cpu_pageset(void)
 	 * the nodes these zones are associated with.
 	 */
 	for_each_possible_cpu(cpu) {
-		struct per_cpu_zonestat *pzstats = &per_cpu(boot_zonestats, cpu);
-		memset(pzstats->vm_numa_stat_diff, 0,
-		       sizeof(pzstats->vm_numa_stat_diff));
+		struct per_cpu_pageset *pcp = &per_cpu(boot_pageset, cpu);
+		memset(pcp->vm_numa_stat_diff, 0,
+		       sizeof(pcp->vm_numa_stat_diff));
 	}
 #endif
 
@@ -7219,8 +7214,7 @@ static __meminit void zone_pcp_init(struct zone *zone)
 	 * relies on the ability of the linker to provide the
 	 * offset of a (static) per cpu variable into the per cpu area.
 	 */
-	zone->per_cpu_pageset = &boot_pageset;
-	zone->per_cpu_zonestats = &boot_zonestats;
+	zone->pageset = &boot_pageset;
 	zone->pageset_high = BOOT_PAGESET_HIGH;
 	zone->pageset_batch = BOOT_PAGESET_BATCH;
 
@@ -9522,19 +9516,17 @@ void zone_pcp_reset(struct zone *zone)
 {
 	unsigned long flags;
 	int cpu;
-	struct per_cpu_zonestat *pzstats;
+	struct per_cpu_pageset *pset;
 
 	/* avoid races with drain_pages()  */
 	local_irq_save(flags);
-	if (zone->per_cpu_pageset != &boot_pageset) {
+	if (zone->pageset != &boot_pageset) {
 		for_each_online_cpu(cpu) {
-			pzstats = per_cpu_ptr(zone->per_cpu_zonestats, cpu);
-			drain_zonestat(zone, pzstats);
+			pset = per_cpu_ptr(zone->pageset, cpu);
+			drain_zonestat(zone, pset);
 		}
-		free_percpu(zone->per_cpu_pageset);
-		free_percpu(zone->per_cpu_zonestats);
-		zone->per_cpu_pageset = &boot_pageset;
-		zone->per_cpu_zonestats = &boot_zonestats;
+		free_percpu(zone->pageset);
+		zone->pageset = &boot_pageset;
 	}
 	local_irq_restore(flags);
 }
