@@ -463,7 +463,8 @@ static inline bool folio_is_reclaimable(struct mem_cgroup *memcg,
 			return false;
 
 		/* JIT may use executable anonymous page */
-		if (reclaim_coldpgs_has_flag(filter, FLAG_IGNORE_AGE) &&
+		if (!validate_age &&
+		    reclaim_coldpgs_has_flag(filter, FLAG_IGNORE_AGE) &&
 		    anon_folio_is_exec(folio))
 			return false;
 	}
@@ -1857,13 +1858,15 @@ static int swapin_pte(struct vm_fault *vmf)
 	if (signal_pending(current))
 		return -EINTR;
 
-	/* Recheck the vma */
+	/*
+	 * Recheck the vma.  do_swap_page() dropped mmap_lock for
+	 * VM_FAULT_RETRY; retake it and keep it held on all returns so the
+	 * traverser restarts on -EAGAIN without re-acquiring.
+	 */
 	down_read(&mm->mmap_lock);
 	vma = find_vma(mm, vmf->address);
-	if (!vma) {
-		up_read(&mm->mmap_lock);
+	if (!vma)
 		return -EAGAIN;
-	}
 
 	if (vmf->vma != vma || !vma->anon_vma) {
 		vmf->vma = vma;
@@ -1891,6 +1894,9 @@ static int swapin_pmd(struct vm_fault *vmf,
 		 * at the start of that function.
 		 */
 		pte = my___pte_offset_map(vmf->pmd, addr, NULL);
+		/* NULL pte: pmd collapsed to trans_huge; restart the walk. */
+		if (!pte)
+			return -EAGAIN;
 		vmf->orig_pte = *pte;
 		if (!is_swap_pte(*pte)) {
 			pte_unmap(pte);
@@ -2038,9 +2044,16 @@ again:
 			continue;
 		}
 
-		/* Start over in case the vma is gone */
-		if (ret == -EAGAIN)
+		/*
+		 * Start over: mmap_lock is still held, but do_swap_page()
+		 * dropped it before swapin_pte() retook it, so a concurrent
+		 * munmap may have invalidated the cached maple node.  Reset
+		 * the iterator to restart the walk from a fresh search.
+		 */
+		if (ret == -EAGAIN) {
+			vma_iter_set(&vmi, 0);
 			goto again;
+		}
 
 		/* Abort on serious errors OOM/SIGBUS etc */
 		break;
