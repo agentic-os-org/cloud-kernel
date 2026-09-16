@@ -3502,8 +3502,8 @@ static bool free_unref_page_prepare(struct page *page, unsigned long pfn,
 	return true;
 }
 
-static void free_unref_page_commit(struct page *page, int migratetype,
-				   unsigned int order)
+static void free_unref_page_commit(struct page *page, unsigned long pfn,
+				   int migratetype, unsigned int order)
 {
 	struct zone *zone = page_zone(page);
 	struct per_cpu_pages *pcp;
@@ -3554,7 +3554,7 @@ void free_unref_page(struct page *page, unsigned int order)
 	}
 
 	local_irq_save(flags);
-	free_unref_page_commit(page, migratetype, order);
+	free_unref_page_commit(page, pfn, migratetype, order);
 	local_irq_restore(flags);
 }
 
@@ -3564,13 +3564,13 @@ void free_unref_page(struct page *page, unsigned int order)
 void free_unref_page_list(struct list_head *list)
 {
 	struct page *page, *next;
-	unsigned long flags;
+	unsigned long flags, pfn;
 	int batch_count = 0;
 	int migratetype;
 
 	/* Prepare pages for freeing */
 	list_for_each_entry_safe(page, next, list, lru) {
-		unsigned long pfn = page_to_pfn(page);
+		pfn = page_to_pfn(page);
 		if (!free_unref_page_prepare(page, pfn, 0))
 			list_del(&page->lru);
 
@@ -3592,10 +3592,15 @@ void free_unref_page_list(struct list_head *list)
 			free_one_page(page_zone(page), page, pfn, 0, migratetype, FPI_NONE);
 			continue;
 		}
+
+		set_page_private(page, pfn);
 	}
 
 	local_irq_save(flags);
 	list_for_each_entry_safe(page, next, list, lru) {
+		pfn = page_private(page);
+		set_page_private(page, 0);
+
 		/*
 		 * Non-isolated types over MIGRATE_PCPTYPES get added
 		 * to the MIGRATE_MOVABLE pcp list.
@@ -3605,7 +3610,7 @@ void free_unref_page_list(struct list_head *list)
 			migratetype = MIGRATE_MOVABLE;
 
 		trace_mm_page_free_batched(page);
-		free_unref_page_commit(page, migratetype, 0);
+		free_unref_page_commit(page, pfn, migratetype, 0);
 
 		/*
 		 * Guard against excessive IRQ disabled times when we get
