@@ -5,12 +5,33 @@
 
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc_helper.h>
+#include <drm/drm_ioctl.h>
 #include <drm/drm_probe_helper.h>
 
 #include "yhgch_drm_drv.h"
 #include "yhgch_drm_regs.h"
 
 #define MEM_SIZE_RESERVE4KVM 0x400000
+
+#define DRM_YHGCH_VRAM_TYPE_DEVICE 0x0
+#define DRM_IOCTL_YHGCH_VRAM_TYPE_DEVICE \
+	DRM_IO(DRM_COMMAND_BASE + DRM_YHGCH_VRAM_TYPE_DEVICE)
+
+static int yhgch_ioctl_check_5c01_device(struct drm_device *dev, void *data,
+					 struct drm_file *file_priv)
+{
+	struct yhgch_drm_private *priv = dev->dev_private;
+
+	(void)data;
+	(void)file_priv;
+	return priv->is_5c01_device ? 1 : 0;
+}
+
+static const struct drm_ioctl_desc yhgch_ioctls[] = {
+	DRM_IOCTL_DEF_DRV(YHGCH_VRAM_TYPE_DEVICE,
+			  yhgch_ioctl_check_5c01_device,
+			  DRM_AUTH | DRM_UNLOCKED),
+};
 
 DEFINE_DRM_GEM_FOPS(yhgch_fops);
 irqreturn_t yhgch_drm_interrupt(int irq, void *arg)
@@ -36,14 +57,35 @@ static struct drm_driver yhgch_driver = {
 	    DRIVER_ATOMIC | DRIVER_HAVE_IRQ,
 
 	.fops = &yhgch_fops,
+	.ioctls = yhgch_ioctls,
+	.num_ioctls = ARRAY_SIZE(yhgch_ioctls),
 	.name = "yhgch",
 	.date = "20251014",
 	.desc = "yhgch drm driver",
 	.major = 3,
-	.minor = 5,
+	.minor = 6,
 	.dumb_create = yhgch_dumb_create,
 	.dumb_map_offset = drm_gem_vram_driver_dumb_mmap_offset,
 };
+
+static bool yhgch_check_pci_host_5c01(struct pci_bus *bus)
+{
+	struct pci_bus *root_bus;
+	struct pci_dev *root;
+
+	if (!bus)
+		return false;
+
+	root_bus = bus;
+	while (root_bus->parent && root_bus->parent->parent)
+		root_bus = root_bus->parent;
+
+	root = root_bus->self;
+	if (!root)
+		return false;
+
+	return root->vendor == 0x1db7 && root->device == 0x5c01;
+}
 
 static void yhgch_remove_framebuffers(struct pci_dev *pdev)
 {
@@ -234,19 +276,21 @@ static int yhgch_hw_map(struct yhgch_drm_private *priv)
 
 	addr = pci_resource_start(pdev, 0);
 	size = pci_resource_len(pdev, 0);
-
-	arch_io_reserve_memtype_wc(addr, size);
-	arch_phys_wc_add(addr, size);
-
-	priv->fb_map = devm_ioremap_wc(dev->dev, addr, size);
+	if (priv->is_5c01_device) {
+		priv->fb_map = devm_ioremap(dev->dev, addr, size);
+	} else {
+		arch_io_reserve_memtype_wc(addr, size);
+		arch_phys_wc_add(addr, size);
+		priv->fb_map = devm_ioremap_wc(dev->dev, addr, size);
+	}
 	if (!priv->fb_map) {
 		DRM_ERROR("Cannot map framebuffer\n");
 		return -ENOMEM;
 	}
 #ifdef CONFIG_X86
-	set_memory_wc((unsigned long)addr, size >> PAGE_SHIFT);
+	if (!priv->is_5c01_device)
+		set_memory_wc((unsigned long)addr, size >> PAGE_SHIFT);
 #endif
-
 	priv->fb_base = addr;
 	priv->fb_size = size - MEM_SIZE_RESERVE4KVM;
 
@@ -256,12 +300,10 @@ static int yhgch_hw_map(struct yhgch_drm_private *priv)
 static void yhgch_hw_unmap(struct yhgch_drm_private *priv)
 {
 	struct drm_device *dev = priv->dev;
-
 	if (priv->mmio) {
 		devm_iounmap(dev->dev, priv->mmio);
 		priv->mmio = NULL;
 	}
-
 	if (priv->fb_map) {
 		devm_iounmap(dev->dev, priv->fb_map);
 		priv->fb_map = NULL;
@@ -285,9 +327,8 @@ void yhgch_unload(struct drm_device *dev)
 {
 	struct yhgch_drm_private *priv = dev->dev_private;
 	drm_atomic_helper_shutdown(dev);
-
 	yhgch_kms_fini(priv);
-	yhgch_hw_unmap(priv);
+    yhgch_hw_unmap(priv);
 	dev->dev_private = NULL;
 }
 
@@ -304,6 +345,7 @@ int yhgch_load(struct drm_device *dev, unsigned long flags)
 	}
 	dev->dev_private = priv;
 	priv->dev = dev;
+	priv->is_5c01_device = yhgch_check_pci_host_5c01(pdev->bus);
 
 	ret = yhgch_hw_init(priv);
 	if (ret)
@@ -316,6 +358,9 @@ int yhgch_load(struct drm_device *dev, unsigned long flags)
 		drm_err(dev, "Error initializing VRAM MM; %d\n", ret);
 		goto err;
 	}
+	if (priv->is_5c01_device)
+		yhgch_ttm_enable_5c01_io_mem_reserve(dev);
+
 	ret = yhgch_kms_init(priv);
 	if (ret)
 		goto err;
@@ -369,6 +414,11 @@ err_return:
 	return ret;
 }
 
+
+
+
+
+
 static void yhgch_pci_remove(struct pci_dev *pdev)
 {
 	struct drm_device *dev = pci_get_drvdata(pdev);
@@ -400,7 +450,6 @@ static int __init yhgch_init(void)
 {
 	if (vgacon_text_force())
 		return -ENODEV;
-
 	return pci_register_driver(&yhgch_pci_driver);
 }
 
@@ -416,4 +465,4 @@ MODULE_DEVICE_TABLE(pci, yhgch_pci_table);
 MODULE_AUTHOR("");
 MODULE_DESCRIPTION("DRM Driver for YHGCHBMC");
 MODULE_LICENSE("GPL v2");
-MODULE_VERSION("3.5");
+MODULE_VERSION("3.6");

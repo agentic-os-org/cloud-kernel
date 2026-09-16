@@ -219,8 +219,9 @@ yhgch_crtc_mode_valid(struct drm_crtc *crtc,
 	int i = 0;
 	int vrefresh = drm_mode_vrefresh(mode);
 
-	if ((vrefresh < 29) || (vrefresh > 61) || (vrefresh > 31 && vrefresh < 59))
+	if ((vrefresh < 29) || (vrefresh > 61) || (vrefresh > 31 && vrefresh < 59)) {
 		return MODE_NOCLOCK;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(yhgch_pll_table); i++) {
 		if (yhgch_pll_table[i].hdisplay == mode->hdisplay &&
@@ -298,7 +299,6 @@ static unsigned int display_ctrl_adjust(struct drm_device *dev,
 	struct yhgch_drm_private *priv = dev->dev_private;
 
 	unsigned int vrefresh = drm_mode_vrefresh(mode);
-
 	x = mode->hdisplay;
 	y = mode->vdisplay;
 
