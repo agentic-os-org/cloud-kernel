@@ -60,6 +60,7 @@
 #include <linux/pre_oom.h>
 #include <linux/pgalloc_tag.h>
 #include <linux/crash_dump.h>
+#include <linux/numa_remote.h>
 #include <asm/div64.h>
 #include "internal.h"
 #include "shuffle.h"
@@ -268,6 +269,9 @@ static int sysctl_lowmem_reserve_ratio[MAX_NR_ZONES] = {
 #ifdef CONFIG_HIGHMEM
 	[ZONE_HIGHMEM] = 0,
 #endif
+#ifdef CONFIG_ZONE_EXTMEM
+	[ZONE_EXTMEM] = 0,
+#endif
 	[ZONE_MOVABLE] = 0,
 };
 
@@ -281,6 +285,9 @@ char * const zone_names[MAX_NR_ZONES] = {
 	 "Normal",
 #ifdef CONFIG_HIGHMEM
 	 "HighMem",
+#endif
+#ifdef CONFIG_ZONE_EXTMEM
+	 "ExtMem",
 #endif
 	 "Movable",
 #ifdef CONFIG_ZONE_DEVICE
@@ -3626,6 +3633,12 @@ check_alloc_wmark:
 			if (alloc_flags & ALLOC_NO_WATERMARKS)
 				goto try_this_zone;
 
+			if (numa_remote_try_wait_undo_fake_online(zone_to_nid(zone))) {
+				if (zone_watermark_ok(zone, order, mark,
+					ac->highest_zoneidx, alloc_flags))
+					goto try_this_zone;
+			}
+
 			if (!node_reclaim_enabled() ||
 			    !zone_allows_reclaim(ac->preferred_zoneref->zone, zone))
 				continue;
@@ -5519,6 +5532,10 @@ int find_next_best_node(int node, nodemask_t *used_node_mask)
 		if (node_isset(n, *used_node_mask))
 			continue;
 
+		/* Don't fallback to remote node */
+		if (numa_remote_nofallback(n))
+			continue;
+
 		/* Use the distance array to find the distance */
 		val = node_distance(node, n);
 
@@ -6330,9 +6347,13 @@ static void __setup_per_zone_wmarks(void)
 	struct zone *zone;
 	unsigned long flags;
 
-	/* Calculate total number of !ZONE_HIGHMEM and !ZONE_MOVABLE pages */
+	/*
+	 * Calculate total number of !ZONE_HIGHMEM and !ZONE_MOVABLE and
+	 * !ZONE_EXTMEM pages.
+	 */
 	for_each_zone(zone) {
-		if (!is_highmem(zone) && zone_idx(zone) != ZONE_MOVABLE)
+		if (!is_highmem(zone) && zone_idx(zone) != ZONE_MOVABLE
+		    && !zone_is_zone_extmem(zone))
 			lowmem_pages += zone_managed_pages(zone);
 	}
 
@@ -6342,7 +6363,8 @@ static void __setup_per_zone_wmarks(void)
 		spin_lock_irqsave(&zone->lock, flags);
 		tmp = (u64)pages_min * zone_managed_pages(zone);
 		do_div(tmp, lowmem_pages);
-		if (is_highmem(zone) || zone_idx(zone) == ZONE_MOVABLE) {
+		if (is_highmem(zone) || zone_idx(zone) == ZONE_MOVABLE ||
+		    zone_is_zone_extmem(zone)) {
 			/*
 			 * __GFP_HIGH and PF_MEMALLOC allocations usually don't
 			 * need highmem and movable zones pages, so cap pages_min
@@ -6350,7 +6372,7 @@ static void __setup_per_zone_wmarks(void)
 			 *
 			 * The WMARK_HIGH-WMARK_LOW and (WMARK_LOW-WMARK_MIN)
 			 * deltas control async page reclaim, and so should
-			 * not be capped for highmem and movable zones.
+			 * not be capped for highmem, movable and extmem zones.
 			 */
 			unsigned long min_pages;
 
@@ -6843,9 +6865,14 @@ static void alloc_contig_dump_pages(struct list_head *page_list)
 	}
 }
 
-/* [start, end) must belong to a single zone. */
+/*
+ * [start, end) must belong to a single zone.
+ * @migratetype: using migratetype to filter the type of migration in
+ *		trace_mm_alloc_contig_migrate_range_info.
+ */
 int __alloc_contig_migrate_range(struct compact_control *cc,
-					unsigned long start, unsigned long end)
+					unsigned long start, unsigned long end,
+					int migratetype)
 {
 	/* This function is based on compact_zone() from compaction.c. */
 	unsigned int nr_reclaimed;
@@ -6857,6 +6884,10 @@ int __alloc_contig_migrate_range(struct compact_control *cc,
 		.gfp_mask = GFP_USER | __GFP_MOVABLE | __GFP_RETRY_MAYFAIL,
 		.reason = MR_CONTIG_RANGE,
 	};
+	struct page *page;
+	unsigned long total_mapped = 0;
+	unsigned long total_migrated = 0;
+	unsigned long total_reclaimed = 0;
 
 	lru_cache_disable();
 
@@ -6882,8 +6913,17 @@ int __alloc_contig_migrate_range(struct compact_control *cc,
 							&cc->migratepages);
 		cc->nr_migratepages -= nr_reclaimed;
 
+		if (trace_mm_alloc_contig_migrate_range_info_enabled()) {
+			total_reclaimed += nr_reclaimed;
+			list_for_each_entry(page, &cc->migratepages, lru)
+				total_mapped += page_mapcount(page);
+		}
+
 		ret = migrate_pages(&cc->migratepages, alloc_migration_target,
 			NULL, (unsigned long)&mtc, cc->mode, MR_CONTIG_RANGE, NULL);
+
+		if (trace_mm_alloc_contig_migrate_range_info_enabled() && !ret)
+			total_migrated += cc->nr_migratepages;
 
 		/*
 		 * On -ENOMEM, migrate_pages() bails out right away. It is pointless
@@ -6898,9 +6938,13 @@ int __alloc_contig_migrate_range(struct compact_control *cc,
 		if (!(cc->gfp_mask & __GFP_NOWARN) && ret == -EBUSY)
 			alloc_contig_dump_pages(&cc->migratepages);
 		putback_movable_pages(&cc->migratepages);
-		return ret;
 	}
-	return 0;
+
+	trace_mm_alloc_contig_migrate_range_info(start, end, migratetype,
+						 total_migrated,
+						 total_reclaimed,
+						 total_mapped);
+	return (ret < 0) ? ret : 0;
 }
 
 /**
@@ -6979,7 +7023,7 @@ int alloc_contig_range_noprof(unsigned long start, unsigned long end,
 	 * allocated.  So, if we fall through be sure to clear ret so that
 	 * -EBUSY is not accidentally used or returned to caller.
 	 */
-	ret = __alloc_contig_migrate_range(&cc, start, end);
+	ret = __alloc_contig_migrate_range(&cc, start, end, migratetype);
 	if (ret && ret != -EBUSY)
 		goto done;
 

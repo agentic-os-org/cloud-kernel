@@ -7,7 +7,7 @@
 
 #define NR_NODE_MEMBLKS		(MAX_NUMNODES * 2)
 
-void __init numa_set_distance(int from, int to, int distance);
+void numa_set_distance(int from, int to, int distance);
 void __init numa_reset_distance(void);
 
 struct numa_memblk {
