@@ -56,6 +56,8 @@ struct yhgch_drm_private {
 
 	/* hw cursor */
 	struct yhgch_cursor cursor;
+
+	bool is_5c01_device;
 };
 
 #define to_yhgch_framebuffer(x) container_of(x, struct yhgch_framebuffer, fb)
@@ -81,6 +83,7 @@ int yhgch_gem_create(struct drm_device *dev, u32 size, bool iskernel,
 
 int yhgch_dumb_create(struct drm_file *file, struct drm_device *dev,
 		       struct drm_mode_create_dumb *args);
+void yhgch_ttm_enable_5c01_io_mem_reserve(struct drm_device *dev);
 
 extern const struct drm_mode_config_funcs yhgch_mode_funcs;
 
