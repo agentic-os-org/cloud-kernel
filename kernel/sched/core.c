@@ -443,11 +443,12 @@ static void __sched_core_flip(bool enabled)
 
 		sched_core_lock(cpu, &flags);
 
-		for_each_cpu(t, smt_mask)
+		for_each_cpu(t, smt_mask) {
 			cpu_rq(t)->core_enabled = enabled;
+			cpu_rq(t)->core_sibidle_start_task = 0;
+		}
 
 		cpu_rq(cpu)->core->core_sibidle_start = 0;
-		cpu_rq(cpu)->core->core_sibidle_start_task = 0;
 
 		sched_core_unlock(cpu, &flags);
 
@@ -4915,15 +4916,21 @@ fire_sched_out_preempt_notifiers(struct task_struct *curr,
 #endif /* !CONFIG_PREEMPT_NOTIFIERS */
 
 #ifdef CONFIG_SCHED_ACPU
+static DEFINE_MUTEX(acpu_mutex);
+
 static void acpu_enable(void)
 {
 	int i;
 
 	for_each_possible_cpu(i) {
 		struct rq *rq = cpu_rq(i);
+		struct rq_flags rf;
 
-		/* It may be not that accurate, but useful enough. */
-		rq->last_acpu_update_time = rq->clock;
+		rq_lock_irqsave(rq, &rf);
+		update_rq_clock(rq);
+		rq->last_acpu_update_time = rq_clock(rq);
+		rq->last_acpu_update_time_task = rq_clock_task(rq);
+		rq_unlock_irqrestore(rq, &rf);
 	}
 	static_branch_enable(&acpu_enabled);
 }
@@ -4940,11 +4947,7 @@ static int sched_acpu_enable_handler(const struct ctl_table *table, int write,
 	int ret;
 	unsigned int old, new;
 
-	if (!write) {
-		ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
-		return ret;
-	}
-
+	mutex_lock(&acpu_mutex);
 	old = sysctl_sched_acpu_enabled;
 	ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
 	new = sysctl_sched_acpu_enabled;
@@ -4954,6 +4957,7 @@ static int sched_acpu_enable_handler(const struct ctl_table *table, int write,
 		else
 			acpu_disable();
 	}
+	mutex_unlock(&acpu_mutex);
 
 	return ret;
 }
@@ -4964,8 +4968,9 @@ static void update_acpu(struct rq *rq, struct task_struct *prev, struct task_str
 	const struct cpumask *smt_mask = cpu_smt_mask(cpu);
 	u64 now = rq_clock(rq);
 	u64 now_task = rq_clock_task(rq);
-	u64 sibidle_sum, sibidle_task_sum, last_update_time, last_update_time_task;
-	s64 delta, delta_task, last, last_task;
+	u64 sibidle_sum, last_update_time, elapsed, elapsed_task;
+	u64 delta_task = 0;
+	s64 delta, last;
 	int i;
 
 	if (!static_branch_likely(&acpu_enabled) || !schedstat_enabled())
@@ -4976,14 +4981,15 @@ static void update_acpu(struct rq *rq, struct task_struct *prev, struct task_str
 	 * time in function __sched_core_account_sibidle().
 	 */
 #ifdef CONFIG_SCHED_CORE
-	if (rq->core->core_sibidle_count)
+	if (sched_core_enabled(rq) && rq->core->core_sibidle_count)
 		goto out;
 #endif
 
 	/* Update idle sum and busy sum for current rq. */
-	delta = now - rq->last_acpu_update_time;
+	elapsed = now - rq->last_acpu_update_time;
+	elapsed_task = now_task - rq->last_acpu_update_time_task;
 	if (prev == rq->idle)
-		rq->acpu_idle_sum += delta;
+		rq->acpu_idle_sum += elapsed;
 
 	/*
 	 * Be carefule, smt_mask maybe NULL.
@@ -5001,27 +5007,17 @@ static void update_acpu(struct rq *rq, struct task_struct *prev, struct task_str
 				     rq_i->last_acpu_update_time);
 			last_update_time = last >= 0 ? rq->last_acpu_update_time :
 						       rq_i->last_acpu_update_time;
-			last_task = (s64)(rq->last_acpu_update_time_task -
-				     rq_i->last_acpu_update_time_task);
-			last_update_time_task = last_task >= 0 ?
-						rq->last_acpu_update_time_task :
-						rq_i->last_acpu_update_time_task;
 			/*
 			 * Sibling may update acpu at the same time, and it's
 			 * timestamp may be newer than this rq.
 			 */
 			delta = now - last_update_time;
 			delta = delta > 0 ? delta : 0;
-			delta_task = now_task - last_update_time_task;
-			delta_task = delta_task > 0 ? delta_task : 0;
 
 			/* Add the delta to improve accuracy. */
 			sibidle_sum = last >= 0 ? rq->sibidle_sum : rq_i->acpu_idle_sum;
-			sibidle_task_sum = last_task >= 0 ? rq->sibidle_task_sum :
-							    rq_i->acpu_idle_sum;
 			if (curr_i == rq_i->idle) {
 				sibidle_sum += delta;
-				sibidle_task_sum += delta_task;
 			}
 		}
 	}
@@ -5029,13 +5025,14 @@ static void update_acpu(struct rq *rq, struct task_struct *prev, struct task_str
 	if (prev != rq->idle) {
 		delta = sibidle_sum - rq->sibidle_sum;
 		delta = delta > 0 ? delta : 0;
-		delta_task = sibidle_task_sum - rq->sibidle_task_sum;
-		delta_task = delta_task > 0 ? delta_task : 0;
-		__account_sibidle_time(prev, delta, delta_task, false);
+		/* TASK clocks are CPU-local; estimate overlap within this rq's interval. */
+		if (elapsed)
+			delta_task = mul_u64_u64_div_u64(min_t(u64, delta, elapsed),
+						       elapsed_task, elapsed);
+		__account_sibidle_time(prev, delta, delta_task, 0, 0);
 	}
 
 	rq->sibidle_sum = sibidle_sum;
-	rq->sibidle_task_sum = sibidle_task_sum;
 out:
 	rq->last_acpu_update_time = now;
 	rq->last_acpu_update_time_task = now_task;
@@ -6344,8 +6341,11 @@ restart_multi:
 
 	if (schedstat_enabled() && rq->core->core_sibidle_count) {
 		rq->core->core_sibidle_start = rq_clock(rq->core);
-		rq->core->core_sibidle_start_task = rq_clock_task(rq->core);
 		rq->core->core_sibidle_occupation = occ;
+		for_each_cpu(i, smt_mask) {
+			rq_i = cpu_rq(i);
+			rq_i->core_sibidle_start_task = rq_clock_task(rq_i);
+		}
 	}
 
 	rq->core->core_pick_seq = rq->core->core_task_seq;
@@ -10141,6 +10141,8 @@ static int cpu_idle_write_s64(struct cgroup_subsys_state *css,
 #endif /* CONFIG_GROUP_SCHED_WEIGHT */
 
 #if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
+static DEFINE_MUTEX(ht_ratio_mutex);
+
 static int cpu_ht_ratio_write(struct cgroup_subsys_state *css,
 			      struct cftype *cftype, u64 ht_ratio)
 {
@@ -10148,17 +10150,19 @@ static int cpu_ht_ratio_write(struct cgroup_subsys_state *css,
 	int cpu;
 
 	if (ht_ratio < 100 || ht_ratio > 200)
-		return -1;
+		return -EINVAL;
 
 	if (tg == &root_task_group)
-		return -1;
+		return -EPERM;
 
-	tg->ht_ratio = ht_ratio;
-	for_each_online_cpu(cpu) {
+	mutex_lock(&ht_ratio_mutex);
+	WRITE_ONCE(tg->ht_ratio, ht_ratio);
+	for_each_possible_cpu(cpu) {
 		struct sched_entity *se = tg->se[cpu];
 
-		se->ht_ratio = ht_ratio;
+		WRITE_ONCE(se->ht_ratio, ht_ratio);
 	}
+	mutex_unlock(&ht_ratio_mutex);
 
 	return 0;
 }
@@ -10168,7 +10172,7 @@ static u64 cpu_ht_ratio_read(struct cgroup_subsys_state *css,
 {
 	struct task_group *tg = css_tg(css);
 
-	return tg->ht_ratio;
+	return READ_ONCE(tg->ht_ratio);
 }
 #endif
 

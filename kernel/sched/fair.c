@@ -13641,12 +13641,13 @@ void account_ht_aware_quota(struct task_struct *p, u64 delta)
 	struct cfs_rq *cfs_rq;
 
 	/* We only account ht_aware_quota for cookied task. */
-	if (sched_feat(SCHED_CORE_HT_AWARE_QUOTA) && p->core_cookie) {
+	if (sched_feat(SCHED_CORE_HT_AWARE_QUOTA) && p->core_cookie &&
+	    p->sched_class == &fair_sched_class) {
 		se = &p->se;
 		cfs_rq = task_cfs_rq(p);
 
 		if (se->parent) {
-			ht_ratio = se->parent->ht_ratio;
+			ht_ratio = READ_ONCE(se->parent->ht_ratio);
 			if (ht_ratio > 100 && ht_ratio <= 200) {
 				for_each_sched_entity(se) {
 					cfs_rq = cfs_rq_of(se);

@@ -1495,7 +1495,6 @@ struct rq {
 #ifdef CONFIG_SCHED_ACPU
 	u64			acpu_idle_sum;
 	u64			sibidle_sum;
-	u64			sibidle_task_sum;
 	u64			last_acpu_update_time;
 	u64			last_acpu_update_time_task;
 #endif
