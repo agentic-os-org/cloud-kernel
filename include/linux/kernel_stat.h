@@ -144,7 +144,8 @@ extern void account_process_tick(struct task_struct *, int user);
 extern void account_idle_ticks(unsigned long ticks);
 
 #if defined(CONFIG_SCHED_ACPU) || defined(CONFIG_SCHED_CORE)
-extern void __account_sibidle_time(struct task_struct *tsk, u64 delta, u64 delta_task, bool fi);
+extern void __account_sibidle_time(struct task_struct *tsk, u64 delta, u64 delta_task,
+				 u64 forceidle, u64 forceidle_task);
 #endif
 
 #endif /* _LINUX_KERNEL_STAT_H */
