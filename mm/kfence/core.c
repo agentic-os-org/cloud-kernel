@@ -277,6 +277,29 @@ char *__kfence_pool_early_init;
 struct rb_root kfence_pool_root = RB_ROOT;
 EXPORT_SYMBOL_GPL(kfence_pool_root);
 
+/* Span of all pool areas; empty pool -> min > max so the range test fails. */
+unsigned long kfence_pool_span_min = ULONG_MAX;
+unsigned long kfence_pool_span_max;
+EXPORT_SYMBOL_GPL(kfence_pool_span_min);
+EXPORT_SYMBOL_GPL(kfence_pool_span_max);
+
+static void kfence_update_pool_span(void)
+{
+	struct rb_node *cur;
+	struct kfence_pool_area *kpa;
+
+	kfence_pool_span_min = ULONG_MAX;
+	kfence_pool_span_max = 0;
+	for (cur = rb_first(&kfence_pool_root); cur; cur = rb_next(cur)) {
+		kpa = kfence_rbentry(cur);
+		kfence_pool_span_min = min(kfence_pool_span_min,
+					   (unsigned long)kpa->addr);
+		kfence_pool_span_max = max(kfence_pool_span_max,
+					   (unsigned long)kpa->addr +
+					   kpa->pool_size);
+	}
+}
+
 /* Freelist with available objects. */
 struct kfence_freelist_node {
 	struct list_head freelist;
@@ -1234,6 +1257,7 @@ static bool __init kfence_init_pool_area(int node, int area)
 		goto fail;
 
 	rb_add(&kpa->rb_node, &kfence_pool_root, kfence_rb_less);
+	kfence_update_pool_span();
 	__kfence_pool_area[index] = NULL;
 	kfence_num_objects_stat[node].allocated += nr_objects;
 
@@ -1378,6 +1402,8 @@ static int kfence_update_pool_root(void *info)
 		rb_add(&kpa->rb_node, &kfence_pool_root, kfence_rb_less);
 		list_del(&kpa->list);
 	}
+
+	kfence_update_pool_span();
 
 	return 0;
 }
