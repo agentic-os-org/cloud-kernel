@@ -674,7 +674,15 @@ int machine__resolve(struct machine *machine, struct addr_location *al,
 	if (al->cpu >= 0) {
 		struct perf_env *env = machine->env;
 
-		if (env && env->cpu)
+		/*
+		 * Bounds-check al->cpu against the topology map: without
+		 * this a sample with a CPU id beyond the map reads past
+		 * env->cpu.  The truncation issue the upstream commit
+		 * describes does not exist here (socket_id is a full int
+		 * in this tree), only the bounds check applies.
+		 */
+		if (env && env->cpu &&
+		    al->cpu < env->nr_cpus_avail)
 			al->socket = env->cpu[al->cpu].socket_id;
 	}
 
