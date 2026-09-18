@@ -26,7 +26,7 @@ static int __init irq_managed_setup(char *str)
 		return 0;
 	}
 
-	if (managed_irqs_per_node * num_possible_nodes() > num_possible_cpus()) {
+	if ((u64)managed_irqs_per_node * num_possible_nodes() > num_possible_cpus()) {
 		managed_irqs_per_node = num_possible_cpus() / num_possible_nodes();
 		pr_warn("managed_irqs_per_node= cannot be larger than %u\n",
 			managed_irqs_per_node);
