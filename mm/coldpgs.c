@@ -864,7 +864,10 @@ static unsigned long reclaim_coldpgs_from_list(struct mem_cgroup *memcg,
 		if (!folio_trylock(folio))
 			goto keep;
 
-		VM_BUG_ON_FOLIO(folio_test_active(folio), folio);
+		/*
+		 * coldpgs reclaims directly from the active LRU, so unlike
+		 * vmscan the active flag is expected here.
+		 */
 
 		nr_pages = folio_nr_pages(folio);
 		is_pagecache = folio_is_file_lru(folio) ? true : false;
