@@ -15,6 +15,8 @@
 #include "svm.h"
 #include "processor.h"
 
+extern struct gpr64_regs guest_regs;
+
 struct svm_test_data {
 	/* VMCB */
 	struct vmcb *vmcb; /* gva */
