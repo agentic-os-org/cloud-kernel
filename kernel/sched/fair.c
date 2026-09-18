@@ -2896,6 +2896,7 @@ static void update_curr(struct cfs_rq *cfs_rq)
 	struct sched_entity *curr = cfs_rq->curr;
 	u64 now = rq_clock_task(rq_of(cfs_rq));
 	u64 delta_exec, delta_fair;
+	u64 delta_stat;
 
 	if (unlikely(!curr))
 		return;
@@ -2909,7 +2910,46 @@ static void update_curr(struct cfs_rq *cfs_rq)
 	schedstat_set(curr->statistics.exec_max,
 		      max(delta_exec, curr->statistics.exec_max));
 
-	curr->sum_exec_runtime += delta_exec;
+	/*
+	 * delta_stat feeds the statistics facing state (sum_exec_runtime
+	 * and its group aggregation) and therefore includes steal time
+	 * under refine_time_statistics: tasks keep reporting 100% CPU
+	 * despite hypervisor preemption, consistently with the cputime
+	 * side which does not subtract steal from task time either.
+	 *
+	 * The scheduler facing consumers below (vruntime, cfs bandwidth
+	 * accounting) keep consuming the steal-depleted delta_exec: the
+	 * stolen time never burns cfs quota nor advances vruntime.
+	 */
+	delta_stat = delta_exec;
+#ifdef CONFIG_PARAVIRT_TIME_ACCOUNTING
+	if (refine_time_statistics) {
+		struct rq *rq = rq_of(cfs_rq);
+		u64 steal_stat = rq->prev_steal_time_rq - cfs_rq->prev_steal_stat;
+
+		cfs_rq->prev_steal_stat = rq->prev_steal_time_rq;
+#ifdef CONFIG_CFS_BANDWIDTH
+		/*
+		 * Repay stolen time at the rate this cfs_rq runs at under
+		 * its own quota (running / (running + throttled)): during
+		 * a hypervisor freeze the entity would have spent part of
+		 * the stolen window throttled anyway, so repaying in full
+		 * would push task CPU beyond the quota expectation.
+		 *
+		 * stat_running is accumulated from the very first
+		 * update_curr() call (delta_exec based, rq_clock_task): a
+		 * throttled cfs_rq has no curr and is never accounted here,
+		 * and stolen windows add nothing — so the ratio is correct
+		 * from the first unthrottle on, with no cold-start window
+		 * where stat_running would still read as zero.
+		 */
+		cfs_rq->stat_running += delta_exec;
+		steal_stat = steal_stat * cfs_rq->stat_scale >> 16;
+#endif
+		delta_stat += steal_stat;
+	}
+#endif
+	curr->sum_exec_runtime += delta_stat;
 	schedstat_add(cfs_rq->exec_clock, delta_exec);
 
 	delta_fair = calc_delta_fair(delta_exec, curr);
@@ -2923,8 +2963,8 @@ static void update_curr(struct cfs_rq *cfs_rq)
 		struct task_struct *curtask = task_of(curr);
 
 		trace_sched_stat_runtime(curtask, delta_exec, curr->vruntime);
-		cgroup_account_cputime(curtask, delta_exec);
-		account_group_exec_runtime(curtask, delta_exec);
+		cgroup_account_cputime(curtask, delta_stat);
+		account_group_exec_runtime(curtask, delta_stat);
 		id_update_exec(rq_of(cfs_rq), delta_exec);
 	}
 
@@ -3167,6 +3207,16 @@ update_stats_curr_start(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	 * We are starting a new run period:
 	 */
 	se->exec_start = rq_clock_task(rq_of(cfs_rq));
+#ifdef CONFIG_PARAVIRT_TIME_ACCOUNTING
+	/*
+	 * Steal time that accumulated while nobody was current (e.g. while
+	 * the CPU was idle) belongs to the idle statistics, not to the
+	 * task being scheduled in: drop it from the compensation watermark
+	 * so that update_curr() does not give it back to this task.
+	 */
+	if (refine_time_statistics)
+		cfs_rq->prev_steal_stat = rq_of(cfs_rq)->prev_steal_time_rq;
+#endif
 }
 
 /**************************************************
@@ -7608,6 +7658,17 @@ static bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
 	struct sched_entity *se;
 	long dequeue = 1;
 
+#ifdef CONFIG_PARAVIRT_TIME_ACCOUNTING
+	/*
+	 * Mark the start of the throttled window for the
+	 * refine_time_statistics repayment scale. The running duration
+	 * itself is accumulated by update_curr() from the very first
+	 * call on, so there is nothing to settle here.
+	 */
+	if (refine_time_statistics)
+		cfs_rq->stat_ts = rq_clock_task(rq);
+#endif
+
 	raw_spin_lock(&cfs_b->lock);
 	/* This will start the period timer if necessary */
 	if (__assign_cfs_rq_runtime(cfs_b, cfs_rq, 1)) {
@@ -7644,6 +7705,30 @@ static bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
 	return true;
 }
 
+/*
+ * Recompute the refine_time_statistics repayment scale from the
+ * accumulated running/throttled durations. Halve the accumulators
+ * until the window shrinks back to at most a second: the ratio then
+ * tracks recent quota pressure instead of a lifetime average, and
+ * stat_running is kept small enough that the shift below cannot
+ * overflow (a cfs_rq that stays runnable for days between throttles
+ * would need more than a single halving).
+ */
+#ifdef CONFIG_PARAVIRT_TIME_ACCOUNTING
+static void cfs_rq_stat_scale_update(struct cfs_rq *cfs_rq)
+{
+	u64 total = cfs_rq->stat_running + cfs_rq->stat_throttled;
+
+	while (total > NSEC_PER_SEC) {
+		cfs_rq->stat_running >>= 1;
+		cfs_rq->stat_throttled >>= 1;
+		total >>= 1;
+	}
+	cfs_rq->stat_scale = cfs_rq->stat_running ?
+		div64_u64(cfs_rq->stat_running << 16, total) : (1ULL << 16);
+}
+#endif
+
 void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
 {
 	struct task_group *tg = cfs_rq->tg;
@@ -7668,6 +7753,16 @@ void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
 	cfs_rq->throttled = 0;
 
 	update_rq_clock(rq);
+
+#ifdef CONFIG_PARAVIRT_TIME_ACCOUNTING
+	if (refine_time_statistics && cfs_rq->stat_ts) {
+		u64 now = rq_clock_task(rq);
+
+		cfs_rq->stat_throttled += now - cfs_rq->stat_ts;
+		cfs_rq->stat_ts = now;
+		cfs_rq_stat_scale_update(cfs_rq);
+	}
+#endif
 
 	raw_spin_lock(&cfs_b->lock);
 	cfs_b->throttled_time += rq_clock(rq) - cfs_rq->throttled_clock;
@@ -14663,6 +14758,10 @@ void init_cfs_rq(struct cfs_rq *cfs_rq)
 #endif
 #ifdef CONFIG_SMP
 	raw_spin_lock_init(&cfs_rq->removed.lock);
+#endif
+#ifdef CONFIG_CFS_BANDWIDTH
+	/* full repayment until throttle pressure is observed */
+	cfs_rq->stat_scale = 1ULL << 16;
 #endif
 	identity_init_cfs_rq(cfs_rq);
 }
