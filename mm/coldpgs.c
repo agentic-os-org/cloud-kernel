@@ -999,16 +999,20 @@ static unsigned long reclaim_coldpgs_from_list(struct mem_cgroup *memcg,
 		__folio_clear_active(folio);
 
 free_it:
+		/*
+		 * A large folio is freed in place below, so read
+		 * folio-dependent stats (kidled) while @folio is still valid.
+		 */
+		nr_reclaimed += nr_pages;
+		kidled_mem_cgroup_move_stats(memcg, NULL, folio, nr_pages);
+		if (is_pagecache)
+			nr_pagecache_dropped += nr_pages;
+
 		if (unlikely(folio_test_large(folio))) {
 			my_mem_cgroup_uncharge(folio);
 			my_destroy_large_folio(folio);
 		} else
 			list_add(&folio->lru, &free_folios);
-
-		nr_reclaimed += nr_pages;
-		kidled_mem_cgroup_move_stats(memcg, NULL, folio, nr_pages);
-		if (is_pagecache)
-			nr_pagecache_dropped += nr_pages;
 
 		continue;
 
