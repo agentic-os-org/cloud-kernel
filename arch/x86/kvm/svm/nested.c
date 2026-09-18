@@ -33,11 +33,43 @@
 
 #define CC KVM_NESTED_VMENTER_CONSISTENCY_CHECK
 
+static void nested_svm_invalidate_insn_bytes(struct vmcb *vmcb)
+{
+	vmcb->control.insn_len = 0;
+}
+
+static bool nested_svm_vmexit_supports_insn_bytes(const struct vmcb *vmcb)
+{
+	u64 exit_code = vmcb->control.exit_code;
+
+	if (exit_code != SVM_EXIT_NPF &&
+	    exit_code != SVM_EXIT_EXCP_BASE + PF_VECTOR)
+		return false;
+
+	return !(vmcb->control.exit_info_1 & PFERR_FETCH_MASK);
+}
+
+static void nested_svm_set_vmcb02_insn_bytes_valid(struct vcpu_svm *svm)
+{
+	svm->nested.vmcb02_insn_bytes_valid =
+		cpu_feature_enabled(X86_FEATURE_DECODEASSISTS) &&
+		nested_svm_vmexit_supports_insn_bytes(svm->nested.vmcb02.ptr);
+}
+
+static void nested_svm_invalidate_vmcb02_insn_bytes(struct vcpu_svm *svm)
+{
+	nested_svm_invalidate_insn_bytes(svm->nested.vmcb02.ptr);
+	svm->nested.vmcb02_insn_bytes_valid = false;
+}
+
 static void nested_svm_inject_npf_exit(struct kvm_vcpu *vcpu,
 				       struct x86_exception *fault)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 	struct vmcb *vmcb = svm->vmcb;
+	bool from_hardware =
+		vmcb->control.exit_code == SVM_EXIT_NPF ||
+		vmcb->control.exit_code == SVM_EXIT_EXCP_BASE + PF_VECTOR;
 
 	if (vmcb->control.exit_code != SVM_EXIT_NPF) {
 		/*
@@ -53,6 +85,10 @@ static void nested_svm_inject_npf_exit(struct kvm_vcpu *vcpu,
 	vmcb->control.exit_info_1 &= ~0xffffffffULL;
 	vmcb->control.exit_info_1 |= fault->error_code;
 
+	if (from_hardware)
+		nested_svm_set_vmcb02_insn_bytes_valid(svm);
+	else
+		nested_svm_invalidate_vmcb02_insn_bytes(svm);
 	nested_svm_vmexit(svm);
 }
 
@@ -777,6 +813,7 @@ static void nested_vmcb02_prepare_control(struct vcpu_svm *svm,
 	 * exit_int_info, exit_int_info_err, next_rip, insn_len, insn_bytes.
 	 */
 
+	nested_svm_invalidate_vmcb02_insn_bytes(svm);
 	if (guest_cpu_cap_has(vcpu, X86_FEATURE_VGIF) &&
 	    (svm->nested.ctl.int_ctl & V_GIF_ENABLE_MASK))
 		int_ctl_vmcb12_bits |= (V_GIF_MASK | V_GIF_ENABLE_MASK);
@@ -1477,8 +1514,10 @@ int nested_svm_exit_handled(struct vcpu_svm *svm)
 
 	vmexit = nested_svm_intercept(svm);
 
-	if (vmexit == NESTED_EXIT_DONE)
+	if (vmexit == NESTED_EXIT_DONE) {
+		nested_svm_set_vmcb02_insn_bytes_valid(svm);
 		nested_svm_vmexit(svm);
+	}
 
 	return vmexit;
 }
