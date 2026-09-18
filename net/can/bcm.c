@@ -658,10 +658,6 @@ static void bcm_rx_handler(struct sk_buff *skb, void *data)
 	/* disable timeout */
 	hrtimer_cancel(&op->timer);
 
-	/* save rx timestamp */
-	op->rx_stamp = skb->tstamp;
-	/* save originator for recvfrom() */
-	op->rx_ifindex = skb->dev->ifindex;
 	/* update statistics */
 	op->frames_abs++;
 
@@ -670,6 +666,13 @@ static void bcm_rx_handler(struct sk_buff *skb, void *data)
 		bcm_can_tx(op);
 		return;
 	}
+
+	/* save rx timestamp and originator for recvfrom().
+	 * Placed after the RTR early-return so that RTR-request frames
+	 * (which never reach bcm_send_to_user()) don't update these fields.
+	 */
+	op->rx_stamp = skb->tstamp;
+	op->rx_ifindex = skb->dev->ifindex;
 
 	if (op->flags & RX_FILTER_ID) {
 		/* the easiest case */
@@ -995,7 +998,7 @@ static int bcm_tx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 		hrtimer_init(&op->thrtimer, CLOCK_MONOTONIC,
 			     HRTIMER_MODE_REL_SOFT);
 
-		/* add this bcm_op to the list of the tx_ops */
+		/* add this bcm_op to the list of tx_ops */
 		list_add(&op->list, &bo->tx_ops);
 
 	} /* if ((op = bcm_find_op(&bo->tx_ops, msg_head->can_id, ifindex))) */
@@ -1171,7 +1174,7 @@ static int bcm_rx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 			     HRTIMER_MODE_REL_SOFT);
 		op->thrtimer.function = bcm_rx_thr_handler;
 
-		/* add this bcm_op to the list of the rx_ops */
+		/* add this bcm_op to the list of rx_ops */
 		list_add(&op->list, &bo->rx_ops);
 
 		/* call can_rx_register() */
@@ -1191,7 +1194,7 @@ static int bcm_rx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 		/*
 		 * funny feature in RX(!)_SETUP only for RTR-mode:
 		 * copy can_id into frame BUT without RTR-flag to
-		 * prevent a full-load-loopback-test ... ;-]
+		 * prevent a full-load-loopback-test ... ;-)
 		 */
 		if ((op->flags & TX_CP_CAN_ID) ||
 		    (frame0->can_id == op->can_id))
