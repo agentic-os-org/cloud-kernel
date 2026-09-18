@@ -269,6 +269,17 @@ void __account_sibidle_time(struct task_struct *p, u64 delta, u64 delta_task, bo
 }
 #endif
 
+#ifdef CONFIG_PARAVIRT
+bool __read_mostly refine_time_statistics;
+
+static int __init refine_time_statistics_setup(char *__unused)
+{
+	refine_time_statistics = true;
+	return 1;
+}
+__setup("refine_time_statistics", refine_time_statistics_setup);
+#endif
+
 /*
  * When a guest is interrupted for a longer amount of time, missed clock
  * ticks are not redelivered later. Due to that, this function may on
@@ -277,7 +288,8 @@ void __account_sibidle_time(struct task_struct *p, u64 delta, u64 delta_task, bo
 static __always_inline u64 steal_account_process_time(u64 maxtime)
 {
 #ifdef CONFIG_PARAVIRT
-	if (static_key_false(&paravirt_steal_enabled)) {
+	if (static_key_false(&paravirt_steal_enabled) &&
+	    !refine_time_statistics) {
 		u64 steal;
 
 		steal = paravirt_steal_clock(smp_processor_id());
