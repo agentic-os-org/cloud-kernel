@@ -11,6 +11,7 @@
 
 unsigned int __read_mostly managed_irqs_per_node;
 
+static DEFINE_SPINLOCK(managed_irqs_free_lock);
 static struct cpumask managed_irqs_free_cpumsk[MAX_NUMNODES] __cacheline_aligned_in_smp = {
 	[0 ... MAX_NUMNODES-1] = {CPU_BITS_ALL}
 };
@@ -277,13 +278,18 @@ static void __irq_prepare_affinity_mask(struct cpumask *premask,
 
 	get_nodes_in_cpumask(node_to_cpumask, cpu_present_mask, &nodemsk);
 
+	spin_lock(&managed_irqs_free_lock);
 	for_each_node_mask(n, nodemsk) {
 		/*
-		 * Try to allocate manage_irqs_per_node CPU bits on each numa
+		 * Try to allocate managed_irqs_per_node CPU bits on each numa
 		 * node. If an insufficient number can be allocated, the free
 		 * CPU bits will be reset to CPU_BITS_ALL for the next
-		 * allocation. This design is considered for lockless
-		 * and load balancing.
+		 * allocation.
+		 *
+		 * The pool is read-modify-write state shared by all concurrent
+		 * irq_create_affinity_masks() callers (get_online_cpus() only
+		 * stabilizes the CPU masks, it does not serialize probes), so
+		 * it must be updated under the lock.
 		 */
 		cpumask_and(&managed_irqs_free_cpumsk[n],
 				&managed_irqs_free_cpumsk[n], cpu_present_mask);
@@ -300,6 +306,7 @@ static void __irq_prepare_affinity_mask(struct cpumask *premask,
 		irq_spread_init_one(premask,
 				&managed_irqs_free_cpumsk[n], managed_irqs_per_node);
 	}
+	spin_unlock(&managed_irqs_free_lock);
 }
 
 static int __irq_build_affinity_masks(unsigned int startvec,
