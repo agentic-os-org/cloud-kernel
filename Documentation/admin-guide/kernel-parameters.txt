@@ -4777,6 +4777,24 @@
 	reclaim_pt	[KNL]
 			Enable page table reclaim when calling MADV_DONTNEED.
 
+	refine_time_statistics [X86,PV_OPS]
+			Refined time statistics specifically for secure
+			container usecases. Steal time is neither reported in
+			the dedicated steal bucket nor subtracted from the
+			tasks runtime: it follows the interrupted context into
+			the user/system/idle/iowait buckets so that tasks keep
+			showing their expected CPU usage in tools such as top,
+			despite hypervisor preemption. Stolen time is repaid
+			to the statistics at the rate the task runs at under
+			its own quota (running / (running + throttled)), so a
+			quota limited task shows its quota expectation (e.g.
+			350ms/100ms per 4 CPUs -> 87.5%) rather than being
+			inflated by the repaid freezes; unrestricted tasks
+			still show 100%. The scheduler facing accounting
+			(rq_clock_task based: cfs bandwidth quota, vruntime,
+			...) still excludes steal time so that quota is never
+			consumed by stolen time.
+
 	refscale.holdoff= [KNL]
 			Set test-start holdoff period.  The purpose of
 			this parameter is to delay the start of the

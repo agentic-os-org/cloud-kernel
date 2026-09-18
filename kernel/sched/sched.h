@@ -956,8 +956,38 @@ struct cfs_rq {
 	int			throttle_count;
 	struct list_head	throttled_list;
 	struct list_head        throttled_limbo_list;
+
+	/*
+	 * refine_time_statistics: steal repayment scale. Accumulated
+	 * running/throttled durations (rq_clock_task based, steal
+	 * excluded) give the ratio at which this cfs_rq runs under its
+	 * own quota. Stolen time is repaid to the statistics facing
+	 * sum_exec_runtime at that ratio, so that reported task CPU
+	 * never exceeds the quota expectation (e.g. a 350ms/100ms
+	 * container shows 87.5% per CPU instead of being inflated by
+	 * hypervisor freezes). Q16 fixed point: 1<<16 == repay in full.
+	 */
+	u64			stat_running;
+	u64			stat_throttled;
+	u64			stat_ts;
+	u64			stat_scale;
 #endif /* CONFIG_CFS_BANDWIDTH */
 #endif /* CONFIG_FAIR_GROUP_SCHED */
+
+#ifdef CONFIG_PARAVIRT_TIME_ACCOUNTING
+	/*
+	 * Watermark of rq->prev_steal_time_rq up to which the steal time has
+	 * been given back to this cfs_rq's curr statistics (sum_exec_runtime)
+	 * under refine_time_statistics. Kept per-cfs_rq (not per-rq) so that
+	 * every level of the group hierarchy repays the steal into its own
+	 * curr's sum_exec_runtime; otherwise the leaf (task) level would
+	 * consume the shared per-rq watermark first and the group level se
+	 * would stay steal-depleted, making the rich-container /proc/stat
+	 * steal residual (elapse - idle - se->sum_exec_runtime - ineff)
+	 * report the already repaid steal a second time. See update_curr().
+	 */
+	u64			prev_steal_stat;
+#endif
 
 	unsigned long		nr_uninterruptible;
 
@@ -3721,6 +3751,10 @@ extern bool need_ht_stable(void);
 #endif
 extern void swake_up_all_locked(struct swait_queue_head *q);
 extern void __prepare_to_swait(struct swait_queue_head *q, struct swait_queue *wait);
+
+#ifdef CONFIG_PARAVIRT
+extern struct static_key_false refine_time_statistics;
+#endif
 
 #ifdef CONFIG_PREEMPT_DYNAMIC
 extern int preempt_dynamic_mode;
