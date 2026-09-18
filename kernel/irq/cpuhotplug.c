@@ -12,6 +12,7 @@
 #include <linux/interrupt.h>
 #include <linux/ratelimit.h>
 #include <linux/irq.h>
+#include <linux/cpu.h>
 #include <linux/sched/isolation.h>
 
 #include "internals.h"
@@ -270,6 +271,17 @@ int irq_affinity_offline_cpu(unsigned int cpu)
 	int ret = 0;
 
 	if (!managed_irqs_per_node)
+		return 0;
+
+	/*
+	 * Suspend and hibernation take down all non-boot CPUs with tasks
+	 * frozen, and device interrupts are usually not freed for that
+	 * (e.g. virtio-pci keeps its vq vectors across freeze). Refusing
+	 * the offline would fail the whole suspend cycle. Let the managed
+	 * interrupts go into managed shutdown instead; they are restarted
+	 * by irq_affinity_online_cpu() once the CPUs come back.
+	 */
+	if (cpuhp_tasks_frozen)
 		return 0;
 
 	irq_lock_sparse();
