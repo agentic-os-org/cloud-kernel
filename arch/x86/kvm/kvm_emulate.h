@@ -45,6 +45,7 @@ struct x86_instruction_info {
 	u8  src_bytes;          /* size of source operand               */
 	u8  dst_bytes;          /* size of destination operand          */
 	u8  ad_bytes;           /* size of src/dst address              */
+	u64 invlpg_linear_addr; /* linear address, if INVLPG */
 	u64 next_rip;           /* rip following the instruction        */
 };
 
