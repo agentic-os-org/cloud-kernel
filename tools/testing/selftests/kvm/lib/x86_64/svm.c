@@ -12,6 +12,7 @@
 #include "../kvm_util_internal.h"
 #include "processor.h"
 #include "svm_util.h"
+#include <stddef.h>
 
 struct gpr64_regs guest_regs;
 u64 rflags;
@@ -111,53 +112,78 @@ void generic_svm_setup(struct svm_test_data *svm, void *guest_rip, void *guest_r
 	vmcb->save.rip = (u64)guest_rip;
 	vmcb->save.rsp = (u64)guest_rsp;
 	guest_regs.rdi = (u64)svm;
+	guest_regs.rax = 0;
+	rflags = X86_EFLAGS_FIXED;
 }
 
 /*
- * save/restore 64-bit general registers except rax, rip, rsp
- * which are directly handed through the VMCB guest processor state
- */
-#define SAVE_GPR_C				\
-	"xchg %%rbx, guest_regs+0x20\n\t"	\
-	"xchg %%rcx, guest_regs+0x10\n\t"	\
-	"xchg %%rdx, guest_regs+0x18\n\t"	\
-	"xchg %%rbp, guest_regs+0x30\n\t"	\
-	"xchg %%rsi, guest_regs+0x38\n\t"	\
-	"xchg %%rdi, guest_regs+0x40\n\t"	\
-	"xchg %%r8,  guest_regs+0x48\n\t"	\
-	"xchg %%r9,  guest_regs+0x50\n\t"	\
-	"xchg %%r10, guest_regs+0x58\n\t"	\
-	"xchg %%r11, guest_regs+0x60\n\t"	\
-	"xchg %%r12, guest_regs+0x68\n\t"	\
-	"xchg %%r13, guest_regs+0x70\n\t"	\
-	"xchg %%r14, guest_regs+0x78\n\t"	\
-	"xchg %%r15, guest_regs+0x80\n\t"
-
-#define LOAD_GPR_C      SAVE_GPR_C
-
-/*
- * selftests do not use interrupts so we dropped clgi/sti/cli/stgi
- * for now. registers involved in LOAD/SAVE_GPR_C are eventually
- * unmodified so they do not need to be in the clobber list.
+ * VMRUN handles rAX, rIP and rSP through the VMCB.  Exchange the
+ * remaining guest GPRs with their correctly indexed software slots.
+ * Each exchange is repeated after VMEXIT to restore the L1 registers.
  */
 void run_guest(struct vmcb *vmcb, uint64_t vmcb_gpa)
 {
+	_Static_assert(offsetof(struct vmcb, save) == 0x400,
+		       "Unexpected VMCB save-area offset");
+	_Static_assert(offsetof(struct vmcb, save.rflags) == 0x570,
+		       "Unexpected VMCB RFLAGS offset");
+	_Static_assert(offsetof(struct vmcb, save.rax) == 0x5f8,
+		       "Unexpected VMCB RAX offset");
+
+	vmcb->save.rflags = rflags;
+	vmcb->save.rax = guest_regs.rax;
 	asm volatile (
 		"vmload %[vmcb_gpa]\n\t"
-		"mov rflags, %%r15\n\t"	// rflags
-		"mov %%r15, 0x170(%[vmcb])\n\t"
-		"mov guest_regs, %%r15\n\t"	// rax
-		"mov %%r15, 0x1f8(%[vmcb])\n\t"
-		LOAD_GPR_C
+		"xchg %%rbx, guest_regs+%c[off_rbx](%%rip)\n\t"
+		"xchg %%rcx, guest_regs+%c[off_rcx](%%rip)\n\t"
+		"xchg %%rdx, guest_regs+%c[off_rdx](%%rip)\n\t"
+		"xchg %%rbp, guest_regs+%c[off_rbp](%%rip)\n\t"
+		"xchg %%rsi, guest_regs+%c[off_rsi](%%rip)\n\t"
+		"xchg %%rdi, guest_regs+%c[off_rdi](%%rip)\n\t"
+		"xchg %%r8, guest_regs+%c[off_r8](%%rip)\n\t"
+		"xchg %%r9, guest_regs+%c[off_r9](%%rip)\n\t"
+		"xchg %%r10, guest_regs+%c[off_r10](%%rip)\n\t"
+		"xchg %%r11, guest_regs+%c[off_r11](%%rip)\n\t"
+		"xchg %%r12, guest_regs+%c[off_r12](%%rip)\n\t"
+		"xchg %%r13, guest_regs+%c[off_r13](%%rip)\n\t"
+		"xchg %%r14, guest_regs+%c[off_r14](%%rip)\n\t"
+		"xchg %%r15, guest_regs+%c[off_r15](%%rip)\n\t"
 		"vmrun %[vmcb_gpa]\n\t"
-		SAVE_GPR_C
-		"mov 0x170(%[vmcb]), %%r15\n\t"	// rflags
-		"mov %%r15, rflags\n\t"
-		"mov 0x1f8(%[vmcb]), %%r15\n\t"	// rax
-		"mov %%r15, guest_regs\n\t"
+		"xchg %%rbx, guest_regs+%c[off_rbx](%%rip)\n\t"
+		"xchg %%rcx, guest_regs+%c[off_rcx](%%rip)\n\t"
+		"xchg %%rdx, guest_regs+%c[off_rdx](%%rip)\n\t"
+		"xchg %%rbp, guest_regs+%c[off_rbp](%%rip)\n\t"
+		"xchg %%rsi, guest_regs+%c[off_rsi](%%rip)\n\t"
+		"xchg %%rdi, guest_regs+%c[off_rdi](%%rip)\n\t"
+		"xchg %%r8, guest_regs+%c[off_r8](%%rip)\n\t"
+		"xchg %%r9, guest_regs+%c[off_r9](%%rip)\n\t"
+		"xchg %%r10, guest_regs+%c[off_r10](%%rip)\n\t"
+		"xchg %%r11, guest_regs+%c[off_r11](%%rip)\n\t"
+		"xchg %%r12, guest_regs+%c[off_r12](%%rip)\n\t"
+		"xchg %%r13, guest_regs+%c[off_r13](%%rip)\n\t"
+		"xchg %%r14, guest_regs+%c[off_r14](%%rip)\n\t"
+		"xchg %%r15, guest_regs+%c[off_r15](%%rip)\n\t"
 		"vmsave %[vmcb_gpa]\n\t"
-		: : [vmcb] "r" (vmcb), [vmcb_gpa] "a" (vmcb_gpa)
-		: "r15", "memory");
+		: [vmcb_gpa] "+a" (vmcb_gpa)
+		:
+		  [off_rbx] "i" (offsetof(struct gpr64_regs, rbx)),
+		  [off_rcx] "i" (offsetof(struct gpr64_regs, rcx)),
+		  [off_rdx] "i" (offsetof(struct gpr64_regs, rdx)),
+		  [off_rbp] "i" (offsetof(struct gpr64_regs, rbp)),
+		  [off_rsi] "i" (offsetof(struct gpr64_regs, rsi)),
+		  [off_rdi] "i" (offsetof(struct gpr64_regs, rdi)),
+		  [off_r8] "i" (offsetof(struct gpr64_regs, r8)),
+		  [off_r9] "i" (offsetof(struct gpr64_regs, r9)),
+		  [off_r10] "i" (offsetof(struct gpr64_regs, r10)),
+		  [off_r11] "i" (offsetof(struct gpr64_regs, r11)),
+		  [off_r12] "i" (offsetof(struct gpr64_regs, r12)),
+		  [off_r13] "i" (offsetof(struct gpr64_regs, r13)),
+		  [off_r14] "i" (offsetof(struct gpr64_regs, r14)),
+		  [off_r15] "i" (offsetof(struct gpr64_regs, r15))
+		: "memory");
+
+	rflags = vmcb->save.rflags;
+	guest_regs.rax = vmcb->save.rax;
 }
 
 bool nested_svm_supported(void)

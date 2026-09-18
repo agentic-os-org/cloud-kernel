@@ -13,6 +13,9 @@
 #include "svm.h"
 #include "processor.h"
 
+extern struct gpr64_regs guest_regs;
+extern u64 rflags;
+
 #define CPUID_SVM_BIT		2
 #define CPUID_SVM		BIT_ULL(CPUID_SVM_BIT)
 
