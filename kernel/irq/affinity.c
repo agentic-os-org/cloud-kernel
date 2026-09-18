@@ -421,6 +421,17 @@ static int irq_build_affinity_masks(unsigned int startvec, unsigned int numvecs,
 	if (masks[startvec].is_managed && managed_irqs_per_node)
 		__irq_prepare_affinity_mask(npresmsk, node_to_cpumask);
 
+	/*
+	 * The reserved CPUs must be able to serve every vector. If the
+	 * pool is too small, __irq_build_affinity_masks() truncates the
+	 * assignment at the pool size and the leftover vectors end up
+	 * with an empty affinity mask, which makes their activation fail
+	 * with -EINVAL later. Fall back to the full present CPU mask in
+	 * that case; limiting managed interrupts is best effort.
+	 */
+	if (!cpumask_empty(npresmsk) && cpumask_weight(npresmsk) < numvecs)
+		cpumask_clear(npresmsk);
+
 	/* Spread on present CPUs starting from affd->pre_vectors */
 	ret = __irq_build_affinity_masks(curvec, numvecs, firstvec,
 					 node_to_cpumask,
