@@ -72,22 +72,57 @@ static void nested_svm_invalidate_vmcb02_insn_bytes(struct vcpu_svm *svm)
 	svm->nested.vmcb02_insn_bytes_valid = false;
 }
 
+static u8 nested_svm_get_insn_bytes_len(struct kvm_vcpu *vcpu, u8 max_bytes)
+{
+	if (!is_64_bit_mode(vcpu)) {
+		u32 eip = kvm_rip_read(vcpu);
+		u32 limit = to_svm(vcpu)->vmcb->save.cs.limit;
+
+		if (eip > limit)
+			return 0;
+		max_bytes = min_t(u64, max_bytes, (u64)limit - eip + 1);
+	}
+
+	return max_bytes;
+}
+
+static u8 nested_svm_fetch_insn_bytes(struct kvm_vcpu *vcpu, u8 *bytes,
+				      u8 max_bytes)
+{
+	gva_t rip = kvm_get_linear_rip(vcpu);
+
+	max_bytes = nested_svm_get_insn_bytes_len(vcpu, max_bytes);
+
+	return kvm_fetch_guest_virt(vcpu, rip, bytes, max_bytes);
+}
+
 static void nested_svm_update_vmcb12_insn_bytes(struct kvm_vcpu *vcpu,
 						struct vmcb *vmcb12,
 						const struct vmcb *vmcb02)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
+	const u8 max_bytes = sizeof(vmcb12->control.insn_bytes);
 
 	if (!guest_cpuid_has(vcpu, X86_FEATURE_DECODEASSISTS))
 		goto out;
 
-	if (!nested_svm_vmexit_supports_insn_bytes(vmcb02) ||
-	    !svm->nested.vmcb02_insn_bytes_valid) {
+	if (!nested_svm_vmexit_supports_insn_bytes(vmcb02)) {
 		nested_svm_invalidate_insn_bytes(vmcb12);
 		goto out;
 	}
 
-	nested_svm_copy_insn_bytes(vmcb12, vmcb02);
+	if (svm->nested.vmcb02_insn_bytes_valid) {
+		nested_svm_copy_insn_bytes(vmcb12, vmcb02);
+		goto out;
+	}
+
+	if (!sev_guest(vcpu->kvm))
+		vmcb12->control.insn_len =
+			nested_svm_fetch_insn_bytes(vcpu,
+						    vmcb12->control.insn_bytes,
+						    max_bytes);
+	else
+		nested_svm_invalidate_insn_bytes(vmcb12);
 
 out:
 	svm->nested.vmcb02_insn_bytes_valid = false;
@@ -708,6 +743,8 @@ int nested_svm_vmexit(struct vcpu_svm *svm)
 
 	vmcb12 = map.hva;
 
+	nested_svm_update_vmcb12_insn_bytes(&svm->vcpu, vmcb12, vmcb);
+
 	/* Exit Guest-Mode */
 	leave_guest_mode(&svm->vcpu);
 	svm->nested.vmcb12_gpa = 0;
@@ -750,8 +787,6 @@ int nested_svm_vmexit(struct vcpu_svm *svm)
 
 	if (svm->nrips_enabled)
 		vmcb12->control.next_rip  = vmcb->control.next_rip;
-
-	nested_svm_update_vmcb12_insn_bytes(&svm->vcpu, vmcb12, vmcb);
 
 	vmcb12->control.int_ctl           = svm->nested.ctl.int_ctl;
 	vmcb12->control.tlb_ctl           = svm->nested.ctl.tlb_ctl;
