@@ -1400,19 +1400,20 @@ static void reclaim_coldpgs_from_memcg(struct mem_cgroup *memcg,
 			unsigned long nr_slab_size, nr_to_reclaim;
 
 			/*
-			 * The user specified "nr_reclaimed" means it is used
-			 * to break the loop rather than the actual numbers
-			 * need to free to the system. Because the reclaimed
-			 * slab objects maybe are not freed to buddy system,
-			 * hence we will reclaim cold slab can be controlled
-			 * separately by idlemd tool.
+			 * reclaim_coldslab_from_lru() returns the number of
+			 * reclaimed slab objects, whereas nr_reclaimed and
+			 * filter->size are counted in bytes of page memory.
+			 * The two are different units and reclaimed slab
+			 * objects are not necessarily freed back to the buddy
+			 * system, so slab reclaim must not be folded into the
+			 * page-byte budget here. Report it separately via the
+			 * SLAB_DROP stat instead, which idlemd controls.
 			 */
 			nr_to_reclaim = filter->size - nr_reclaimed;
 			nr_slab_size = reclaim_coldslab_from_lru(memcg,
 							pgdat->node_id,
 							filter->threshold,
 							nr_to_reclaim);
-			nr_reclaimed += nr_slab_size;
 			reclaim_coldpgs_update_stats(memcg,
 				RECLAIM_COLDPGS_STAT_SLAB_DROP, nr_slab_size);
 		}
