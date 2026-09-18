@@ -1491,6 +1491,7 @@ core_scsi3_decode_spec_i_port(
 	LIST_HEAD(tid_dest_list);
 	struct pr_transport_id_holder *tidh_new, *tidh, *tidh_tmp;
 	unsigned char *buf, *ptr, proto_ident;
+	unsigned char i_str_buf[TRANSPORT_IQN_LEN];
 	const unsigned char *i_str = NULL;
 	char *iport_ptr = NULL, i_buf[PR_REG_ISID_ID_LEN];
 	sense_reason_t ret;
@@ -1585,7 +1586,8 @@ core_scsi3_decode_spec_i_port(
 
 			iport_ptr = NULL;
 			i_str = target_parse_pr_out_transport_id(tmp_tpg,
-					ptr, &tid_len, &iport_ptr);
+					ptr, tpdl, &tid_len, &iport_ptr,
+					i_str_buf);
 			if (!i_str)
 				continue;
 			/*
@@ -3158,6 +3160,7 @@ core_scsi3_emulate_pro_register_and_move(struct se_cmd *cmd, u64 res_key,
 	struct t10_pr_registration *pr_reg, *pr_res_holder, *dest_pr_reg;
 	struct t10_reservation *pr_tmpl = &dev->t10_pr;
 	unsigned char *buf;
+	unsigned char initiator_str_buf[TRANSPORT_IQN_LEN];
 	const unsigned char *initiator_str;
 	char *iport_ptr = NULL, i_buf[PR_REG_ISID_ID_LEN];
 	u32 tid_len, tmp_tid_len;
@@ -3285,7 +3288,8 @@ core_scsi3_emulate_pro_register_and_move(struct se_cmd *cmd, u64 res_key,
 		goto out;
 	}
 	initiator_str = target_parse_pr_out_transport_id(dest_se_tpg,
-			&buf[24], &tmp_tid_len, &iport_ptr);
+			&buf[24], tid_len, &tmp_tid_len, &iport_ptr,
+			initiator_str_buf);
 	if (!initiator_str) {
 		pr_err("SPC-3 PR REGISTER_AND_MOVE: Unable to locate"
 			" initiator_str from Transport ID\n");
