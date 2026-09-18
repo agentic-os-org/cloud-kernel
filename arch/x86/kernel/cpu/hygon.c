@@ -150,8 +150,15 @@ static void srat_detect_node(struct cpuinfo_x86 *c)
 	unsigned int apicid = c->apicid;
 
 	node = numa_cpu_node(cpu);
-	if (node == NUMA_NO_NODE)
-		node = per_cpu(cpu_llc_id, cpu);
+	if (node == NUMA_NO_NODE) {
+		if (c->x86_model >= 0x4 && c->x86_model <= 0x8) {
+			node = cpu_to_node(cpu);
+			numa_set_node(cpu, node);
+			return;
+		} else {
+			node = per_cpu(cpu_llc_id, cpu);
+		}
+	}
 
 	/*
 	 * On multi-fabric platform (e.g. Numascale NumaChip) a
