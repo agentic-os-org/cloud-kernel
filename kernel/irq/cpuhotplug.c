@@ -227,12 +227,12 @@ static int irq_check_affinity_of_irq(struct irq_desc *desc, unsigned int cpu)
 			return 0;
 
 	/*
-	 * If the onging offline CPU is the last one in the affinity,
+	 * If the ongoing offline CPU is the last one in the affinity,
 	 * the managed interrupts will be unavailable until one of
 	 * the assigned CPUs comes online. To prevent this unavailability,
 	 * return -EBUSY directly in this case.
 	 */
-	pr_warn("Affinity %*pbl of managed IRQ%u contains only one CPU%u that online\n",
+	pr_warn_ratelimited("Affinity %*pbl of managed IRQ%u contains only one CPU%u online\n",
 		cpumask_pr_args(affinity), data->irq, cpu);
 	return -EBUSY;
 }
