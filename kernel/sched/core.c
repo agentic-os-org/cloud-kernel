@@ -9647,6 +9647,24 @@ static int tg_set_cfs_bandwidth(struct task_group *tg, u64 period, u64 quota,
 		rq_lock_irq(rq, &rf);
 		cfs_rq->runtime_enabled = runtime_enabled;
 		cfs_rq->runtime_remaining = 1;
+#ifdef CONFIG_PARAVIRT_TIME_ACCOUNTING
+		/*
+		 * A quota change starts a new epoch for the
+		 * refine_time_statistics repayment scale: the stale
+		 * running/throttled ratio no longer matches the new
+		 * bandwidth, so drop it and repay in full (like a
+		 * freshly created group) until fresh throttle pressure
+		 * is observed again. Reset before unthrottle_cfs_rq()
+		 * so a pending throttle window, if any, is dropped
+		 * rather than folded into the new epoch.
+		 */
+		if (static_branch_unlikely(&refine_time_statistics)) {
+			cfs_rq->stat_running = 0;
+			cfs_rq->stat_throttled = 0;
+			cfs_rq->stat_ts = 0;
+			cfs_rq->stat_scale = 1ULL << 16;
+		}
+#endif
 
 		if (cfs_rq->throttled)
 			unthrottle_cfs_rq(cfs_rq);
