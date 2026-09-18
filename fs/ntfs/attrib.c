@@ -514,6 +514,27 @@ retry_remap:
 		ntfs_error(ni->vol->sb, "Failed with error code %i.", err);
 	return ERR_PTR(err);
 }
+/**
+ * ntfs_attr_type_is_resident_only - check if attribute type must be resident
+ * @type:	attribute type to check
+ *
+ * Return true if @type must always be resident, false otherwise.
+ */
+static bool ntfs_attr_type_is_resident_only(const ATTR_TYPE type)
+{
+	switch (type) {
+	case AT_STANDARD_INFORMATION:
+	case AT_FILE_NAME:
+	case AT_OBJECT_ID:
+	case AT_VOLUME_NAME:
+	case AT_VOLUME_INFORMATION:
+	case AT_INDEX_ROOT:
+	case AT_EA_INFORMATION:
+		return true;
+	default:
+		return false;
+	}
+}
 
 /**
  * ntfs_attr_find - find (next) attribute in mft record
@@ -627,6 +648,12 @@ static int ntfs_attr_find(const ATTR_TYPE type, const ntfschar *name,
 
 		if (a->type != type)
 			continue;
+		/* Reject non-resident records for resident-only attribute types. */
+		if (a->non_resident && ntfs_attr_type_is_resident_only(type)) {
+			ntfs_error(vol->sb, "Rejecting non-resident record for resident-only attribute type %#x.\n",
+				   le32_to_cpu(type));
+			return -EIO;
+		}
 		/*
 		 * If @name is present, compare the two names.  If @name is
 		 * missing, assume we want an unnamed attribute.
