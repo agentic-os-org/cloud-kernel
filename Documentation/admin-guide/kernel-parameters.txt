@@ -2727,6 +2727,9 @@
 			Once we limit the number of managed interrupts, the last
 			online CPU in the affinity goes offline will fail with
 			the error code -EBUSY.
+			The limit is best effort: when the reserved CPUs cannot
+			serve all managed vectors of a device, the spreading
+			falls back to the full present CPU mask for that device.
 			Format: integer between 0 and num_possible_cpus() / num_possible_nodes()
 			Default: 0
 
