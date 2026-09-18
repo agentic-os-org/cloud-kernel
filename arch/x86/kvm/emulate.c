@@ -501,6 +501,9 @@ FOP_END;
 	_fault ? X86EMUL_UNHANDLEABLE : X86EMUL_CONTINUE; \
 })
 
+static u64 get_invlpg_linear_addr(struct x86_emulate_ctxt *ctxt,
+				  enum x86_intercept intercept);
+
 static int emulator_check_intercept(struct x86_emulate_ctxt *ctxt,
 				    enum x86_intercept intercept,
 				    enum x86_intercept_stage stage)
@@ -516,6 +519,7 @@ static int emulator_check_intercept(struct x86_emulate_ctxt *ctxt,
 		.src_bytes  = ctxt->src.bytes,
 		.dst_bytes  = ctxt->dst.bytes,
 		.ad_bytes   = ctxt->ad_bytes,
+		.invlpg_linear_addr = get_invlpg_linear_addr(ctxt, intercept),
 		.next_rip   = ctxt->eip,
 	};
 
@@ -785,6 +789,25 @@ bad:
 		return emulate_ss(ctxt, 0);
 	else
 		return emulate_gp(ctxt, 0);
+}
+
+static u64 get_invlpg_linear_addr(struct x86_emulate_ctxt *ctxt,
+				  enum x86_intercept intercept)
+{
+	unsigned int max_size;
+	unsigned long linear = 0;
+
+	if (intercept != x86_intercept_invlpg)
+		return 0;
+
+	/*
+	 * Use the same address calculation as em_invlpg() for the address
+	 * reported to L1.  Ignore address-check failures, as __linearize()
+	 * sets linear before reporting a failure.
+	 */
+	__linearize(ctxt, ctxt->src.addr.mem, &max_size, 1,
+		    false, false, ctxt->mode, &linear);
+	return linear;
 }
 
 static int linearize(struct x86_emulate_ctxt *ctxt,
