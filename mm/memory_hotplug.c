@@ -1186,6 +1186,7 @@ int __ref __online_pages(unsigned long pfn, unsigned long nr_pages,
 	node_states_set_node(nid, &arg);
 	if (need_zonelists_rebuild)
 		build_all_zonelists(NULL);
+	zone_pcp_update(zone);
 
 	/* Basic onlining is complete, allow allocation of onlined pages. */
 	undo_isolate_page_range(pfn, pfn + nr_pages, MIGRATE_MOVABLE);
@@ -1198,7 +1199,6 @@ int __ref __online_pages(unsigned long pfn, unsigned long nr_pages,
 	 */
 	shuffle_zone(zone);
 
-	/* reinitialise watermarks and update pcp limits */
 	init_per_zone_wmark_min();
 	init_min_cache_kbytes();
 
@@ -2134,14 +2134,14 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages,
 	adjust_managed_page_count(pfn_to_page(start_pfn), -nr_pages);
 	adjust_present_page_count(pfn_to_page(start_pfn), group, -nr_pages);
 
-	/* reinitialise watermarks and update pcp limits */
 	init_per_zone_wmark_min();
 	init_min_cache_kbytes();
 
 	if (!populated_zone(zone)) {
 		zone_pcp_reset(zone);
 		build_all_zonelists(NULL);
-	}
+	} else
+		zone_pcp_update(zone);
 
 	node_states_clear_node(node, &arg);
 	if (arg.status_change_nid >= 0) {

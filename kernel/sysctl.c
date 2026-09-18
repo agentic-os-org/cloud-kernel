@@ -153,10 +153,6 @@ static const int cap_last_cap = CAP_LAST_CAP;
 static unsigned long hung_task_timeout_max = (LONG_MAX/HZ);
 #endif
 
-extern int pcp_batch_scale_max;
-extern const int sysctl_pcp_batch_scale_min;
-extern const int sysctl_pcp_batch_scale_max;
-
 #ifdef CONFIG_INOTIFY_USER
 #include <linux/inotify.h>
 #endif
@@ -3257,15 +3253,6 @@ static struct ctl_table vm_table[] = {
 	},
 #endif
 	{
-		.procname	= "percpu_pagelist_batch_scale_max",
-		.data		= &pcp_batch_scale_max,
-		.maxlen		= sizeof(pcp_batch_scale_max),
-		.mode		= 0644,
-		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= (int *)&sysctl_pcp_batch_scale_min,
-		.extra2		= (int *)&sysctl_pcp_batch_scale_max,
-	},
-	{
 		.procname	= "lowmem_reserve_ratio",
 		.data		= &sysctl_lowmem_reserve_ratio,
 		.maxlen		= sizeof(sysctl_lowmem_reserve_ratio),
@@ -3355,11 +3342,11 @@ static struct ctl_table vm_table[] = {
 		.extra2		= &three_thousand,
 	},
 	{
-		.procname	= "percpu_pagelist_high_fraction",
-		.data		= &percpu_pagelist_high_fraction,
-		.maxlen		= sizeof(percpu_pagelist_high_fraction),
+		.procname	= "percpu_pagelist_fraction",
+		.data		= &percpu_pagelist_fraction,
+		.maxlen		= sizeof(percpu_pagelist_fraction),
 		.mode		= 0644,
-		.proc_handler	= percpu_pagelist_high_fraction_sysctl_handler,
+		.proc_handler	= percpu_pagelist_fraction_sysctl_handler,
 		.extra1		= SYSCTL_ZERO,
 	},
 	{

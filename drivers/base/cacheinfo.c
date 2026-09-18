@@ -25,8 +25,6 @@ static DEFINE_PER_CPU(struct cpu_cacheinfo, ci_cpu_cacheinfo);
 #define ci_cacheinfo(cpu)	(&per_cpu(ci_cpu_cacheinfo, cpu))
 #define cache_leaves(cpu)	(ci_cacheinfo(cpu)->num_leaves)
 #define per_cpu_cacheinfo(cpu)	(ci_cacheinfo(cpu)->info_list)
-#define per_cpu_cacheinfo_idx(cpu, idx)		\
-				(per_cpu_cacheinfo(cpu) + (idx))
 
 struct cpu_cacheinfo *get_cpu_cacheinfo(unsigned int cpu)
 {
@@ -34,51 +32,13 @@ struct cpu_cacheinfo *get_cpu_cacheinfo(unsigned int cpu)
 }
 EXPORT_SYMBOL_GPL(get_cpu_cacheinfo);
 
+#ifdef CONFIG_OF
 static inline bool cache_leaves_are_shared(struct cacheinfo *this_leaf,
 					   struct cacheinfo *sib_leaf)
 {
-	/*
-	 * For non DT/ACPI systems, assume unique level 1 caches,
-	 * system-wide shared caches for all other levels.
-	 */
-	if (!(IS_ENABLED(CONFIG_OF) || IS_ENABLED(CONFIG_ACPI)))
-		return (this_leaf->level != 1) && (sib_leaf->level != 1);
-
-	if ((sib_leaf->attributes & CACHE_ID) &&
-	    (this_leaf->attributes & CACHE_ID))
-		return sib_leaf->id == this_leaf->id;
-
 	return sib_leaf->fw_token == this_leaf->fw_token;
 }
 
-bool last_level_cache_is_valid(unsigned int cpu)
-{
-	struct cacheinfo *llc;
-
-	if (!cache_leaves(cpu))
-		return false;
-
-	llc = per_cpu_cacheinfo_idx(cpu, cache_leaves(cpu) - 1);
-
-	return (llc->attributes & CACHE_ID) || !!llc->fw_token;
-
-}
-
-bool last_level_cache_is_shared(unsigned int cpu_x, unsigned int cpu_y)
-{
-	struct cacheinfo *llc_x, *llc_y;
-
-	if (!last_level_cache_is_valid(cpu_x) ||
-	    !last_level_cache_is_valid(cpu_y))
-		return false;
-
-	llc_x = per_cpu_cacheinfo_idx(cpu_x, cache_leaves(cpu_x) - 1);
-	llc_y = per_cpu_cacheinfo_idx(cpu_y, cache_leaves(cpu_y) - 1);
-
-	return cache_leaves_are_shared(llc_x, llc_y);
-}
-
-#ifdef CONFIG_OF
 /* OF properties to query for a given cache type */
 struct cache_type_info {
 	const char *size_prop;
@@ -251,7 +211,7 @@ static int cache_setup_of_node(unsigned int cpu)
 	}
 
 	while (index < cache_leaves(cpu)) {
-		this_leaf = per_cpu_cacheinfo_idx(cpu, index);
+		this_leaf = this_cpu_ci->info_list + index;
 		if (this_leaf->level != 1)
 			np = of_find_next_cache_node(np);
 		else
@@ -270,6 +230,16 @@ static int cache_setup_of_node(unsigned int cpu)
 }
 #else
 static inline int cache_setup_of_node(unsigned int cpu) { return 0; }
+static inline bool cache_leaves_are_shared(struct cacheinfo *this_leaf,
+					   struct cacheinfo *sib_leaf)
+{
+	/*
+	 * For non-DT/ACPI systems, assume unique level 1 caches, system-wide
+	 * shared caches for all other levels. This will be used only if
+	 * arch specific code has not populated shared_cpu_map
+	 */
+	return !(this_leaf->level == 1);
+}
 #endif
 
 int __weak cache_setup_acpi(unsigned int cpu)
@@ -328,7 +298,7 @@ static int cache_shared_cpu_map_setup(unsigned int cpu)
 	for (index = 0; index < cache_leaves(cpu); index++) {
 		unsigned int i;
 
-		this_leaf = per_cpu_cacheinfo_idx(cpu, index);
+		this_leaf = this_cpu_ci->info_list + index;
 		/* skip if shared_cpu_map is already populated */
 		if (!cpumask_empty(&this_leaf->shared_cpu_map))
 			continue;
@@ -339,7 +309,7 @@ static int cache_shared_cpu_map_setup(unsigned int cpu)
 
 			if (i == cpu || !sib_cpu_ci->info_list)
 				continue;/* skip if itself or no cacheinfo */
-			sib_leaf = per_cpu_cacheinfo_idx(i, index);
+			sib_leaf = sib_cpu_ci->info_list + index;
 			if (cache_leaves_are_shared(this_leaf, sib_leaf)) {
 				cpumask_set_cpu(cpu, &sib_leaf->shared_cpu_map);
 				cpumask_set_cpu(i, &this_leaf->shared_cpu_map);
@@ -355,11 +325,12 @@ static int cache_shared_cpu_map_setup(unsigned int cpu)
 
 static void cache_shared_cpu_map_remove(unsigned int cpu)
 {
+	struct cpu_cacheinfo *this_cpu_ci = get_cpu_cacheinfo(cpu);
 	struct cacheinfo *this_leaf, *sib_leaf;
 	unsigned int sibling, index;
 
 	for (index = 0; index < cache_leaves(cpu); index++) {
-		this_leaf = per_cpu_cacheinfo_idx(cpu, index);
+		this_leaf = this_cpu_ci->info_list + index;
 		for_each_cpu(sibling, &this_leaf->shared_cpu_map) {
 			struct cpu_cacheinfo *sib_cpu_ci;
 
@@ -370,7 +341,7 @@ static void cache_shared_cpu_map_remove(unsigned int cpu)
 			if (!sib_cpu_ci->info_list)
 				continue;
 
-			sib_leaf = per_cpu_cacheinfo_idx(sibling, index);
+			sib_leaf = sib_cpu_ci->info_list + index;
 			cpumask_clear_cpu(cpu, &sib_leaf->shared_cpu_map);
 			cpumask_clear_cpu(sibling, &this_leaf->shared_cpu_map);
 		}
@@ -710,6 +681,7 @@ static int cache_add_dev(unsigned int cpu)
 	int rc;
 	struct device *ci_dev, *parent;
 	struct cacheinfo *this_leaf;
+	struct cpu_cacheinfo *this_cpu_ci = get_cpu_cacheinfo(cpu);
 	const struct attribute_group **cache_groups;
 
 	rc = cpu_cache_sysfs_init(cpu);
@@ -718,7 +690,7 @@ static int cache_add_dev(unsigned int cpu)
 
 	parent = per_cpu_cache_dev(cpu);
 	for (i = 0; i < cache_leaves(cpu); i++) {
-		this_leaf = per_cpu_cacheinfo_idx(cpu, i);
+		this_leaf = this_cpu_ci->info_list + i;
 		if (this_leaf->disable_sysfs)
 			continue;
 		if (this_leaf->type == CACHE_TYPE_NOCACHE)
@@ -740,111 +712,24 @@ err:
 	return rc;
 }
 
-static unsigned int cpu_map_shared_cache(bool online, unsigned int cpu,
-					 cpumask_t **map)
-{
-	struct cacheinfo *llc, *sib_llc;
-	unsigned int sibling;
-
-	if (!last_level_cache_is_valid(cpu))
-		return 0;
-
-	llc = per_cpu_cacheinfo_idx(cpu, cache_leaves(cpu) - 1);
-
-	if (llc->type != CACHE_TYPE_DATA && llc->type != CACHE_TYPE_UNIFIED)
-		return 0;
-
-	if (online) {
-		*map = &llc->shared_cpu_map;
-		return cpumask_weight(*map);
-	}
-
-	/* shared_cpu_map of offlined CPU will be cleared, so use sibling map */
-	for_each_cpu(sibling, &llc->shared_cpu_map) {
-		if (sibling == cpu || !last_level_cache_is_valid(sibling))
-			continue;
-		sib_llc = per_cpu_cacheinfo_idx(sibling, cache_leaves(sibling) - 1);
-		*map = &sib_llc->shared_cpu_map;
-		return cpumask_weight(*map);
-	}
-
-	return 0;
-}
-
-/*
- * Calculate the size of the per-CPU data cache slice.  This can be
- * used to estimate the size of the data cache slice that can be used
- * by one CPU under ideal circumstances.  UNIFIED caches are counted
- * in addition to DATA caches.  So, please consider code cache usage
- * when use the result.
- *
- * Because the cache inclusive/non-inclusive information isn't
- * available, we just use the size of the per-CPU slice of LLC to make
- * the result more predictable across architectures.
- */
-static void update_per_cpu_data_slice_size_cpu(unsigned int cpu)
-{
-	struct cpu_cacheinfo *ci;
-	struct cacheinfo *llc;
-	unsigned int nr_shared;
-
-	if (!last_level_cache_is_valid(cpu))
-		return;
-
-	ci = ci_cacheinfo(cpu);
-	llc = per_cpu_cacheinfo_idx(cpu, cache_leaves(cpu) - 1);
-
-	if (llc->type != CACHE_TYPE_DATA && llc->type != CACHE_TYPE_UNIFIED)
-		return;
-
-	nr_shared = cpumask_weight(&llc->shared_cpu_map);
-	if (nr_shared)
-		ci->per_cpu_data_slice_size = llc->size / nr_shared;
-}
-
-static void update_per_cpu_data_slice_size(bool cpu_online, unsigned int cpu,
-					   cpumask_t *cpu_map)
-{
-	unsigned int icpu;
-
-	for_each_cpu(icpu, cpu_map) {
-		if (!cpu_online && icpu == cpu)
-			continue;
-		update_per_cpu_data_slice_size_cpu(icpu);
-		setup_pcp_cacheinfo(icpu);
-	}
-}
-
 static int cacheinfo_cpu_online(unsigned int cpu)
 {
 	int rc = detect_cache_attributes(cpu);
-	cpumask_t *cpu_map;
 
 	if (rc)
 		return rc;
 	rc = cache_add_dev(cpu);
 	if (rc)
-		goto err;
-	if (cpu_map_shared_cache(true, cpu, &cpu_map))
-		update_per_cpu_data_slice_size(true, cpu, cpu_map);
-	return 0;
-err:
-	free_cache_attributes(cpu);
+		free_cache_attributes(cpu);
 	return rc;
 }
 
 static int cacheinfo_cpu_pre_down(unsigned int cpu)
 {
-	cpumask_t *cpu_map;
-	unsigned int nr_shared;
-
-	nr_shared = cpu_map_shared_cache(false, cpu, &cpu_map);
 	if (cpumask_test_and_clear_cpu(cpu, &cache_dev_map))
 		cpu_cache_sysfs_exit(cpu);
 
 	free_cache_attributes(cpu);
-	if (nr_shared > 1)
-		update_per_cpu_data_slice_size(false, cpu, cpu_map);
 	return 0;
 }
 
