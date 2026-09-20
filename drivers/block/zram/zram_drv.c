@@ -1457,7 +1457,7 @@ static int zram_bvec_write(struct zram *zram, struct bio_vec *bvec,
 		if (!page)
 			return -ENOMEM;
 
-		ret = __zram_bvec_read(zram, page, index, bio, true);
+		ret = __zram_bvec_read(zram, page, index, NULL, true);
 		if (ret)
 			goto out;
 
