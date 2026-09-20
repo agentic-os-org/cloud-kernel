@@ -4171,6 +4171,12 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 		if (is_x86_vendor_hygon())
 			r = KVM_EXIT_CSV3_SECURE_CALL_VALID_MASK;
 		break;
+	case KVM_CAP_HYGON_PREFETCH_MSR:
+		r = 0;
+
+		if (kvm_x86_ops.get_hygon_pfmsr_extension)
+			r = static_call(kvm_x86_get_hygon_pfmsr_extension)(kvm);
+		break;
 	default:
 		break;
 	}
@@ -4996,7 +5002,11 @@ static int kvm_vcpu_ioctl_enable_cap(struct kvm_vcpu *vcpu,
 			kvm_update_pv_runtime(vcpu);
 
 		return 0;
+	case KVM_CAP_HYGON_PREFETCH_MSR:
+		if (!kvm_x86_ops.enable_hygon_pfmsr_extension)
+			return -ENOTTY;
 
+		return static_call(kvm_x86_enable_hygon_pfmsr_extension)(vcpu);
 	default:
 		return -EINVAL;
 	}

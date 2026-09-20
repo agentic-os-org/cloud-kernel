@@ -1388,6 +1388,11 @@ struct kvm_x86_ops {
 	int (*get_hygon_coco_extension)(struct kvm *kvm);
 	int (*enable_hygon_coco_extension)(struct kvm *kvm, u32 arg);
 	int (*enable_exit_csv3_secure_call)(struct kvm *kvm, u64 arg);
+	/*
+	 * Interfaces for exposing Hygon Model-specific Prefetch MSR
+	 */
+	bool (*get_hygon_pfmsr_extension)(struct kvm *kvm);
+	int (*enable_hygon_pfmsr_extension)(struct kvm_vcpu *vcpu);
 };
 
 struct kvm_x86_nested_ops {
