@@ -3834,6 +3834,29 @@ static bool try_async_pf(struct kvm_vcpu *vcpu, bool prefault, gfn_t gfn,
 	return false;
 }
 
+/*
+ * Returns true if the page fault is stale and needs to be retried, i.e. if the
+ * root was invalidated by a memslot update or a relevant mmu_notifier fired.
+ */
+static bool is_page_fault_stale(struct kvm_vcpu *vcpu, unsigned long mmu_seq)
+{
+	struct kvm_mmu_page *sp = to_shadow_page(vcpu->arch.mmu->root_hpa);
+
+	/*
+	 * Roots are invalidated by memslot updates without an mmu_notifier
+	 * invalidation, so the root itself has to be checked for being
+	 * invalid or obsolete.  Special roots, e.g. pae_root, are not backed
+	 * by shadow pages.  TDP MMU pages do not use the MMU generation.
+	 */
+	if (sp &&
+	    (sp->role.invalid ||
+	     (!sp->tdp_mmu_page &&
+	      sp->mmu_valid_gen != vcpu->kvm->arch.mmu_valid_gen)))
+		return true;
+
+	return mmu_notifier_retry(vcpu->kvm, mmu_seq);
+}
+
 static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 			     bool prefault, int max_level, bool is_tdp)
 {
@@ -3867,13 +3890,14 @@ static int direct_page_fault(struct kvm_vcpu *vcpu, gpa_t gpa, u32 error_code,
 	if (handle_abnormal_pfn(vcpu, is_tdp ? 0 : gpa, gfn, pfn, ACC_ALL, &r))
 		return r;
 
-	r = RET_PF_RETRY;
 	spin_lock(&vcpu->kvm->mmu_lock);
-	if (mmu_notifier_retry(vcpu->kvm, mmu_seq))
-		goto out_unlock;
 	r = make_mmu_pages_available(vcpu);
 	if (r)
 		goto out_unlock;
+	if (is_page_fault_stale(vcpu, mmu_seq)) {
+		r = RET_PF_RETRY;
+		goto out_unlock;
+	}
 
 	if (is_tdp_mmu_root(vcpu->kvm, vcpu->arch.mmu->root_hpa))
 		r = kvm_tdp_mmu_map(vcpu, gpa, error_code, map_writable, max_level,
