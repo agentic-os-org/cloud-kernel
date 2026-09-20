@@ -403,27 +403,14 @@ static int __irq_build_affinity_masks(unsigned int startvec,
  */
 static int irq_build_affinity_masks(unsigned int startvec, unsigned int numvecs,
 				    unsigned int firstvec,
+				    cpumask_var_t *node_to_cpumask,
 				    const struct cpumask *reserved,
+				    struct cpumask *nmsk,
+				    struct cpumask *npresmsk,
 				    struct irq_affinity_desc *masks)
 {
 	unsigned int curvec = startvec, nr_present = 0, nr_others = 0;
-	cpumask_var_t *node_to_cpumask;
-	cpumask_var_t nmsk, npresmsk;
-	int ret = -ENOMEM;
-
-	if (!zalloc_cpumask_var(&nmsk, GFP_KERNEL))
-		return ret;
-
-	if (!zalloc_cpumask_var(&npresmsk, GFP_KERNEL))
-		goto fail_nmsk;
-
-	node_to_cpumask = alloc_node_to_cpumask();
-	if (!node_to_cpumask)
-		goto fail_npresmsk;
-
-	/* Stabilize the cpumasks */
-	get_online_cpus();
-	build_node_to_cpumask(node_to_cpumask);
+	int ret;
 
 	/*
 	 * The per-node managed IRQ pool is consumed once per device by the
@@ -451,7 +438,7 @@ static int irq_build_affinity_masks(unsigned int startvec, unsigned int numvecs,
 					 cpumask_empty(npresmsk) ? cpu_present_mask : npresmsk,
 					 nmsk, masks);
 	if (ret < 0)
-		goto fail_build_affinity;
+		return ret;
 	nr_present = ret;
 
 	/*
@@ -471,19 +458,9 @@ static int irq_build_affinity_masks(unsigned int startvec, unsigned int numvecs,
 	if (ret >= 0)
 		nr_others = ret;
 
- fail_build_affinity:
-	put_online_cpus();
-
 	if (ret >= 0)
 		WARN_ON(nr_present + nr_others < numvecs);
 
-	free_node_to_cpumask(node_to_cpumask);
-
- fail_npresmsk:
-	free_cpumask_var(npresmsk);
-
- fail_nmsk:
-	free_cpumask_var(nmsk);
 	return ret < 0 ? ret : 0;
 }
 
@@ -506,6 +483,7 @@ irq_create_affinity_masks(unsigned int nvecs, struct irq_affinity *affd)
 	unsigned int affvecs, curvec, usedvecs, i;
 	struct irq_affinity_desc *masks = NULL;
 	cpumask_var_t reserved;
+	cpumask_var_t nmsk, npresmsk;
 	cpumask_var_t *node_to_cpumask;
 
 	/*
@@ -540,9 +518,19 @@ irq_create_affinity_masks(unsigned int nvecs, struct irq_affinity *affd)
 		return NULL;
 	cpumask_clear(reserved);
 
+	if (!zalloc_cpumask_var(&nmsk, GFP_KERNEL))
+		goto fail_free_reserved;
+
+	if (!zalloc_cpumask_var(&npresmsk, GFP_KERNEL))
+		goto fail_free_nmsk;
+
+	node_to_cpumask = alloc_node_to_cpumask();
+	if (!node_to_cpumask)
+		goto fail_free_npresmsk;
+
 	masks = kcalloc(nvecs, sizeof(*masks), GFP_KERNEL);
 	if (!masks)
-		return NULL;
+		goto fail_free_node_to_cpumask;
 
 	/* Fill out vectors at the beginning that don't need affinity */
 	for (curvec = 0; curvec < affd->pre_vectors; curvec++)
@@ -553,6 +541,14 @@ irq_create_affinity_masks(unsigned int nvecs, struct irq_affinity *affd)
 		masks[i].is_managed = 1;
 
 	/*
+	 * All allocations that can fail happen before the pool is
+	 * consumed: a failing device must not leave the per-node pool
+	 * drained, the reservation would leak until the next pool reset.
+	 */
+	get_online_cpus();
+	build_node_to_cpumask(node_to_cpumask);
+
+	/*
 	 * Limit the count of managed interrupts on every node: consume the
 	 * per-node pool once per device, before any set is built. Drivers
 	 * with multiple affd sets (e.g. nvme with read_queues) previously
@@ -561,29 +557,16 @@ irq_create_affinity_masks(unsigned int nvecs, struct irq_affinity *affd)
 	 * sooner than the documented per-device semantics.
 	 */
 	if (managed_irqs_per_node && masks[affd->pre_vectors].is_managed) {
-		get_online_cpus();
+		__irq_prepare_affinity_mask(reserved, node_to_cpumask);
 
-		node_to_cpumask = alloc_node_to_cpumask();
-		if (node_to_cpumask) {
-			build_node_to_cpumask(node_to_cpumask);
-			__irq_prepare_affinity_mask(reserved, node_to_cpumask);
-
-			/*
-			 * Fall back to the full present CPU mask when the
-			 * reserved CPUs cannot serve all managed vectors of
-			 * this device. Limiting managed interrupts is best
-			 * effort.
-			 */
-			if (!cpumask_empty(reserved) &&
-			    cpumask_weight(reserved) < affvecs)
-				cpumask_clear(reserved);
-
-			free_node_to_cpumask(node_to_cpumask);
-		} else {
-			/* No reservation possible; spread unreserved. */
-		}
-
-		put_online_cpus();
+		/*
+		 * Fall back to the full present CPU mask when the reserved
+		 * CPUs cannot serve all managed vectors of this device.
+		 * Limiting managed interrupts is best effort.
+		 */
+		if (!cpumask_empty(reserved) &&
+		    cpumask_weight(reserved) < affvecs)
+			cpumask_clear(reserved);
 	}
 
 	/*
@@ -595,14 +578,18 @@ irq_create_affinity_masks(unsigned int nvecs, struct irq_affinity *affd)
 		int ret;
 
 		ret = irq_build_affinity_masks(curvec, this_vecs,
-					       curvec, reserved, masks);
+					       curvec, node_to_cpumask,
+					       reserved, nmsk, npresmsk,
+					       masks);
 		if (ret) {
+			put_online_cpus();
 			kfree(masks);
-			goto fail_free_reserved;
+			goto fail_free_node_to_cpumask;
 		}
 		curvec += this_vecs;
 		usedvecs += this_vecs;
 	}
+	put_online_cpus();
 
 	/* Fill out vectors at the end that don't need affinity */
 	if (usedvecs >= affvecs)
@@ -612,9 +599,18 @@ irq_create_affinity_masks(unsigned int nvecs, struct irq_affinity *affd)
 	for (; curvec < nvecs; curvec++)
 		cpumask_copy(&masks[curvec].mask, irq_default_affinity);
 
+	free_node_to_cpumask(node_to_cpumask);
+	free_cpumask_var(npresmsk);
+	free_cpumask_var(nmsk);
 	free_cpumask_var(reserved);
 	return masks;
 
+ fail_free_node_to_cpumask:
+	free_node_to_cpumask(node_to_cpumask);
+ fail_free_npresmsk:
+	free_cpumask_var(npresmsk);
+ fail_free_nmsk:
+	free_cpumask_var(nmsk);
  fail_free_reserved:
 	free_cpumask_var(reserved);
 	return NULL;
