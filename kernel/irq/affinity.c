@@ -403,6 +403,7 @@ static int __irq_build_affinity_masks(unsigned int startvec,
  */
 static int irq_build_affinity_masks(unsigned int startvec, unsigned int numvecs,
 				    unsigned int firstvec,
+				    const struct cpumask *reserved,
 				    struct irq_affinity_desc *masks)
 {
 	unsigned int curvec = startvec, nr_present = 0, nr_others = 0;
@@ -424,17 +425,22 @@ static int irq_build_affinity_masks(unsigned int startvec, unsigned int numvecs,
 	get_online_cpus();
 	build_node_to_cpumask(node_to_cpumask);
 
-	/* Limit the count of managed interrupts on every node */
-	if (masks[startvec].is_managed && managed_irqs_per_node)
-		__irq_prepare_affinity_mask(npresmsk, node_to_cpumask);
+	/*
+	 * The per-node managed IRQ pool is consumed once per device by the
+	 * caller (irq_create_affinity_masks), not once per set. @reserved
+	 * carries the CPUs taken from the pool for this device; copy it so
+	 * the second pass below can reuse the scratch mask.
+	 */
+	cpumask_copy(npresmsk, reserved);
 
 	/*
 	 * The reserved CPUs must be able to serve every vector. If the
 	 * pool is too small, __irq_build_affinity_masks() truncates the
 	 * assignment at the pool size and the leftover vectors end up
 	 * with an empty affinity mask, which makes their activation fail
-	 * with -EINVAL later. Fall back to the full present CPU mask in
-	 * that case; limiting managed interrupts is best effort.
+	 * with -EINVAL later. The caller falls back to the full present
+	 * CPU mask per device; a set still larger than the reservation
+	 * falls back here too so the truncation cannot resurface.
 	 */
 	if (!cpumask_empty(npresmsk) && cpumask_weight(npresmsk) < numvecs)
 		cpumask_clear(npresmsk);
@@ -499,6 +505,8 @@ irq_create_affinity_masks(unsigned int nvecs, struct irq_affinity *affd)
 {
 	unsigned int affvecs, curvec, usedvecs, i;
 	struct irq_affinity_desc *masks = NULL;
+	cpumask_var_t reserved;
+	cpumask_var_t *node_to_cpumask;
 
 	/*
 	 * Determine the number of vectors which need interrupt affinities
@@ -528,6 +536,10 @@ irq_create_affinity_masks(unsigned int nvecs, struct irq_affinity *affd)
 	if (!affvecs)
 		return NULL;
 
+	if (!alloc_cpumask_var(&reserved, GFP_KERNEL))
+		return NULL;
+	cpumask_clear(reserved);
+
 	masks = kcalloc(nvecs, sizeof(*masks), GFP_KERNEL);
 	if (!masks)
 		return NULL;
@@ -541,6 +553,40 @@ irq_create_affinity_masks(unsigned int nvecs, struct irq_affinity *affd)
 		masks[i].is_managed = 1;
 
 	/*
+	 * Limit the count of managed interrupts on every node: consume the
+	 * per-node pool once per device, before any set is built. Drivers
+	 * with multiple affd sets (e.g. nvme with read_queues) previously
+	 * consumed the pool once per set, so a single device reserved
+	 * sets * managed_irqs_per_node CPUs and exhausted the pool much
+	 * sooner than the documented per-device semantics.
+	 */
+	if (managed_irqs_per_node && masks[affd->pre_vectors].is_managed) {
+		get_online_cpus();
+
+		node_to_cpumask = alloc_node_to_cpumask();
+		if (node_to_cpumask) {
+			build_node_to_cpumask(node_to_cpumask);
+			__irq_prepare_affinity_mask(reserved, node_to_cpumask);
+
+			/*
+			 * Fall back to the full present CPU mask when the
+			 * reserved CPUs cannot serve all managed vectors of
+			 * this device. Limiting managed interrupts is best
+			 * effort.
+			 */
+			if (!cpumask_empty(reserved) &&
+			    cpumask_weight(reserved) < affvecs)
+				cpumask_clear(reserved);
+
+			free_node_to_cpumask(node_to_cpumask);
+		} else {
+			/* No reservation possible; spread unreserved. */
+		}
+
+		put_online_cpus();
+	}
+
+	/*
 	 * Spread on present CPUs starting from affd->pre_vectors. If we
 	 * have multiple sets, build each sets affinity mask separately.
 	 */
@@ -549,10 +595,10 @@ irq_create_affinity_masks(unsigned int nvecs, struct irq_affinity *affd)
 		int ret;
 
 		ret = irq_build_affinity_masks(curvec, this_vecs,
-					       curvec, masks);
+					       curvec, reserved, masks);
 		if (ret) {
 			kfree(masks);
-			return NULL;
+			goto fail_free_reserved;
 		}
 		curvec += this_vecs;
 		usedvecs += this_vecs;
@@ -566,7 +612,12 @@ irq_create_affinity_masks(unsigned int nvecs, struct irq_affinity *affd)
 	for (; curvec < nvecs; curvec++)
 		cpumask_copy(&masks[curvec].mask, irq_default_affinity);
 
+	free_cpumask_var(reserved);
 	return masks;
+
+ fail_free_reserved:
+	free_cpumask_var(reserved);
+	return NULL;
 }
 
 /**
