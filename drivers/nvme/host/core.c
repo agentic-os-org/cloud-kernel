@@ -2876,7 +2876,8 @@ int nvme_init_identify(struct nvme_ctrl *ctrl)
 		return -EIO;
 	}
 #ifdef CONFIG_NVME_PASS_REQFLAG
-	if (le16_to_cpu(id->vid) == PCI_VENDOR_ID_ALIBABA)
+	if (le16_to_cpu(id->vid) == PCI_VENDOR_ID_ALIBABA &&
+	    !(ctrl->ops->flags & NVME_F_FABRICS))
 		ctrl->pass_reqflag_enabled = true;
 #endif
 
