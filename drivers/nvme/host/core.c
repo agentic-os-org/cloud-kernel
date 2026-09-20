@@ -19,6 +19,7 @@
 #include <linux/ptrace.h>
 #include <linux/nvme_ioctl.h>
 #include <linux/pm_qos.h>
+#include <linux/ioprio.h>
 #include <asm/unaligned.h>
 
 #include "nvme.h"
@@ -923,6 +924,27 @@ static inline blk_status_t nvme_setup_rw(struct nvme_ns *ns,
 
 	if (req->cmd_flags & REQ_RAHEAD)
 		dsmgmt |= NVME_RW_DSM_FREQ_PREFETCH;
+
+#ifdef CONFIG_NVME_PASS_REQFLAG
+	if (ctrl->pass_reqflag_enabled) {
+		/* Map the I/O priority class into the DSM Access Latency
+		 * hint (cdw13 bits 5:4) so the backend can prioritize
+		 * accordingly. Spec-defined hint, ignored by devices that
+		 * do not support it.
+		 */
+		switch (IOPRIO_PRIO_CLASS(req_get_ioprio(req))) {
+		case IOPRIO_CLASS_RT:
+			dsmgmt |= NVME_RW_DSM_LATENCY_LOW;
+			break;
+		case IOPRIO_CLASS_BE:
+			dsmgmt |= NVME_RW_DSM_LATENCY_NORM;
+			break;
+		case IOPRIO_CLASS_IDLE:
+			dsmgmt |= NVME_RW_DSM_LATENCY_IDLE;
+			break;
+		}
+	}
+#endif
 
 	cmnd->rw.opcode = op;
 	cmnd->rw.nsid = cpu_to_le32(ns->head->ns_id);
@@ -2854,7 +2876,8 @@ int nvme_init_identify(struct nvme_ctrl *ctrl)
 		return -EIO;
 	}
 #ifdef CONFIG_NVME_PASS_REQFLAG
-	if (le16_to_cpu(id->vid) == PCI_VENDOR_ID_ALIBABA)
+	if (le16_to_cpu(id->vid) == PCI_VENDOR_ID_ALIBABA &&
+	    !(ctrl->ops->flags & NVME_F_FABRICS))
 		ctrl->pass_reqflag_enabled = true;
 #endif
 
