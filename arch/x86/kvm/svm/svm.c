@@ -81,6 +81,8 @@ MODULE_DEVICE_TABLE(x86cpu, svm_cpu_id);
 #define TSC_RATIO_MIN		0x0000000000000001ULL
 #define TSC_RATIO_MAX		0x000000ffffffffffULL
 
+#define MSR_HYGON_L2PF_CFG	0xc001102b
+
 static bool erratum_383_found __read_mostly;
 
 u32 msrpm_offsets[MSRPM_OFFSETS] __read_mostly;
@@ -117,6 +119,8 @@ static const struct svm_direct_access_msrs {
 	{ .index = MSR_EFER,				.always = false },
 	{ .index = MSR_IA32_CR_PAT,			.always = false },
 	{ .index = MSR_AMD64_SEV_ES_GHCB,		.always = true  },
+	{ .index = MSR_AMD64_DC_CFG,			.always = false },
+	{ .index = MSR_HYGON_L2PF_CFG,			.always = false },
 	{ .index = MSR_INVALID,				.always = false },
 };
 
@@ -2718,6 +2722,39 @@ static int svm_get_msr_feature(struct kvm_msr_entry *msr)
 	return 0;
 }
 
+#define HYGON_DC_CFG_MASK	0x1ff10f4000ULL
+#define HYGON_L2PF_CFG_MASK	0x5ULL
+
+static int access_hygon_pfmsr(struct kvm_vcpu *vcpu,
+			      struct msr_data *msr, bool write)
+{
+	u64 old, value, mask;
+	int err;
+
+	if (msr->host_initiated)
+		return 1;
+
+	get_cpu();
+	err = rdmsrl_safe(msr->index, &old);
+	if (err)
+		goto out;
+
+	if (!write) {
+		msr->data = old;
+		goto out;
+	}
+
+	mask = msr->index == MSR_AMD64_DC_CFG ?
+			     HYGON_DC_CFG_MASK : HYGON_L2PF_CFG_MASK;
+
+	value = (old & ~mask) | (msr->data & mask);
+	if (value != old)
+		err = wrmsrl_safe(msr->index, value);
+out:
+	put_cpu();
+	return !!err;
+}
+
 static int svm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
@@ -2847,6 +2884,11 @@ static int svm_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 			break;
 		}
 		return 1;
+	case MSR_AMD64_DC_CFG:
+	case MSR_HYGON_L2PF_CFG:
+		if (is_x86_vendor_hygon() && svm->hygon_pfmsr_enabled)
+			return access_hygon_pfmsr(vcpu, msr_info, false);
+		return kvm_get_msr_common(vcpu, msr_info);
 	default:
 		return kvm_get_msr_common(vcpu, msr_info);
 	}
@@ -3107,6 +3149,11 @@ static int svm_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr)
 			break;
 		}
 		return 1;
+	case MSR_AMD64_DC_CFG:
+	case MSR_HYGON_L2PF_CFG:
+		if (is_x86_vendor_hygon() && svm->hygon_pfmsr_enabled)
+			return access_hygon_pfmsr(vcpu, msr, true);
+		return kvm_set_msr_common(vcpu, msr);
 	case MSR_IA32_APICBASE:
 		if (kvm_vcpu_apicv_active(vcpu))
 			avic_update_vapic_bar(to_svm(vcpu), data);
@@ -4675,6 +4722,50 @@ static void svm_vcpu_deliver_sipi_vector(struct kvm_vcpu *vcpu, u8 vector)
 	sev_vcpu_deliver_sipi_vector(vcpu, vector);
 }
 
+static bool get_hygon_pfmsr_extension(struct kvm *kvm)
+{
+	struct cpuinfo_x86 *c;
+
+	if (boot_cpu_has(X86_FEATURE_HYPERVISOR))
+		return false;
+
+	c = &boot_cpu_data;
+
+	if (c->x86 == 0x18 && c->x86_model == 7 && c->x86_stepping == 0)
+		return true;
+
+	return false;
+}
+
+static int enable_hygon_pfmsr_extension(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+
+	if (!get_hygon_pfmsr_extension(vcpu->kvm))
+		return -EOPNOTSUPP;
+
+	if (svm->hygon_pfmsr_enabled)
+		return -EBUSY;
+
+	/* Ensure it only can be done before any KVM_RUN */
+	if (rcu_access_pointer(vcpu->pid))
+		return -EBUSY;
+
+	if (guest_cpuid_has(vcpu, X86_FEATURE_SVM) || sev_guest(vcpu->kvm))
+		return -EINVAL;
+
+	if (!guest_cpuid_is_hygon(vcpu) ||
+	    guest_cpuid_family(vcpu) != boot_cpu_data.x86 ||
+	    guest_cpuid_model(vcpu) != boot_cpu_data.x86_model ||
+	    guest_cpuid_stepping(vcpu) != boot_cpu_data.x86_stepping)
+		return -EINVAL;
+
+	set_msr_interception(vcpu, svm->msrpm, MSR_AMD64_DC_CFG, 1, 0);
+	set_msr_interception(vcpu, svm->msrpm, MSR_HYGON_L2PF_CFG, 1, 0);
+	svm->hygon_pfmsr_enabled = true;
+	return 0;
+}
+
 static void svm_vm_destroy(struct kvm *kvm)
 {
 	avic_vm_destroy(kvm);
@@ -4863,9 +4954,12 @@ static int __init svm_init(void)
 {
 	__unused_size_checks();
 
-	/* Register CSV specific interface for Hygon CPUs */
-	if (is_x86_vendor_hygon())
+	/* Register CSV specific and Prefetch MSR interfaces for Hygon CPUs */
+	if (is_x86_vendor_hygon()) {
 		csv_init(&svm_x86_ops);
+		svm_x86_ops.get_hygon_pfmsr_extension = get_hygon_pfmsr_extension;
+		svm_x86_ops.enable_hygon_pfmsr_extension = enable_hygon_pfmsr_extension;
+	}
 
 	return kvm_init(&svm_init_ops, sizeof(struct vcpu_svm),
 			__alignof__(struct vcpu_svm), THIS_MODULE);
