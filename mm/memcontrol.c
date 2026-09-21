@@ -3466,10 +3466,9 @@ struct mem_cgroup *mem_cgroup_from_slab_obj(void *p)
 	return mem_cgroup_from_obj_folio(virt_to_folio(p), p);
 }
 
-static struct obj_cgroup *__get_obj_cgroup_from_memcg(struct mem_cgroup *memcg)
+static struct obj_cgroup *__get_obj_cgroup_from_memcg(struct mem_cgroup *memcg,
+						      int nid)
 {
-	int nid = numa_node_id();
-
 	for (; memcg; memcg = parent_mem_cgroup(memcg)) {
 		struct obj_cgroup *objcg = rcu_dereference(memcg->nodeinfo[nid]->objcg);
 
@@ -3480,12 +3479,13 @@ static struct obj_cgroup *__get_obj_cgroup_from_memcg(struct mem_cgroup *memcg)
 	return NULL;
 }
 
-static inline struct obj_cgroup *get_obj_cgroup_from_memcg(struct mem_cgroup *memcg)
+static inline struct obj_cgroup *get_obj_cgroup_from_memcg(struct mem_cgroup *memcg,
+							   int nid)
 {
 	struct obj_cgroup *objcg;
 
 	rcu_read_lock();
-	objcg = __get_obj_cgroup_from_memcg(memcg);
+	objcg = __get_obj_cgroup_from_memcg(memcg, nid);
 	rcu_read_unlock();
 
 	return objcg;
@@ -3530,7 +3530,7 @@ static struct obj_cgroup *current_objcg_update(void)
 
 		rcu_read_lock();
 		memcg = mem_cgroup_from_task(current);
-		objcg = __get_obj_cgroup_from_memcg(memcg);
+		objcg = __get_obj_cgroup_from_memcg(memcg, numa_node_id());
 		rcu_read_unlock();
 
 		/*
@@ -7983,7 +7983,7 @@ static int mem_cgroup_move_account(struct page *page,
 	 * destination memcg so the switch below can transfer the folio's objcg
 	 * reference instead of (incorrectly) moving css references.
 	 */
-	objcg = get_obj_cgroup_from_memcg(to);
+	objcg = get_obj_cgroup_from_memcg(to, folio_nid(folio));
 	if (!objcg)
 		goto out;
 
@@ -9551,7 +9551,7 @@ static int charge_memcg(struct folio *folio, struct mem_cgroup *memcg,
 	int ret = 0;
 	struct obj_cgroup *objcg;
 
-	objcg = get_obj_cgroup_from_memcg(memcg);
+	objcg = get_obj_cgroup_from_memcg(memcg, folio_nid(folio));
 	/* Do not account at the root objcg level. */
 	if (!obj_cgroup_is_root(objcg))
 		ret = try_charge_memcg(memcg, gfp, folio_nr_pages(folio));
@@ -9780,6 +9780,46 @@ void __mem_cgroup_uncharge_folios(struct folio_batch *folios)
 		uncharge_batch(&ug);
 }
 
+/*
+ * An LRU folio must hold the objcg belonging to its own node.
+ *
+ * memcg_reparent_objcgs() reparents a dying cgroup one node at a time: the
+ * folios on that node's LRU lists move to the parent and that node's objcg is
+ * redirected to the parent, atomically under the node's lru_lock.
+ * folio_lruvec_lock() relies on this to provide a stable folio<->lruvec
+ * binding. If a folio holds another node's objcg, its list membership and its
+ * lruvec resolution change in separate lock sections, and an LRU operation in
+ * between can re-add the folio to, and strand it on, the LRU list of a dead
+ * memcg.
+ *
+ * So when migration transfers the memcg state to a folio on another node,
+ * re-derive the objcg for the destination node. If the memcg is dying and the
+ * destination node has already been reparented, the lookup walks up to the
+ * nearest live ancestor - which is also where that node's LRU lists went.
+ *
+ * Returns the objcg to commit to @new, with a reference for the caller.
+ */
+static struct obj_cgroup *get_migration_objcg(struct folio *old,
+					      struct folio *new)
+{
+	struct obj_cgroup *old_objcg, *new_objcg;
+	int new_nid = folio_nid(new);
+
+	old_objcg = get_obj_cgroup_from_folio(old);
+
+	if (folio_nid(old) == new_nid)
+		return old_objcg;
+
+	rcu_read_lock();
+	new_objcg = __get_obj_cgroup_from_memcg(obj_cgroup_memcg(old_objcg),
+						new_nid);
+	rcu_read_unlock();
+
+	obj_cgroup_put(old_objcg);
+
+	return new_objcg;
+}
+
 /**
  * mem_cgroup_migrate - Charge a folio's replacement.
  * @old: Currently circulating folio.
@@ -9793,7 +9833,7 @@ void __mem_cgroup_uncharge_folios(struct folio_batch *folios)
 void mem_cgroup_migrate(struct folio *old, struct folio *new)
 {
 	struct mem_cgroup *memcg;
-	struct obj_cgroup *objcg;
+	struct obj_cgroup *objcg, *new_objcg;
 	long nr_pages = folio_nr_pages(new);
 	unsigned long flags;
 
@@ -9814,17 +9854,34 @@ void mem_cgroup_migrate(struct folio *old, struct folio *new)
 	if (!objcg)
 		return;
 
+	new_objcg = get_migration_objcg(old, new);
+
 	rcu_read_lock();
-	memcg = obj_cgroup_memcg(objcg);
+	memcg = obj_cgroup_memcg(new_objcg);
 	/* Force-charge the new page. The old one will be freed soon */
-	if (!obj_cgroup_is_root(objcg)) {
+	if (!obj_cgroup_is_root(new_objcg)) {
 		page_counter_charge(&memcg->memory, nr_pages);
 		if (do_memsw_account())
 			page_counter_charge(&memcg->memsw, nr_pages);
 	}
 
-	obj_cgroup_get(objcg);
-	commit_charge(new, objcg);
+	/*
+	 * @old was charged through a non-root objcg, so its charge is in the
+	 * page counters. If the re-derivation walked up to the root objcg -
+	 * @old's entire ancestry is dying and already reparented - the final
+	 * uncharge of @new will skip the page counters (see uncharge_folio()).
+	 * Settle them now: this is @old's eventual uncharge, moved up to the
+	 * point where its charge record ends.
+	 */
+	if (obj_cgroup_is_root(new_objcg) && !obj_cgroup_is_root(objcg)) {
+		page_counter_uncharge(&obj_cgroup_memcg(objcg)->memory,
+				      folio_nr_pages(old));
+		if (do_memsw_account())
+			page_counter_uncharge(&obj_cgroup_memcg(objcg)->memsw,
+					      folio_nr_pages(old));
+	}
+
+	commit_charge(new, new_objcg);
 	local_irq_save(flags);
 	mem_cgroup_charge_statistics(memcg, nr_pages);
 	memcg_check_events(memcg, folio_nid(new));
