@@ -126,3 +126,7 @@ SCHED_FEAT(LATENCY_WARN, false)
  * Do newidle balancing proportional to its success rate using randomization.
  */
 SCHED_FEAT(NI_RANDOM, true)
+
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
+SCHED_FEAT(SCHED_CORE_HT_AWARE_QUOTA, false)
+#endif

@@ -620,6 +620,9 @@ struct task_group {
 	unsigned long		avenrun_r[3];
 #endif
 
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
+	unsigned int		ht_ratio;
+#endif
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
@@ -1473,9 +1476,11 @@ struct rq {
 	unsigned long		core_cookie;
 	unsigned int		core_forceidle_count;
 	unsigned int		core_forceidle_seq;
-	unsigned int		core_forceidle_occupation;
-	u64			core_forceidle_start;
-#endif /* CONFIG_SCHED_CORE */
+	unsigned int		core_sibidle_occupation;
+	u64			core_sibidle_start;
+	u64			core_sibidle_start_task;
+	unsigned int		core_sibidle_count;
+#endif
 
 	/* Scratch cpumask to be temporarily used under rq_lock */
 	cpumask_var_t		scratch_mask;
@@ -1486,6 +1491,13 @@ struct rq {
 #endif
 
 	atomic_t		nr_iowait;
+
+#ifdef CONFIG_SCHED_ACPU
+	u64			acpu_idle_sum;
+	u64			sibidle_sum;
+	u64			last_acpu_update_time;
+	u64			last_acpu_update_time_task;
+#endif
 
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
@@ -1687,6 +1699,12 @@ extern void sched_core_dequeue(struct rq *rq, struct task_struct *p, int flags);
 
 extern void sched_core_get(void);
 extern void sched_core_put(void);
+
+#ifdef CONFIG_CFS_BANDWIDTH
+extern void account_ht_aware_quota(struct task_struct *p, u64 delta);
+#else
+static inline void account_ht_aware_quota(struct task_struct *p, u64 delta) { }
+#endif
 
 #else /* !CONFIG_SCHED_CORE: */
 
@@ -3563,12 +3581,12 @@ static inline void nohz_run_idle_balance(int cpu) { }
 
 #if defined(CONFIG_SCHED_CORE) && defined(CONFIG_SCHEDSTATS)
 
-extern void __sched_core_account_forceidle(struct rq *rq);
+extern void __sched_core_account_sibidle(struct rq *rq);
 
-static inline void sched_core_account_forceidle(struct rq *rq)
+static inline void sched_core_account_sibidle(struct rq *rq)
 {
 	if (schedstat_enabled())
-		__sched_core_account_forceidle(rq);
+		__sched_core_account_sibidle(rq);
 }
 
 extern void __sched_core_tick(struct rq *rq);
@@ -3581,7 +3599,7 @@ static inline void sched_core_tick(struct rq *rq)
 
 #else /* !(CONFIG_SCHED_CORE && CONFIG_SCHEDSTATS): */
 
-static inline void sched_core_account_forceidle(struct rq *rq) { }
+static inline void sched_core_account_sibidle(struct rq *rq) { }
 
 static inline void sched_core_tick(struct rq *rq) { }
 

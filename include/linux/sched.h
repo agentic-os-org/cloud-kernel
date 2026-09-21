@@ -590,7 +590,13 @@ struct sched_statistics {
 
 #ifdef CONFIG_SCHED_CORE
 	u64				core_forceidle_sum;
+	u64				core_forceidle_task_sum;
 #endif
+#if defined(CONFIG_SCHED_CORE) || defined(CONFIG_SCHED_ACPU)
+	u64				core_sibidle_sum;
+	u64				core_sibidle_task_sum;
+#endif
+
 #endif /* CONFIG_SCHEDSTATS */
 
 	CK_KABI_RESERVE(1)
@@ -660,6 +666,9 @@ struct sched_entity {
 	 */
 	struct sched_avg		avg;
 
+#if defined(CONFIG_SCHED_CORE) && defined(CONFIG_CFS_BANDWIDTH)
+	unsigned int			ht_ratio;
+#endif
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
