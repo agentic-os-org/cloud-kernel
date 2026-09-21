@@ -1198,12 +1198,17 @@ static inline void mem_cgroup_unlock_pages(void)
  * non-hierarchical state_locals (see reparent_memcg_state_local()). Only
  * relevant on cgroup v1, where such reparenting happens.
  */
-static inline struct mem_cgroup *get_non_dying_memcg_start(struct mem_cgroup *memcg)
+static inline struct mem_cgroup *get_non_dying_memcg_start(struct mem_cgroup *memcg,
+							   bool *rcu_locked)
 {
-	if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
+	/* Rebinding can cause this value to be changed at runtime */
+	if (cgroup_subsys_on_dfl(memory_cgrp_subsys)) {
+		*rcu_locked = false;
 		return memcg;
+	}
 
 	rcu_read_lock();
+	*rcu_locked = true;
 
 	while (memcg && css_is_dying(&memcg->css))
 		memcg = parent_mem_cgroup(memcg);
@@ -1211,9 +1216,9 @@ static inline struct mem_cgroup *get_non_dying_memcg_start(struct mem_cgroup *me
 	return memcg;
 }
 
-static inline void get_non_dying_memcg_end(void)
+static inline void get_non_dying_memcg_end(bool rcu_locked)
 {
-	if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
+	if (!rcu_locked)
 		return;
 
 	rcu_read_unlock();
@@ -1224,14 +1229,15 @@ static inline void mod_memcg_state(struct mem_cgroup *memcg,
 				   int idx, int val)
 {
 	unsigned long flags;
+	bool rcu_locked = false;
 
 	if (mem_cgroup_disabled())
 		return;
 
 	local_irq_save(flags);
-	memcg = get_non_dying_memcg_start(memcg);
+	memcg = get_non_dying_memcg_start(memcg, &rcu_locked);
 	__mod_memcg_state(memcg, idx, val);
-	get_non_dying_memcg_end();
+	get_non_dying_memcg_end(rcu_locked);
 	local_irq_restore(flags);
 }
 
@@ -1312,14 +1318,15 @@ static inline void mod_memcg_lruvec_state(struct lruvec *lruvec,
 	struct mem_cgroup_per_node *pn;
 	struct mem_cgroup *memcg;
 	unsigned long flags;
+	bool rcu_locked = false;
 
 	pn = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
 
 	local_irq_save(flags);
-	memcg = get_non_dying_memcg_start(pn->memcg);
+	memcg = get_non_dying_memcg_start(pn->memcg, &rcu_locked);
 	pn = memcg->nodeinfo[pgdat->node_id];
 	__mod_memcg_lruvec_state(pn, idx, val);
-	get_non_dying_memcg_end();
+	get_non_dying_memcg_end(rcu_locked);
 	local_irq_restore(flags);
 }
 
