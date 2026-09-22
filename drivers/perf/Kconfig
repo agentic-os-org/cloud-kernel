@@ -302,4 +302,11 @@ config LRW_DDR_PMU
 	  If you are not using LRW DDR hardware or do not require performance monitoring,
 	  say N.
 
+config ALIBABA_UNCORE_CPM_PMU
+	tristate "Alibaba Damo CPM PMU driver"
+	depends on RISCV
+	default m
+	help
+	  Support for Alibaba Damo uncore CHI performance monitor driver.
+
 endmenu

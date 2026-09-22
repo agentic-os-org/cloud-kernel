@@ -1,0 +1,940 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * NGF CPM performance counter support.
+ */
+
+#include <linux/platform_device.h>
+#include <linux/of_irq.h>
+#include <linux/of.h>
+#include <linux/perf_event.h>
+#include <linux/iopoll.h>
+#include <linux/acpi.h>
+
+#define RISCV_PMU_CPM_PDEV_NAME    "riscv-pmu-cpm"
+
+#define CPM_MAX_COUNTERS	8	/* 8 hw counters */
+#define CPM_MAX_STAT_EVENTS	(CPM_MAX_COUNTERS + 16)	/* 8 hw counters + up to 16 stat events */
+
+#define CPM_EVENT_MONITOR	0
+#define CPM_OSTD_STAT		1
+#define CPM_LCRD_STAT		2
+//#define CPM_DEFAULT_MON_PERIOD	24  /* 2^24 clocks ≈ 8.8ms @1.9GHz */
+#define CPM_DEFAULT_MON_PERIOD	16	/* 2^16 clocks ≈ 8.6ms @7.6MHz */
+//#define CPM_DEFAULT_EVT_DURATION  4069  /* ASIC: TBD, 待实测 latency profile 后确定 */
+#define CPM_DEFAULT_EVT_DURATION  4069    /* HAPS: ~2-3x max_lat */
+
+#define CPM_GET_EVENT(attr)		((attr)->config & 0x3FF)
+#define CPM_GET_FILTER_EN(attr)		(((attr)->config >> 10) & 0x3F)
+#define CPM_GET_FLT_ALIGN(attr)		(((attr)->config >> 16) & 0x3)
+#define CPM_GET_SRCID_TGT(attr)		(((attr)->config >> 18) & 0x1FF)
+#define CPM_GET_SRCID_MASK(attr)	(((attr)->config >> 27) & 0x1FF)
+#define CPM_GET_TGTID_TGT(attr)		(((attr)->config >> 36) & 0x1FF)
+#define CPM_GET_TGTID_MASK(attr)	(((attr)->config >> 45) & 0x1FF)
+#define CPM_GET_PARTID_TGT(attr)	(((attr)->config >> 54) & 0x1F)
+#define CPM_GET_PARTID_MASK(attr)	(((attr)->config >> 59) & 0x1F)
+
+#define CPM_GET_ADDR_LO(attr)		((attr)->config1 & 0xFFFFFFFFFFFFULL)
+#define CPM_GET_OPCODE_MASK(attr)	(((attr)->config1 >> 48) & 0x7F)
+#define CPM_GET_OPCODE_TGT(attr)	(((attr)->config1 >> 55) & 0x7F)
+#define CPM_GET_SEL(attr)		(((attr)->config1 >> 62) & 0x1)
+
+#define CPM_GET_ADDR_HI(attr)		((attr)->config2 & 0xFFFFFFFFFFFFULL)
+#define CPM_GET_MON_PERIOD(attr)	(((attr)->config2 >> 48) & 0x3F)
+
+/* CSR registers */
+#define CPM_CSR0              0x00
+#define CPM_CSR1              0x04
+#define CPM_CSR2              0x08
+/* CSR0 bit definitions */
+#define CPM_MON_EN            BIT(4)
+#define CPM_MON_DN_BIT        BIT(16)     /* mon_dn status in int_s */
+#define CPM_MON_DN_INT        BIT(24)     /* mon_dn status in int_rs (W1C) */
+#define CPM_INT_MASK          GENMASK(28, 24)
+/* OSTD status registers */
+#define CPM_STT_OSTD0         0x10
+#define CPM_STT_OSTD1         0x14
+#define CPM_STT_OSTD2         0x18
+#define CPM_STT_OSTD3         0x1C
+/* LCRD status registers */
+#define CPM_STT_LCRD0         0x20
+#define CPM_STT_LCRD1         0x24
+#define CPM_STT_LCRD2         0x28
+/* EVT slot registers — each slot occupies 0x40 bytes */
+#define CPM_EVT_STRIDE        0x40
+#define CPM_EVT_BASE(idx)     (0x40 + (idx) * CPM_EVT_STRIDE)
+#define CPM_EVTx_CTL0(idx)    (CPM_EVT_BASE(idx) + 0x00)   /* +0x00 */
+#define CPM_EVTx_CTL1(idx)    (CPM_EVT_BASE(idx) + 0x04)   /* +0x04 */
+#define CPM_EVT_CNT(idx)      (CPM_EVT_BASE(idx) + 0x08)   /* +0x08 */
+#define CPM_EVTx_FLT0(idx)    (CPM_EVT_BASE(idx) + 0x10)   /* +0x10 */
+#define CPM_EVTx_FLT1(idx)    (CPM_EVT_BASE(idx) + 0x14)   /* +0x14 */
+#define CPM_EVTx_FLT2(idx)    (CPM_EVT_BASE(idx) + 0x18)   /* +0x18 */
+#define CPM_EVTx_FLT3(idx)    (CPM_EVT_BASE(idx) + 0x1C)   /* +0x1C */
+#define CPM_EVTx_FLT4(idx)    (CPM_EVT_BASE(idx) + 0x20)   /* +0x20 */
+#define CPM_EVTx_FLT5(idx)    (CPM_EVT_BASE(idx) + 0x24)   /* +0x24 */
+#define CPM_EVTx_FLT6(idx)    (CPM_EVT_BASE(idx) + 0x28)   /* +0x28 */
+#define CPM_EVTx_FLT7(idx)    (CPM_EVT_BASE(idx) + 0x2C)   /* +0x2C */
+
+enum cpm_count_mode {
+	CPM_COUNT_ACCUM,    /* delta accumulation (count events) */
+	CPM_COUNT_SET,      /* overwrite (avg) */
+	CPM_COUNT_MAX,      /* global maximum across windows */
+	CPM_COUNT_MIN,      /* global minimum across windows */
+	CPM_COUNT_AVG,      /* running average across windows (filters invalid samples) */
+};
+
+static enum cpuhp_state cpm_cpuhp_state;
+
+struct cpm_pmu {
+	struct device	*dev;
+	void __iomem	*base;		/* CPM event registers (CSR/EVT/OSTD/LCRD) */
+	void __iomem	*sysreg_base;	/* TPE_SYS_REG space, only for CPM_SEL at offset 0x34 */
+	int		irq;
+	struct pmu	pmu;
+	const char	*cpm_name;	/* name from DTS/ACPI, e.g. "d0_cpu0" */
+	int		cpu;		/* administrative CPU for uncore PMU */
+	u32		cpm_sel;	/* 0=CPU Core0, 1=TPE */
+	u32		mon_period;	/* monitoring period exponent, written to CSR2 */
+	int		active_events;	/* number of currently active events */
+	bool		hw_started;	/* whether hardware has been started */
+	struct hlist_node	node;	/* CPU hotplug instance list node */
+	DECLARE_BITMAP(used_mask, CPM_MAX_COUNTERS);	/* tracks allocated hw counters (bit 0-7) */
+	/*
+	 * Unified event array:
+	 *   [0, CPM_MAX_COUNTERS)      — hardware counter slots, indexed by hw counter id.
+	 *                                 Allocated via used_mask / find_first_zero_bit.
+	 *   [CPM_MAX_COUNTERS, CPM_MAX_STAT_EVENTS) — OSTD/LCRD stat events (avg/min/max/real).
+	 *                                 No hardware counter, read STT registers in ISR.
+	 *   "real" events are tracked here too (same as avg/min/max), so the ISR and
+	 *   cpm_hw_stop() keep them updated; cpm_event_read() additionally does an
+	 *   on-demand register read for real events when the event is still ACTIVE.
+	 *
+	 * ISR iterates the full array, skipping NULL entries.
+	 * cpm_event_update() dispatches by event_base to read the correct register.
+	 */
+	struct perf_event *events[CPM_MAX_STAT_EVENTS];
+	u64 avg_sum[CPM_MAX_STAT_EVENTS];
+	u32 avg_nr[CPM_MAX_STAT_EVENTS];
+};
+
+#define to_cpm_pmu(p) container_of(p, struct cpm_pmu, pmu)
+
+#define CPM_PMU_EVENT_ATTR(_name, _config) \
+	PMU_EVENT_ATTR_STRING(_name, cpm_event_attr_##_name, "event=" __stringify(_config))
+
+/* event monitoring (requires counter allocation)
+ * _config number reflects actual event number in CPM spec
+ */
+CPM_PMU_EVENT_ATTR(rd_trans,		0x00);
+CPM_PMU_EVENT_ATTR(wr_trans,		0x01);
+CPM_PMU_EVENT_ATTR(atomic_trans,	0x02);
+CPM_PMU_EVENT_ATTR(stash_trans,		0x03);
+CPM_PMU_EVENT_ATTR(dataless_trans,	0x04);
+CPM_PMU_EVENT_ATTR(prefetch_trans,	0x05);
+CPM_PMU_EVENT_ATTR(dvm_trans,		0x06);
+CPM_PMU_EVENT_ATTR(all_trans,		0x07);
+CPM_PMU_EVENT_ATTR(rd_retry,		0x08);
+CPM_PMU_EVENT_ATTR(wr_retry,		0x09);
+CPM_PMU_EVENT_ATTR(rd_timeout,		0x10);
+CPM_PMU_EVENT_ATTR(wr_timeout,		0x11);
+CPM_PMU_EVENT_ATTR(rd_avg_lat,		0x20);
+CPM_PMU_EVENT_ATTR(wr_avg_lat,		0x21);
+CPM_PMU_EVENT_ATTR(rd_max_lat,		0x28);
+CPM_PMU_EVENT_ATTR(wr_max_lat,		0x29);
+CPM_PMU_EVENT_ATTR(rd_min_lat,		0x30);
+CPM_PMU_EVENT_ATTR(wr_min_lat,		0x31);
+/*
+ * OSTD / LCRD events — no hardware counter slot needed.
+ *   - "real" and "avg/min/max" events: idx = 8+ (placed in events[] stat
+ *     region), ISR reads register and updates event->count on mon_dn.
+ *   - "real" events additionally get an on-demand register read in
+ *     cpm_event_read() while the event is ACTIVE (see cpm_event_read()).
+ */
+CPM_PMU_EVENT_ATTR(ostd_rd_avg,		0x100);
+CPM_PMU_EVENT_ATTR(ostd_rd_real,	0x101);  /* real-time */
+CPM_PMU_EVENT_ATTR(ostd_rd_min,		0x102);
+CPM_PMU_EVENT_ATTR(ostd_rd_max,		0x103);
+CPM_PMU_EVENT_ATTR(ostd_wr_avg,		0x110);
+CPM_PMU_EVENT_ATTR(ostd_wr_real,	0x111);  /* real-time */
+CPM_PMU_EVENT_ATTR(ostd_wr_min,		0x112);
+CPM_PMU_EVENT_ATTR(ostd_wr_max,		0x113);
+CPM_PMU_EVENT_ATTR(lcrd_txdat_avg,	0x200);
+CPM_PMU_EVENT_ATTR(lcrd_txdat_min,	0x201);
+CPM_PMU_EVENT_ATTR(lcrd_txdat_max,	0x202);
+CPM_PMU_EVENT_ATTR(lcrd_txdat_real,	0x203);  /* real-time */
+CPM_PMU_EVENT_ATTR(lcrd_txreq_avg,	0x204);
+CPM_PMU_EVENT_ATTR(lcrd_txreq_min,	0x205);
+CPM_PMU_EVENT_ATTR(lcrd_txreq_max,	0x206);
+CPM_PMU_EVENT_ATTR(lcrd_txreq_real,	0x207);  /* real-time */
+CPM_PMU_EVENT_ATTR(lcrd_rxdat_avg,	0x208);
+CPM_PMU_EVENT_ATTR(lcrd_rxdat_min,	0x209);
+CPM_PMU_EVENT_ATTR(lcrd_rxdat_max,	0x20A);
+CPM_PMU_EVENT_ATTR(lcrd_rxdat_real,	0x20B);  /* real-time */
+CPM_PMU_EVENT_ATTR(lcrd_txrsp_avg,	0x20C);
+CPM_PMU_EVENT_ATTR(lcrd_txrsp_min,	0x20D);
+CPM_PMU_EVENT_ATTR(lcrd_txrsp_max,	0x20E);
+CPM_PMU_EVENT_ATTR(lcrd_txrsp_real,	0x20F);  /* real-time */
+CPM_PMU_EVENT_ATTR(lcrd_rxsnp_avg,	0x210);
+CPM_PMU_EVENT_ATTR(lcrd_rxsnp_min,	0x211);
+CPM_PMU_EVENT_ATTR(lcrd_rxsnp_max,	0x212);
+CPM_PMU_EVENT_ATTR(lcrd_rxsnp_real,	0x213);  /* real-time */
+CPM_PMU_EVENT_ATTR(lcrd_rxreq_avg,	0x214);
+CPM_PMU_EVENT_ATTR(lcrd_rxreq_min,	0x215);
+CPM_PMU_EVENT_ATTR(lcrd_rxreq_max,	0x216);
+CPM_PMU_EVENT_ATTR(lcrd_rxreq_real,	0x217);	/* real-time */
+
+static struct attribute *cpm_pmu_events_attrs[] = {
+	&cpm_event_attr_rd_trans.attr.attr,
+	&cpm_event_attr_wr_trans.attr.attr,
+	&cpm_event_attr_atomic_trans.attr.attr,
+	&cpm_event_attr_stash_trans.attr.attr,
+	&cpm_event_attr_dataless_trans.attr.attr,
+	&cpm_event_attr_prefetch_trans.attr.attr,
+	&cpm_event_attr_dvm_trans.attr.attr,
+	&cpm_event_attr_all_trans.attr.attr,
+	&cpm_event_attr_rd_retry.attr.attr,
+	&cpm_event_attr_wr_retry.attr.attr,
+	&cpm_event_attr_rd_timeout.attr.attr,
+	&cpm_event_attr_wr_timeout.attr.attr,
+	&cpm_event_attr_rd_avg_lat.attr.attr,
+	&cpm_event_attr_wr_avg_lat.attr.attr,
+	&cpm_event_attr_rd_max_lat.attr.attr,
+	&cpm_event_attr_wr_max_lat.attr.attr,
+	&cpm_event_attr_rd_min_lat.attr.attr,
+	&cpm_event_attr_wr_min_lat.attr.attr,
+	&cpm_event_attr_ostd_rd_avg.attr.attr,
+	&cpm_event_attr_ostd_rd_real.attr.attr,
+	&cpm_event_attr_ostd_rd_min.attr.attr,
+	&cpm_event_attr_ostd_rd_max.attr.attr,
+	&cpm_event_attr_ostd_wr_avg.attr.attr,
+	&cpm_event_attr_ostd_wr_real.attr.attr,
+	&cpm_event_attr_ostd_wr_min.attr.attr,
+	&cpm_event_attr_ostd_wr_max.attr.attr,
+	&cpm_event_attr_lcrd_txdat_avg.attr.attr,
+	&cpm_event_attr_lcrd_txdat_min.attr.attr,
+	&cpm_event_attr_lcrd_txdat_max.attr.attr,
+	&cpm_event_attr_lcrd_txdat_real.attr.attr,
+	&cpm_event_attr_lcrd_txreq_avg.attr.attr,
+	&cpm_event_attr_lcrd_txreq_min.attr.attr,
+	&cpm_event_attr_lcrd_txreq_max.attr.attr,
+	&cpm_event_attr_lcrd_txreq_real.attr.attr,
+	&cpm_event_attr_lcrd_rxdat_avg.attr.attr,
+	&cpm_event_attr_lcrd_rxdat_min.attr.attr,
+	&cpm_event_attr_lcrd_rxdat_max.attr.attr,
+	&cpm_event_attr_lcrd_rxdat_real.attr.attr,
+	&cpm_event_attr_lcrd_txrsp_avg.attr.attr,
+	&cpm_event_attr_lcrd_txrsp_min.attr.attr,
+	&cpm_event_attr_lcrd_txrsp_max.attr.attr,
+	&cpm_event_attr_lcrd_txrsp_real.attr.attr,
+	&cpm_event_attr_lcrd_rxsnp_avg.attr.attr,
+	&cpm_event_attr_lcrd_rxsnp_min.attr.attr,
+	&cpm_event_attr_lcrd_rxsnp_max.attr.attr,
+	&cpm_event_attr_lcrd_rxsnp_real.attr.attr,
+	&cpm_event_attr_lcrd_rxreq_avg.attr.attr,
+	&cpm_event_attr_lcrd_rxreq_min.attr.attr,
+	&cpm_event_attr_lcrd_rxreq_max.attr.attr,
+	&cpm_event_attr_lcrd_rxreq_real.attr.attr,
+	NULL,
+};
+
+/*
+ * 10 bits: not just hardware evt_type (CTL0[13:8], 6 bits).
+ * Software event_id namespace:
+ *   0x00-0x3F  — CPM_EVENT_MONITOR, low 6 bits written to evt_type
+ *   0x100-0x1FF — CPM_EVENT_OSTD, direct register read
+ *   0x200-0x2FF — CPM_EVENT_LCRD, direct register read
+ */
+PMU_FORMAT_ATTR(event,        "config:0-9");
+PMU_FORMAT_ATTR(filter_en,    "config:10-15");
+PMU_FORMAT_ATTR(flt_align,    "config:16-17");
+PMU_FORMAT_ATTR(srcid_tgt,    "config:18-26");
+PMU_FORMAT_ATTR(srcid_mask,   "config:27-35");
+PMU_FORMAT_ATTR(tgtid_tgt,    "config:36-44");
+PMU_FORMAT_ATTR(tgtid_mask,   "config:45-53");
+PMU_FORMAT_ATTR(partid_tgt,   "config:54-58");
+PMU_FORMAT_ATTR(partid_mask,  "config:59-63");
+PMU_FORMAT_ATTR(addr_lo,      "config1:0-47");
+PMU_FORMAT_ATTR(opcode_mask,  "config1:48-54");
+PMU_FORMAT_ATTR(opcode_tgt,   "config1:55-61");
+PMU_FORMAT_ATTR(cpm_sel,      "config1:62");
+PMU_FORMAT_ATTR(addr_hi,      "config2:0-47");
+PMU_FORMAT_ATTR(mon_period,   "config2:48-53");
+
+static struct attribute *cpm_pmu_format_attrs[] = {
+	&format_attr_event.attr,
+	&format_attr_filter_en.attr,
+	&format_attr_flt_align.attr,
+	&format_attr_srcid_tgt.attr,
+	&format_attr_srcid_mask.attr,
+	&format_attr_tgtid_tgt.attr,
+	&format_attr_tgtid_mask.attr,
+	&format_attr_partid_tgt.attr,
+	&format_attr_partid_mask.attr,
+	&format_attr_addr_lo.attr,
+	&format_attr_opcode_mask.attr,
+	&format_attr_opcode_tgt.attr,
+	&format_attr_cpm_sel.attr,
+	&format_attr_addr_hi.attr,
+	&format_attr_mon_period.attr,
+	NULL,
+};
+
+static ssize_t cpm_pmu_cpumask_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct cpm_pmu *cpm = to_cpm_pmu(dev_get_drvdata(dev));
+
+	return cpumap_print_to_pagebuf(true, buf, cpumask_of(cpm->cpu));
+}
+
+static struct device_attribute cpm_pmu_cpumask_attr =
+	__ATTR(cpumask, 0444, cpm_pmu_cpumask_show, NULL);
+
+static struct attribute *cpm_pmu_cpumask_attrs[] = {
+	&cpm_pmu_cpumask_attr.attr,
+	NULL,
+};
+
+static struct attribute_group cpm_pmu_events_attr_group = {
+	.name = "events",
+	.attrs = cpm_pmu_events_attrs,
+};
+
+static struct attribute_group cpm_pmu_format_attr_group = {
+	.name = "format",
+	.attrs = cpm_pmu_format_attrs,
+};
+
+static struct attribute_group cpm_pmu_cpumask_attr_group = {
+	.attrs = cpm_pmu_cpumask_attrs,
+};
+
+static const struct attribute_group *cpm_pmu_attr_groups[] = {
+	&cpm_pmu_events_attr_group,
+	&cpm_pmu_format_attr_group,
+	&cpm_pmu_cpumask_attr_group,
+	NULL,
+};
+
+static bool cpm_is_avg_latency_event(u32 event_id)
+{
+	return (event_id >= 0x20 && event_id <= 0x21);
+}
+
+/*
+ * Returns true for OSTD/LCRD events whose register value is a
+ * live hardware snapshot (can be read anytime).  Returns false
+ * for avg/min/max which are window-based statistics (only valid
+ * at mon_dn).
+ */
+static bool cpm_is_realtime_stat(u32 event_id)
+{
+	if (event_id >= 0x200)
+		return (event_id & 0x3) == 0x3;   /* LCRD: xxx_real ends in 0x3 */
+	if (event_id >= 0x100)
+		return (event_id & 0xF) == 0x1;   /* OSTD: xxx_real ends in 0x1 */
+	return false;
+}
+
+static int cpm_pmu_offline_cpu(unsigned int cpu, struct hlist_node *node)
+{
+	struct cpm_pmu *cpm = hlist_entry_safe(node, struct cpm_pmu, node);
+	unsigned int target;
+
+	if (cpu != cpm->cpu)
+		return 0;
+
+	target = cpumask_any_but(cpu_online_mask, cpu);
+	perf_pmu_migrate_context(&cpm->pmu, cpu, target);
+	cpm->cpu = target;
+
+	return 0;
+}
+
+static __maybe_unused void cpm_reg_dump(struct cpm_pmu *cpm)
+{
+	for (int i = 0; i <= 0x22c; i += 4)
+		dev_info(cpm->dev, "reg 0x%x = 0x%x\n", i, readl(cpm->base + i));
+}
+
+static int cpm_event_init(struct perf_event *event)
+{
+	struct cpm_pmu *cpm = to_cpm_pmu(event->pmu);
+	u64 config = event->attr.config;
+	struct hw_perf_event *hwc = &event->hw;
+	u32 event_id = CPM_GET_EVENT(&event->attr);
+
+	if (event->attr.type != event->pmu->type)
+		return -ENOENT;
+
+	if (event->attach_state & PERF_ATTACH_TASK)
+		return -EOPNOTSUPP;
+
+	if (is_sampling_event(event))
+		return -EOPNOTSUPP;
+
+	event->cpu = cpm->cpu;
+
+	hwc->config = config;
+	hwc->idx = -1;
+
+	if (event_id < 0x100)
+		hwc->event_base = CPM_EVENT_MONITOR;
+	else if (event_id < 0x200)
+		hwc->event_base = CPM_OSTD_STAT;
+	else
+		hwc->event_base = CPM_LCRD_STAT;
+
+	return 0;
+}
+
+static void cpm_hw_config_filters(struct cpm_pmu *cpm, int idx, struct perf_event *event)
+{
+	struct perf_event_attr *attr = &event->attr;
+	void __iomem *base = cpm->base;
+
+	/* FLT0/FLT1: address range lower bound (48-bit addr_lo) */
+	u64 addr_lo = CPM_GET_ADDR_LO(attr);
+
+	writel(lower_32_bits(addr_lo), base + CPM_EVTx_FLT0(idx));
+	writel(lower_16_bits(upper_32_bits(addr_lo)), base + CPM_EVTx_FLT1(idx));
+
+	/* FLT2/FLT3: address range upper bound (48-bit addr_hi) */
+	u64 addr_hi = CPM_GET_ADDR_HI(attr);
+
+	writel(lower_32_bits(addr_hi), base + CPM_EVTx_FLT2(idx));
+	writel(lower_16_bits(upper_32_bits(addr_hi)), base + CPM_EVTx_FLT3(idx));
+
+	/* FLT4: opcode filter + address alignment */
+	u32 flt4 = (CPM_GET_OPCODE_MASK(attr) << 24)
+		 | (CPM_GET_OPCODE_TGT(attr) << 16)
+		 | CPM_GET_FLT_ALIGN(attr);
+	writel(flt4, base + CPM_EVTx_FLT4(idx));
+
+	/* FLT5: srcid filter */
+	u32 flt5 = (CPM_GET_SRCID_MASK(attr) << 16)
+		 | CPM_GET_SRCID_TGT(attr);
+	writel(flt5, base + CPM_EVTx_FLT5(idx));
+
+	/* FLT6: tgtid filter */
+	u32 flt6 = (CPM_GET_TGTID_MASK(attr) << 16)
+		 | CPM_GET_TGTID_TGT(attr);
+	writel(flt6, base + CPM_EVTx_FLT6(idx));
+
+	/* FLT7: partid filter — [HW Bug] partid_tgt must be shifted left by 1 */
+	u32 flt7 = (CPM_GET_PARTID_MASK(attr) << 16)
+		 | (CPM_GET_PARTID_TGT(attr) << 1);
+	writel(flt7, base + CPM_EVTx_FLT7(idx));
+}
+
+static void cpm_pmu_enable(struct pmu *pmu)
+{
+	/* Intentionally empty — see cpm_pmu_disable comment. */
+}
+
+/*
+ * Read one OSTD field (16-bit) from STT_OSTD0–OSTD3.
+ *
+ * event_id encoding: 0x1[group][sub]
+ *   group (bit 4): 0 = rd,  1 = wr
+ *   sub (bit 1:0): 0 = avg, 1 = real, 2 = min, 3 = max
+ *
+ * Register layout (each field 16 bits):
+ *   OSTD0 (0x10): rd_avg[31:16]  rd_real[15:0]
+ *   OSTD1 (0x14): rd_min[31:16]  rd_max[15:0]
+ *   OSTD2 (0x18): wr_avg[31:16]  wr_real[15:0]
+ *   OSTD3 (0x1C): wr_min[31:16]  wr_max[15:0]
+ */
+static u32 cpm_read_ostd(struct cpm_pmu *cpm, u32 event_id)
+{
+	u32 group = (event_id >> 4) & 0x1;       /* 0=rd, 1=wr */
+	u32 sub   = event_id & 0x3;              /* 0=avg, 1=real, 2=min, 3=max */
+	u32 reg   = CPM_STT_OSTD0 + group * 8 + (sub / 2) * 4;
+	u32 val   = readl(cpm->base + reg);
+
+	return (sub & 1) ? (val & 0xFFFF) : (val >> 16);
+}
+
+/*
+ * Read one LCRD field (4-bit) from STT_LCRD0–LCRD2.
+ *
+ * event_id encoding: 0x2[offset], offset 0x00–0x17
+ *   Every 8 offsets → one 32-bit register, each containing 2 channels × 4 stats.
+ *   Field order within register (MSB first):
+ *     [31:28] avg  [27:24] min  [23:20] max  [19:16] real  ← upper channel
+ *     [15:12] avg  [11:8]  min  [7:4]   max  [3:0]   real  ← lower channel
+ *
+ * Register layout:
+ *   LCRD0 (0x20): txdat[31:16] + txreq[15:0]
+ *   LCRD1 (0x24): rxdat[31:16] + txrsp[15:0]
+ *   LCRD2 (0x28): rxsnp[31:16] + rxreq[15:0]
+ */
+static u32 cpm_read_lcrd(struct cpm_pmu *cpm, u32 event_id)
+{
+	u32 off   = event_id & 0xFF;             /* 0x00–0x17 */
+	u32 reg   = CPM_STT_LCRD0 + (off / 8) * 4;
+	u32 shift = (7 - (off % 8)) * 4;
+	u32 val   = readl(cpm->base + reg);
+
+	return (val >> shift) & 0xF;
+}
+
+static enum cpm_count_mode cpm_update_mode(u32 event_id)
+{
+	/* EVENT_MONITOR: 0x00-0x3F */
+	if (event_id < 0x100) {
+		switch (event_id) {
+		case 0x28: case 0x29: return CPM_COUNT_MAX;   /* rd/wr_max_lat */
+		case 0x30: case 0x31: return CPM_COUNT_MIN;   /* rd/wr_min_lat */
+		case 0x20: case 0x21: return CPM_COUNT_AVG;   /* rd/wr_avg_lat */
+		default:              return CPM_COUNT_ACCUM;  /* trans/retry/timeout */
+		}
+	}
+	/* OSTD: sub encoding — 0=avg, 1=real, 2=min, 3=max */
+	if (event_id < 0x200) {
+		switch (event_id & 0x3) {
+		case 3:  return CPM_COUNT_MAX;
+		case 2:  return CPM_COUNT_MIN;
+		case 0:  return CPM_COUNT_AVG;
+		default: return CPM_COUNT_SET;
+		}
+	}
+	/* LCRD: sub encoding — 0=avg, 1=min, 2=max, 3=real */
+	switch (event_id & 0x3) {
+	case 2:  return CPM_COUNT_MAX;
+	case 1:  return CPM_COUNT_MIN;
+	case 0:  return CPM_COUNT_AVG;
+	default: return CPM_COUNT_SET;
+	}
+}
+
+static void cpm_count_update(struct perf_event *event, u64 val,
+			     enum cpm_count_mode mode)
+{
+	struct cpm_pmu *cpm = to_cpm_pmu(event->pmu);
+	struct hw_perf_event *hwc = &event->hw;
+
+	switch (mode) {
+	case CPM_COUNT_ACCUM:
+		local64_add(val, &event->count);
+		break;
+	case CPM_COUNT_MAX: {
+		u64 cur = local64_read(&event->count);
+
+		if (val > cur)
+			local64_set(&event->count, val);
+		break;
+	}
+	case CPM_COUNT_MIN: {
+		u64 cur = local64_read(&event->count);
+
+		if (cur == 0 || val < cur)
+			local64_set(&event->count, val);
+		break;
+	}
+	case CPM_COUNT_AVG: {
+		int idx = hwc->idx;
+
+		if (idx < 0 || idx >= CPM_MAX_STAT_EVENTS)
+			break;
+		cpm->avg_sum[idx] += val;
+		cpm->avg_nr[idx]++;
+		local64_set(&event->count, cpm->avg_sum[idx] / cpm->avg_nr[idx]);
+		break;
+	}
+	default: /* CPM_COUNT_SET */
+		local64_set(&event->count, val);
+		break;
+	}
+}
+
+static void cpm_event_update(struct perf_event *event)
+{
+	struct cpm_pmu *cpm = to_cpm_pmu(event->pmu);
+	struct hw_perf_event *hwc = &event->hw;
+	u32 event_id = CPM_GET_EVENT(&event->attr);
+	enum cpm_count_mode mode = cpm_update_mode(event_id);
+	u64 val;
+
+	if (hwc->event_base == CPM_OSTD_STAT) {
+		val = cpm_read_ostd(cpm, event_id);
+	} else if (hwc->event_base == CPM_LCRD_STAT) {
+		val = cpm_read_lcrd(cpm, event_id);
+	} else {
+		val = readl(cpm->base + CPM_EVT_CNT(hwc->idx));
+		if (cpm_is_avg_latency_event(event_id) && val == 0xFFFFFFFF)
+			return;
+	}
+
+	if (mode == CPM_COUNT_AVG && val == 0)
+		return;
+	if (mode == CPM_COUNT_MIN && val == 0)
+		return;
+
+	cpm_count_update(event, val, mode);
+}
+
+static void cpm_hw_start(struct cpm_pmu *cpm)
+{
+
+	if (cpm->sysreg_base)
+		writel(cpm->cpm_sel, cpm->sysreg_base);
+
+	writel(0x101, cpm->base + CPM_CSR0);
+	writel(cpm->mon_period, cpm->base + CPM_CSR2);
+	writel(0x0, cpm->base + CPM_CSR1);
+	writel(0x111, cpm->base + CPM_CSR0);
+	writel(0x10, cpm->base + CPM_CSR1);
+
+	cpm->hw_started = true;
+}
+
+static void cpm_hw_stop(struct cpm_pmu *cpm)
+{
+	u32 csr0;
+
+	disable_irq_nosync(cpm->irq);
+
+	csr0 = readl(cpm->base + CPM_CSR0);
+	csr0 &= ~CPM_MON_EN;
+	writel(csr0, cpm->base + CPM_CSR0);
+
+	readl_poll_timeout_atomic(cpm->base + CPM_CSR0, csr0,
+			   csr0 & CPM_MON_DN_BIT, 10, 5000000);
+
+	for (int idx = 0; idx < CPM_MAX_STAT_EVENTS; idx++) {
+		struct perf_event *event = cpm->events[idx];
+
+		if (!event)
+			continue;
+		cpm_event_update(event);
+	}
+
+	writel(csr0, cpm->base + CPM_CSR0);
+
+	cpm->hw_started = false;
+
+	enable_irq(cpm->irq);
+}
+
+static void cpm_event_start(struct perf_event *event, int flags)
+{
+	struct cpm_pmu *cpm = to_cpm_pmu(event->pmu);
+
+	event->hw.state = 0;
+
+	if (!cpm->hw_started && cpm->active_events > 0)
+		cpm_hw_start(cpm);
+}
+
+static void cpm_event_stop(struct perf_event *event, int flags)
+{
+	struct hw_perf_event *hwc = &event->hw;
+
+	if (hwc->state & PERF_HES_STOPPED)
+		return;
+
+	hwc->state |= PERF_HES_STOPPED | PERF_HES_UPTODATE;
+}
+
+static int cpm_event_add(struct perf_event *event, int flags)
+{
+	struct cpm_pmu *cpm = to_cpm_pmu(event->pmu);
+	struct hw_perf_event *hwc = &event->hw;
+	u32 event_id = CPM_GET_EVENT(&event->attr);
+	u32 sel = CPM_GET_SEL(&event->attr);
+	u32 period = CPM_GET_MON_PERIOD(&event->attr);
+	int idx;
+
+	/*
+	 * No hw_started check here — CPM hardware supports configuring
+	 * EVTx_CTL0 while monitoring is running; new slots take effect
+	 * at the next window boundary. This allows perf core to add
+	 * events incrementally without stopping the hardware.
+	 */
+
+	/* global parameter consistency check (cpm_sel and mon_period are per-CPM) */
+	if (cpm->active_events == 0) {
+		cpm->cpm_sel = sel;
+		cpm->mon_period = period ? period : CPM_DEFAULT_MON_PERIOD;
+	} else {
+		if (cpm->cpm_sel != sel) {
+			dev_err(cpm->dev,
+				"All events must use the same cpm_sel (cpu=0 or tpe=1)\n");
+			return -EINVAL;
+		}
+		if (period && period != cpm->mon_period) {
+			dev_err(cpm->dev,
+				"All events must use the same mon_period\n");
+			return -EINVAL;
+		}
+	}
+
+	switch (hwc->event_base) {
+	case CPM_OSTD_STAT:
+	case CPM_LCRD_STAT:
+		for (idx = CPM_MAX_COUNTERS; idx < CPM_MAX_STAT_EVENTS; idx++)
+			if (cpm->events[idx] == NULL)
+				break;
+		if (idx == CPM_MAX_STAT_EVENTS)
+			return -ENOSPC;
+		hwc->idx = idx;
+		cpm->events[idx] = event;
+		break;
+	case CPM_EVENT_MONITOR:
+		idx = find_first_zero_bit(cpm->used_mask, CPM_MAX_COUNTERS);
+		if (idx >= CPM_MAX_COUNTERS)
+			return -ENOSPC;
+
+		set_bit(idx, cpm->used_mask);
+		cpm->events[idx] = event;
+		hwc->idx = idx;
+
+		u32 ctl0 = (CPM_GET_FILTER_EN(&event->attr) << 16)
+			| ((event_id & 0x3F) << 8)
+			| 0x1;
+		writel(ctl0, cpm->base + CPM_EVTx_CTL0(idx));
+
+		writel(CPM_DEFAULT_EVT_DURATION, cpm->base + CPM_EVTx_CTL1(idx));
+
+		if (CPM_GET_FILTER_EN(&event->attr))
+			cpm_hw_config_filters(cpm, idx, event);
+		break;
+	}
+
+	cpm->active_events++;
+
+	if (hwc->idx >= 0 && hwc->idx < CPM_MAX_STAT_EVENTS) {
+		cpm->avg_sum[hwc->idx] = 0;
+		cpm->avg_nr[hwc->idx] = 0;
+	}
+	hwc->state = PERF_HES_STOPPED | PERF_HES_UPTODATE;
+
+	if (flags & PERF_EF_START)
+		cpm_event_start(event, PERF_EF_START);
+
+	return 0;
+}
+
+static void cpm_event_del(struct perf_event *event, int flags)
+{
+	struct cpm_pmu *cpm = to_cpm_pmu(event->pmu);
+	int idx = event->hw.idx;
+
+	cpm_event_stop(event, PERF_EF_UPDATE);
+
+	if (idx >= 0) {
+		cpm->events[idx] = NULL;
+		if (idx < CPM_MAX_COUNTERS)
+			clear_bit(idx, cpm->used_mask);
+	}
+
+	cpm->active_events--;
+
+	if (cpm->active_events == 0 && cpm->hw_started)
+		cpm_hw_stop(cpm);
+
+	event->hw.idx = -1;
+}
+
+static void cpm_pmu_disable(struct pmu *pmu)
+{
+	/*
+	 * Intentionally empty. perf core calls pmu_disable/pmu_enable
+	 * frequently (default txn wrappers, tick handler, etc). Doing
+	 * real hardware stop/start here causes events added later to
+	 * miss counting windows (Bug A). Hardware lifecycle is managed
+	 * by event_start (first event → hw start) and event_del
+	 * (last event → hw stop) instead.
+	 */
+}
+
+static irqreturn_t cpm_irq_handler(int irq, void *data)
+{
+	struct cpm_pmu *cpm = data;
+	u32 status = readl(cpm->base + CPM_CSR0);
+
+	if (!(status & CPM_INT_MASK))
+		return IRQ_NONE;
+
+	if (status & CPM_MON_DN_INT) {
+		for (int idx = 0; idx < CPM_MAX_STAT_EVENTS; idx++) {
+			struct perf_event *event = cpm->events[idx];
+
+			if (!event)
+				continue;
+			cpm_event_update(event);
+		}
+	}
+
+	/* clear interrupt */
+	writel(status, cpm->base + CPM_CSR0);
+
+	return IRQ_HANDLED;
+}
+
+static void cpm_event_read(struct perf_event *event)
+{
+	struct cpm_pmu *cpm = to_cpm_pmu(event->pmu);
+	u32 event_id = CPM_GET_EVENT(&event->attr);
+
+	if (!cpm->hw_started)
+		return;
+
+	if (event_id >= 0x200) {
+		/* LCRD real: live hardware value, read register directly */
+		if (cpm_is_realtime_stat(event_id))
+			local64_set(&event->count, cpm_read_lcrd(cpm, event_id));
+		/* LCRD avg/min/max: window-based, already updated by ISR — no-op */
+	} else if (event_id >= 0x100) {
+		/* OSTD real: live hardware value, read register directly */
+		if (cpm_is_realtime_stat(event_id))
+			local64_set(&event->count, cpm_read_ostd(cpm, event_id));
+		/* OSTD avg/min/max: window-based, already updated by ISR — no-op */
+	} else {
+		/*
+		 * EVENT_MONITOR (count and latency):
+		 * No-op. event->count is maintained by ISR on every mon_dn.
+		 * perf core reads event->count directly after calling read().
+		 */
+	}
+}
+
+static int cpm_pmu_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct cpm_pmu *cpm;
+	struct resource *res;
+	const char *cpm_name;
+	char *name;
+	int ret;
+
+	cpm = devm_kzalloc(dev, sizeof(*cpm), GFP_KERNEL);
+	if (!cpm)
+		return -ENOMEM;
+	cpm->dev = dev;
+
+	/* MMIO mapping: CPM event registers */
+	cpm->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+	if (IS_ERR(cpm->base))
+		return PTR_ERR(cpm->base);
+
+	/* MMIO mapping: CPM_SEL register (CPU_SS only, DDR_SS has no second reg) */
+	struct resource *sysreg_res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+
+	if (sysreg_res) {
+		cpm->sysreg_base = devm_ioremap_resource(dev, sysreg_res);
+		if (IS_ERR(cpm->sysreg_base))
+			return PTR_ERR(cpm->sysreg_base);
+	}
+
+	/* read PMU name (works for both DTS of_property and ACPI _DSD) */
+	ret = device_property_read_string(&pdev->dev, "xuantie,cpm-name", &cpm_name);
+	if (ret)
+		name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "cpm_%llx",
+				(u64)(res->start >> 12));
+	else
+		name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "cpm_%s", cpm_name);
+	if (!name)
+		return -ENOMEM;
+
+	/* bind to administrative CPU */
+	cpm->cpu = smp_processor_id();
+
+	cpm->irq = platform_get_irq(pdev, 0);
+	if (cpm->irq < 0)
+		return cpm->irq;
+
+	ret = devm_request_irq(dev, cpm->irq, cpm_irq_handler,
+			       0, dev_name(dev), cpm);
+	if (ret)
+		return ret;
+
+	/* register instance to hotplug state (callback registered in module init) */
+	ret = cpuhp_state_add_instance(cpm_cpuhp_state, &cpm->node);
+	if (ret)
+		return ret;
+
+	cpm->pmu = (struct pmu) {
+		.module = THIS_MODULE,
+		.task_ctx_nr = perf_invalid_context,	/* uncore: no per-task support */
+		.pmu_enable = cpm_pmu_enable,
+		.pmu_disable = cpm_pmu_disable,
+		.event_init = cpm_event_init,
+		.add = cpm_event_add,
+		.del = cpm_event_del,
+		.start = cpm_event_start,
+		.stop = cpm_event_stop,
+		.read = cpm_event_read,
+		.attr_groups = cpm_pmu_attr_groups,
+		.capabilities = PERF_PMU_CAP_NO_EXCLUDE,	/* no privilege level filtering */
+	};
+
+	cpm->cpm_name = name;
+
+	ret = perf_pmu_register(&cpm->pmu, name, -1);
+	if (ret) {
+		dev_err(dev, "CPM PMU register failed: %d\n", ret);
+		goto out_cpuhp;
+	}
+
+	dev_info(dev, "CPM PMU registered as %s\n", name);
+
+	return 0;
+
+out_cpuhp:
+	cpuhp_state_remove_instance(cpm_cpuhp_state, &cpm->node);
+	return ret;
+}
+
+
+static const struct of_device_id cpm_pmu_of_match[] = {
+	{ .compatible = "xuantie,cpm" },
+	{},
+};
+MODULE_DEVICE_TABLE(of, cpm_pmu_of_match);
+
+static const struct acpi_device_id cpm_acpi_match[] = {
+	{ "BABA6000", 0 },
+	{},
+};
+MODULE_DEVICE_TABLE(acpi, cpm_acpi_match);
+
+static struct platform_driver cpm_pmu_driver = {
+	.probe		= cpm_pmu_probe,
+	.driver		= {
+		.name	= RISCV_PMU_CPM_PDEV_NAME,
+		.of_match_table = cpm_pmu_of_match,
+		.acpi_match_table = ACPI_PTR(cpm_acpi_match),
+	},
+};
+
+static int __init cpm_pmu_init(void)
+{
+	int ret;
+
+	ret = cpuhp_setup_state_multi(CPUHP_AP_ONLINE_DYN,
+				      "perf/xuantie/cpm:online",
+				      NULL, cpm_pmu_offline_cpu);
+	if (ret < 0)
+		return ret;
+	cpm_cpuhp_state = ret;
+
+	ret = platform_driver_register(&cpm_pmu_driver);
+	if (ret)
+		cpuhp_remove_multi_state(cpm_cpuhp_state);
+
+	return ret;
+}
+
+static void __exit cpm_pmu_exit(void)
+{
+	platform_driver_unregister(&cpm_pmu_driver);
+	cpuhp_remove_multi_state(cpm_cpuhp_state);
+}
+
+module_init(cpm_pmu_init);
+module_exit(cpm_pmu_exit);
+
+MODULE_AUTHOR("dong.yan <nanli.yd@alibaba-inc.com>");
+MODULE_DESCRIPTION("CHI performance monitor driver");
+MODULE_LICENSE("GPL v2");
