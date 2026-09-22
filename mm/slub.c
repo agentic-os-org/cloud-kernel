@@ -5066,12 +5066,12 @@ __setup("slub_memcg_sysfs=", setup_slub_memcg_sysfs);
 static ssize_t show_slab_objects(struct kmem_cache *s,
 			    char *buf, unsigned long flags)
 {
-	unsigned long total = 0;
+	u64 total = 0;
 	int node;
-	int x;
-	unsigned long *nodes;
+	long long x;
+	u64 *nodes;
 
-	nodes = kcalloc(nr_node_ids, sizeof(unsigned long), GFP_KERNEL);
+	nodes = kcalloc(nr_node_ids, sizeof(u64), GFP_KERNEL);
 	if (!nodes)
 		return -ENOMEM;
 
@@ -5158,11 +5158,11 @@ static ssize_t show_slab_objects(struct kmem_cache *s,
 			nodes[node] += x;
 		}
 	}
-	x = sprintf(buf, "%lu", total);
+	x = sprintf(buf, "%llu", total);
 #ifdef CONFIG_NUMA
 	for (node = 0; node < nr_node_ids; node++)
 		if (nodes[node])
-			x += sprintf(buf + x, " N%d=%lu",
+			x += sprintf(buf + x, " N%d=%llu",
 					node, nodes[node]);
 #endif
 	kfree(nodes);
