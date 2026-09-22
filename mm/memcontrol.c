@@ -6367,14 +6367,19 @@ static int mem_cgroup_allow_unevictable_write(struct cgroup_subsys_state *css,
 		return -EINVAL;
 	if (val && !unevictable_enabled())
 		return -EPERM;
-	if (memcg->allow_unevictable == val)
-		return 0;
 
-	memcg->allow_unevictable = val;
-	if (val)
+	if (val) {
+		/*
+		 * Always rescan on a write of 1, even when the memcg is
+		 * already armed: let user be able to forces a re-pin sweep
+		 * of tasks that have exec'd or mapped new text.
+		 */
+		memcg->allow_unevictable = 1;
 		memcg_all_processes_unevict(memcg, true);
-	else
+	} else if (memcg->allow_unevictable) {
+		memcg->allow_unevictable = 0;
 		memcg_all_processes_unevict(memcg, false);
+	}
 
 	return 0;
 }
@@ -8976,6 +8981,18 @@ static struct cftype memory_files[] = {
 		.name = "pgtable_misplaced",
 		.write_u64 = memcg_pgtable_misplaced_write,
 		.read_u64 = memcg_pgtable_misplaced_read,
+	},
+#endif
+#ifdef CONFIG_TEXT_UNEVICTABLE
+	{
+		.name = "allow_text_unevictable",
+		.read_u64 = mem_cgroup_allow_unevictable_read,
+		.write_u64 = mem_cgroup_allow_unevictable_write,
+	},
+	{
+		.name = "text_unevictable_percent",
+		.read_u64 = mem_cgroup_unevictable_percent_read,
+		.write_u64 = mem_cgroup_unevictable_percent_write,
 	},
 #endif
 #ifdef CONFIG_ASYNC_FORK

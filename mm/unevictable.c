@@ -23,6 +23,7 @@
 #include <linux/sched.h>
 #include <linux/proc_fs.h>
 #include <linux/sched/mm.h>
+#include <linux/sched/signal.h>
 #include <linux/swap.h>
 #include <linux/ksm.h>
 #include <linux/pgtable.h>
@@ -156,6 +157,15 @@ static void __evict_pid(struct evict_pid_entry *pid)
 						/* Ignore errors, but prev needs fixing up. */
 						if (error)
 							prev = vma;
+					} else {
+						/*
+						 * A skipped VMA is still the predecessor of the
+						 * next lockable one.  Leaving prev stale makes
+						 * mlock_fixup() hand vma_merge() a prev that is
+						 * not adjacent to the range, tripping the
+						 * "addr != curr->vm_start" VM_WARN in vma_merge().
+						 */
+						prev = vma;
 					}
 				}
 				mmap_write_unlock(mm);
@@ -341,30 +351,53 @@ static void add_unevict_task(struct task_struct *tsk)
 	}
 }
 
-static void unevict_pid(pid_t pid)
+static int unevict_pid(pid_t pid)
 {
 	struct task_struct *tsk;
 
 	if (pid <= 0)
-		return;
+		return -EINVAL;
 
 	rcu_read_lock();
 	tsk = find_task_by_pid_ns(pid, task_active_pid_ns(current));
 	if (!tsk) {
 		rcu_read_unlock();
-		return;
+		return -ESRCH;
 	}
 	get_task_struct(tsk);
 	rcu_read_unlock();
 
-#ifdef CONFIG_TEXT_UNEVICTABLE
-	if (is_memcg_unevictable_enabled(mem_cgroup_from_task(tsk))) {
+	/*
+	 * add_pid only accepts thread-group leaders (whole processes).  A bare
+	 * TID would key the entry on a single thread, but both the deferred
+	 * worker scan and the memcg arm/rescan paths track processes by their
+	 * leader (CSS_TASK_ITER_PROCS / cgroup_taskset_for_each_leader), so a
+	 * non-leader entry cannot be scanned or re-armed reliably.  Reject it.
+	 */
+	if (!thread_group_leader(tsk)) {
+		WARN_ONCE(1, "unevictable: add_pid rejected non-leader tid %d (tgid %d); pass the process pid instead\n",
+			  task_pid_nr(tsk), task_tgid_nr(tsk));
 		put_task_struct(tsk);
-		return;
+		return -EINVAL;
 	}
+
+#ifdef CONFIG_TEXT_UNEVICTABLE
+	/*
+	 * mem_cgroup_from_task() walks tsk's css and is_memcg_unevictable_enabled()
+	 * dereferences the returned memcg, so both must run under rcu_read_lock().
+	 */
+	rcu_read_lock();
+	if (is_memcg_unevictable_enabled(mem_cgroup_from_task(tsk))) {
+		rcu_read_unlock();
+		put_task_struct(tsk);
+		return 0;
+	}
+	rcu_read_unlock();
 #endif
 	add_unevict_task(tsk);
 	put_task_struct(tsk);
+
+	return 0;
 }
 
 struct add_pid_seq_context {
@@ -542,6 +575,23 @@ static void execute_vm_lock(struct work_struct *unused)
 				int error;
 #ifdef CONFIG_TEXT_UNEVICTABLE
 				struct mem_cgroup *memcg = get_mem_cgroup_from_mm(mm);
+
+				/*
+				 * This may be a re-scan: execve() cleared ->done
+				 * (self_exec_id changed), or a dlopen() re-armed
+				 * the entry.  The loop below re-counts every
+				 * lockable VMA into result->unevict_size and then
+				 * commits the whole sum to the memcg, so the
+				 * previous round's charge must be reverted first.
+				 * Otherwise each re-scan re-adds the already-locked
+				 * VMAs and the memcg counter grows super-linearly.
+				 */
+				if (result->unevict_size) {
+					if (memcg)
+						memcg_decrease_unevict_size(memcg,
+							result->unevict_size);
+					result->unevict_size = 0;
+				}
 #endif
 
 				for_each_vma(vmi, vma) {
@@ -560,6 +610,15 @@ static void execute_vm_lock(struct work_struct *unused)
 #ifdef CONFIG_TEXT_UNEVICTABLE
 						result->unevict_size += vma->vm_end - vma->vm_start;
 #endif
+					} else {
+						/*
+						 * A skipped VMA is still the predecessor of the
+						 * next lockable one.  Leaving prev stale makes
+						 * mlock_fixup() hand vma_merge() a prev that is
+						 * not adjacent to the range, tripping the
+						 * "addr != curr->vm_start" VM_WARN in vma_merge().
+						 */
+						prev = vma;
 					}
 				}
 
@@ -623,7 +682,11 @@ static ssize_t proc_write_add_pid(struct file *file,
 		ret = -EINVAL;
 		goto out;
 	} else {
-		unevict_pid((pid_t)pid);
+		err = unevict_pid((pid_t)pid);
+		if (err) {
+			ret = err;
+			goto out;
+		}
 		schedule_delayed_work(&evict_work, HZ);
 	}
 
@@ -778,10 +841,32 @@ void mem_cgroup_attach_unevictable(struct cgroup_taskset *tset)
 	}
 }
 
-static inline int schedule_unevict_task(struct task_struct *tsk, void *arg)
+/*
+ * There is no periodic scan, so this allows user to re-pin tasks:
+ * ensure the task is tracked and force ->done = false so the worker re-walks
+ * its address space and pins any text mapped since the last scan.
+ * execute_vm_lock() reverts the previous walk's charge before re-counting,
+ * so a forced re-walk does not double-count.
+ *
+ * Skip tasks whose whole address space is already mlocked (mm->def_flags &
+ * VM_LOCKED): their text is pinned anyway and execute_vm_lock() would only add
+ * and immediately drop such an entry, so tracking them is pure churn.
+ */
+static int schedule_unevict_task(struct task_struct *tsk, void *arg)
 {
+	struct mm_struct *mm = tsk->mm;
+	struct evict_pid_entry *entry;
+
+	if (mm && (mm->def_flags & VM_LOCKED))
+		return 0;
+
 	add_unevict_task(tsk);
-	schedule_delayed_work(&evict_work, HZ);
+
+	mutex_lock(&pid_mutex);
+	entry = lookup_unevict_entry(tsk);
+	if (entry)
+		entry->done = false;
+	mutex_unlock(&pid_mutex);
 
 	return 0;
 }
@@ -805,6 +890,23 @@ static inline void make_all_memcg_evictable(void)
 	}
 }
 
+/*
+ * Force a re-scan of every currently-armed memcg.  Triggered by a write of 1
+ * to the global unevictable switch, giving operators an explicit "re-pin
+ * everything now" action in place of the removed periodic scan.
+ */
+static void unevict_rescan_all_memcgs(void)
+{
+	struct mem_cgroup *memcg;
+
+	for_each_mem_cgroup(memcg) {
+		if (!memcg->allow_unevictable)
+			continue;
+		mem_cgroup_scan_tasks(memcg, schedule_unevict_task, NULL);
+	}
+	schedule_delayed_work(&evict_work, HZ);
+}
+
 void memcg_all_processes_unevict(struct mem_cgroup *memcg, bool enable)
 {
 	struct mem_cgroup *tmp_memcg;
@@ -817,29 +919,106 @@ void memcg_all_processes_unevict(struct mem_cgroup *memcg, bool enable)
 	else
 		tmp_memcg = memcg;
 
-	if (enable)
+	if (enable) {
 		mem_cgroup_scan_tasks(tmp_memcg, schedule_unevict_task, NULL);
-	else
+		schedule_delayed_work(&evict_work, HZ);
+	} else {
 		mem_cgroup_scan_tasks(tmp_memcg, schedule_evict_task, NULL);
+	}
 }
 
 void unevict_task_fork(struct task_struct *tsk)
 {
-	struct mem_cgroup *memcg = mem_cgroup_from_task(tsk);
+	struct mem_cgroup *memcg;
+	bool allow;
 
 	if (!unevictable_enabled())
 		return;
 
 	/*
+	 * memcg-armed processes are only ever tracked by their thread-group
+	 * leader: the .attach hook uses cgroup_taskset_for_each_leader() and the
+	 * on-demand rescan uses CSS_TASK_ITER_PROCS, both leader-only.  Unlike the
+	 * 5.10 livepatch (which had no .fork hook and relied solely on those two
+	 * leader-only entry points), this build wires a real cgroup .fork callback,
+	 * and cgroup_post_fork() fires it for every clone -- including CLONE_THREAD
+	 * children.  Filter to the leader here so a new thread does not get its own
+	 * entry: threads share the leader's mm (and its already-locked text), and a
+	 * per-thread entry would make execute_vm_lock() re-add the shared text span
+	 * once per thread, inflating memcg->unevictable_size N-fold and prematurely
+	 * tripping the percent cap.  A forked child *process* is itself a leader, so
+	 * "lock children at fork" is preserved; the exec call site (fs/exec.c, after
+	 * de_thread()) always passes the leader too, so this is a no-op there.
+	 */
+	if (!thread_group_leader(tsk))
+		return;
+
+	/*
+	 * Called from cgroup_post_fork() under cgroup_threadgroup_rwsem, not
+	 * under rcu_read_lock(); mem_cgroup_from_task() walks the task's css so
+	 * it must be wrapped, and the memcg it returns is only stable (and
+	 * ->allow_unevictable only safe to read) while the RCU section is held.
+	 *
 	 * memcg is practically never NULL (every task belongs to at least root
 	 * memcg), but if it were, allow arming — only an explicit
 	 * allow_unevictable=0 should block it.
 	 */
-	if (memcg && !memcg->allow_unevictable)
+	rcu_read_lock();
+	memcg = mem_cgroup_from_task(tsk);
+	allow = !memcg || memcg->allow_unevictable;
+	rcu_read_unlock();
+
+	if (!allow)
 		return;
 
 	add_unevict_task(tsk);
 	schedule_delayed_work(&evict_work, HZ);
+}
+
+/*
+ * Re-arm text locking after a new executable file mapping appears in the
+ * current process (dlopen(), ld.so lazy load, Python/JVM plugin import).
+ *
+ * The initial deferred scan sets ->done, after which execute_vm_lock() skips
+ * the entry; without this the newly mapped library stays on the evictable LRU.
+ */
+void unevict_rearm_current(void)
+{
+	struct evict_pid_entry *entry;
+
+	if (!unevictable_enabled())
+		return;
+
+	/*
+	 * mem_cgroup_from_task() walks current's css and
+	 * is_memcg_unevictable_enabled() dereferences it; both need rcu_read_lock().
+	 */
+	rcu_read_lock();
+	if (!is_memcg_unevictable_enabled(mem_cgroup_from_task(current))) {
+		rcu_read_unlock();
+		return;
+	}
+	rcu_read_unlock();
+
+	if (!base_tree)
+		return;
+
+	mutex_lock(&pid_mutex);
+
+	/*
+	 * memcg-armed processes are always tracked by their thread-group
+	 * leader (both the attach hook and the on-demand rescan use
+	 * CSS_TASK_ITER_PROCS, which iterates leaders only).  A dlopen() from a
+	 * non-main thread (JVM JNI, worker threads) must therefore re-arm the
+	 * *leader's* entry, not the calling thread's TID, which has no entry.
+	 */
+	entry = lookup_unevict_entry(current->group_leader);
+	if (entry && entry->done) {
+		entry->done = false;
+		schedule_delayed_work(&evict_work, HZ);
+	}
+
+	mutex_unlock(&pid_mutex);
 }
 
 static int __init setup_unevictable(char *s)
@@ -867,9 +1046,10 @@ static ssize_t unevictable_enabled_store(struct kobject *kobj,
 
 	mutex_lock(&mutex);
 
-	if (!strncmp(buf, "1", 1))
+	if (!strncmp(buf, "1", 1)) {
 		static_branch_enable(&unevictable_enabled_key);
-	else if (!strncmp(buf, "0", 1)) {
+		unevict_rescan_all_memcgs();
+	} else if (!strncmp(buf, "0", 1)) {
 		static_branch_disable(&unevictable_enabled_key);
 		make_all_memcg_evictable();
 	} else
