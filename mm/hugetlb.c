@@ -2286,6 +2286,8 @@ retry:
 
 	if (!folio_ref_count(folio)) {
 		struct hstate *h = folio_hstate(folio);
+		bool adjust_surplus = false;
+
 		if (!available_huge_pages(h))
 			goto out;
 
@@ -2308,8 +2310,11 @@ retry:
 			goto retry;
 		}
 
-		remove_hugetlb_folio(h, folio, false);
-		h->max_huge_pages--;
+		if (h->surplus_huge_pages_node[folio_nid(folio)])
+			adjust_surplus = true;
+		remove_hugetlb_folio(h, folio, adjust_surplus);
+		if (!adjust_surplus)
+			h->max_huge_pages--;
 		spin_unlock_irq(&hugetlb_lock);
 
 		/*
@@ -2325,8 +2330,9 @@ retry:
 			update_and_free_hugetlb_folio(h, folio, false);
 		} else {
 			spin_lock_irq(&hugetlb_lock);
-			add_hugetlb_folio(h, folio, false);
-			h->max_huge_pages++;
+			add_hugetlb_folio(h, folio, adjust_surplus);
+			if (!adjust_surplus)
+				h->max_huge_pages++;
 			spin_unlock_irq(&hugetlb_lock);
 		}
 
@@ -3585,6 +3591,7 @@ found:
 static int set_max_huge_pages(struct hstate *h, unsigned long count, int nid,
 			      nodemask_t *nodes_allowed)
 {
+	unsigned long persistent_free_count;
 	unsigned long min_count, ret;
 	struct page *page;
 	LIST_HEAD(page_list);
@@ -3697,8 +3704,24 @@ static int set_max_huge_pages(struct hstate *h, unsigned long count, int nid,
 	 * though, we'll note that we're not allowed to exceed surplus
 	 * and won't grow the pool anywhere else. Not until one of the
 	 * sysctls are changed, or the surplus pages go out of use.
+	 *
+	 * min_count is the expected number of persistent pages, we
+	 * shouldn't calculate min_count by using
+	 * resv_huge_pages + persistent_huge_pages() - free_huge_pages,
+	 * because there may exist free surplus huge pages, and this will
+	 * lead to subtracting twice. Free surplus huge pages come from HVO
+	 * failing to restore vmemmap, see comments in the callers of
+	 * hugetlb_vmemmap_restore_folio(). Thus, we should calculate
+	 * persistent free count first.
 	 */
-	min_count = h->resv_huge_pages + h->nr_huge_pages - h->free_huge_pages;
+	persistent_free_count = h->free_huge_pages;
+	if (h->free_huge_pages > persistent_huge_pages(h)) {
+		if (h->free_huge_pages > h->surplus_huge_pages)
+			persistent_free_count -= h->surplus_huge_pages;
+		else
+			persistent_free_count = 0;
+	}
+	min_count = h->resv_huge_pages + persistent_huge_pages(h) - persistent_free_count;
 	min_count = max(count, min_count);
 	try_to_free_low(h, min_count, nodes_allowed);
 
