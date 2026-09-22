@@ -7355,7 +7355,7 @@ static void __mem_cgroup_free(struct mem_cgroup *memcg)
 	}
 
 	kfree(memcg->vmstats);
-#ifdef CONFIG_RECLAIM_COLDPGS
+#if IS_ENABLED(CONFIG_RECLAIM_COLDPGS)
 	free_percpu(memcg->coldpgs_stats);
 #endif
 	free_percpu(memcg->vmstats_percpu);
