@@ -1364,7 +1364,8 @@ static const struct nfsd4_callback_ops nfsd4_cb_offload_ops = {
 
 static void nfsd4_init_copy_res(struct nfsd4_copy *copy, bool sync)
 {
-	copy->cp_res.wr_stable_how = NFS_UNSTABLE;
+	copy->cp_res.wr_stable_how =
+		copy->committed ? NFS_FILE_SYNC : NFS_UNSTABLE;
 	copy->cp_synchronous = sync;
 	gen_boot_verifier(&copy->cp_res.wr_verifier, copy->cp_clp->net);
 }
@@ -1373,11 +1374,18 @@ static ssize_t _nfsd_copy_file_range(struct nfsd4_copy *copy)
 {
 	struct file *dst = copy->nf_dst->nf_file;
 	struct file *src = copy->nf_src->nf_file;
+	errseq_t since;
 	ssize_t bytes_copied = 0;
-	size_t bytes_total = copy->cp_count;
+	u64 bytes_total = copy->cp_count;
 	u64 src_pos = copy->cp_src_pos;
 	u64 dst_pos = copy->cp_dst_pos;
+	int status;
+	loff_t end;
 
+	/* See RFC 7862 p.67: */
+	if (bytes_total == 0)
+		bytes_total = ULLONG_MAX;
+	since = READ_ONCE(dst->f_wb_err);
 	do {
 		if (kthread_should_stop())
 			break;
@@ -1390,6 +1398,15 @@ static ssize_t _nfsd_copy_file_range(struct nfsd4_copy *copy)
 		src_pos += bytes_copied;
 		dst_pos += bytes_copied;
 	} while (bytes_total > 0 && !copy->cp_synchronous);
+	/* for a non-zero asynchronous copy do a commit of data */
+	if (!copy->cp_synchronous && copy->cp_res.wr_bytes_written > 0) {
+		end = copy->cp_dst_pos + copy->cp_res.wr_bytes_written - 1;
+		status = vfs_fsync_range(dst, copy->cp_dst_pos, end, 0);
+		if (!status)
+			status = filemap_check_wb_err(dst->f_mapping, since);
+		if (!status)
+			copy->committed = true;
+	}
 	return bytes_copied;
 }
 
