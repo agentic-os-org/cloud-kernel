@@ -1187,39 +1187,42 @@ again:
 
 		unit = info->unit[index];
 
-		rcu_read_unlock();
+		/*
+		 * unit->map is RCU-protected and may be freed by a concurrent
+		 * shrinker_info resize, so keep the RCU read lock held across
+		 * the walk; only drop it around the shrinker call that sleeps.
+		 */
 		for_each_set_bit(i, unit->map, SHRINKER_UNIT_BITS) {
 			struct shrinker *shrinker;
 			unsigned long ret;
 			int shrinker_id = index * SHRINKER_UNIT_BITS + i;
 
-			rcu_read_lock();
 			shrinker = idr_find(my_shrinker_idr, shrinker_id);
 			if (unlikely(!shrinker || !shrinker_try_get(shrinker))) {
 				clear_bit(i, unit->map);
-				rcu_read_unlock();
 				continue;
 			}
-			rcu_read_unlock();
 
+			rcu_read_unlock();
 			ret = reclaim_coldslab_from_shrinker(shrinker, sc,
 							     nr_to_reclaim);
 			shrinker_put(shrinker);
+			rcu_read_lock();
 			if (ret == SHRINK_STOP)
 				continue;
 
 			nr_reclaimed += ret;
 			if (nr_reclaimed >= nr_to_reclaim)
-				goto out;
+				goto out_unlock;
 		}
 
+		rcu_read_unlock();
 		index++;
 		goto again;
 	}
 
 out_unlock:
 	rcu_read_unlock();
-out:
 	return nr_reclaimed;
 }
 
