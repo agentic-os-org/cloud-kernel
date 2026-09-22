@@ -252,6 +252,9 @@ struct iommu_domain {
 	};
 
 	atomic_t attach_count;
+	
+	struct mutex switch_log_lock;
+
 #ifdef CONFIG_IOMMU_LIVEUPDATE
 	struct iommu_domain_ser *preserved_state;
 #endif
@@ -805,12 +808,18 @@ struct iommu_ops {
  *                           including no-snoop TLPs on PCIe or other platform
  *                           specific mechanisms.
  * @set_pgtable_quirks: Set io page table quirks (IO_PGTABLE_QUIRK_*)
+ * @support_dirty_log: Check whether domain supports dirty log tracking
+ * @switch_dirty_log: Perform actions to start|stop dirty log tracking
+ * @sync_dirty_log: Sync dirty log from IOMMU into a dirty bitmap
+ * @clear_dirty_log: Clear dirty log of IOMMU by a mask bitmap
  * @free: Release the domain after use.
  * @preserve: Preserve the iommu domain for liveupdate.
  *            Returns 0 on success, a negative errno on failure.
  * @unpreserve: Unpreserve the iommu domain that was preserved earlier.
  * @restore: Restore the iommu domain after liveupdate.
  *           Returns 0 on success, a negative errno on failure.
+ * @get_msi_mapping_domain: Return the related iommu_domain that should hold the
+ *                          MSI cookie and accept mapping(s).
  */
 struct iommu_domain_ops {
 	int (*attach_dev)(struct iommu_domain *domain, struct device *dev,
@@ -840,10 +849,27 @@ struct iommu_domain_ops {
 	int (*set_pgtable_quirks)(struct iommu_domain *domain,
 				  unsigned long quirks);
 
+	/*
+	 * Track dirty log. Note: Don't concurrently call these interfaces with
+	 * other ops that access underlying page table.
+	 */
+	bool (*support_dirty_log)(struct iommu_domain *domain);
+	int (*switch_dirty_log)(struct iommu_domain *domain, bool enable,
+				unsigned long iova, size_t size, int prot);
+	int (*sync_dirty_log)(struct iommu_domain *domain,
+			      unsigned long iova, size_t size,
+			      unsigned long *bitmap, unsigned long base_iova,
+			      unsigned long bitmap_pgshift);
+	int (*clear_dirty_log)(struct iommu_domain *domain,
+			       unsigned long iova, size_t size,
+			       unsigned long *bitmap, unsigned long base_iova,
+			       unsigned long bitmap_pgshift);
 	void (*free)(struct iommu_domain *domain);
 	int (*preserve)(struct iommu_domain *domain, struct iommu_domain_ser *ser);
 	void (*unpreserve)(struct iommu_domain *domain, struct iommu_domain_ser *ser);
 	int (*restore)(struct iommu_domain *domain, struct iommu_domain_ser *ser);
+	struct iommu_domain *
+		(*get_msi_mapping_domain)(struct iommu_domain *domain);
 };
 
 /**
@@ -989,6 +1015,8 @@ extern void iommu_detach_device(struct iommu_domain *domain,
 extern struct iommu_domain *iommu_get_domain_for_dev(struct device *dev);
 struct iommu_domain *iommu_driver_get_domain_for_dev(struct device *dev);
 extern struct iommu_domain *iommu_get_dma_domain(struct device *dev);
+extern size_t iommu_pgsize(struct iommu_domain *domain, unsigned long iova,
+			   phys_addr_t paddr, size_t size, size_t *count);
 extern int iommu_map(struct iommu_domain *domain, unsigned long iova,
 		     phys_addr_t paddr, size_t size, int prot, gfp_t gfp);
 int iommu_map_nosync(struct iommu_domain *domain, unsigned long iova,
@@ -1043,6 +1071,18 @@ extern struct iommu_domain *iommu_group_default_domain(struct iommu_group *);
 int iommu_set_pgtable_quirks(struct iommu_domain *domain,
 		unsigned long quirks);
 
+extern bool iommu_support_dirty_log(struct iommu_domain *domain);
+extern int iommu_switch_dirty_log(struct iommu_domain *domain, bool enable,
+				  unsigned long iova, size_t size, int prot);
+extern int iommu_sync_dirty_log(struct iommu_domain *domain, unsigned long iova,
+				size_t size, unsigned long *bitmap,
+				unsigned long base_iova,
+				unsigned long bitmap_pgshift);
+extern int iommu_clear_dirty_log(struct iommu_domain *domain, unsigned long iova,
+				 size_t dma_size, unsigned long *bitmap,
+				 unsigned long base_iova,
+				 unsigned long bitmap_pgshift);
+
 void iommu_set_dma_strict(void);
 
 extern int report_iommu_fault(struct iommu_domain *domain, struct device *dev,
@@ -1058,8 +1098,6 @@ static inline bool apply_zhaoxin_dmar_acpi_a_behavior(void)
 #endif
 	return false;
 }
-
-extern int iova_reserve_domain_addr(struct iommu_domain *domain, dma_addr_t start, dma_addr_t end);
 
 int __acpi_rmrr_device_create_direct_mappings(struct iommu_domain *domain, struct device *dev);
 
@@ -1490,6 +1528,36 @@ static inline int iommu_set_pgtable_quirks(struct iommu_domain *domain,
 		unsigned long quirks)
 {
 	return 0;
+}
+
+static inline bool iommu_support_dirty_log(struct iommu_domain *domain)
+{
+	return false;
+}
+
+static inline int iommu_switch_dirty_log(struct iommu_domain *domain,
+					 bool enable, unsigned long iova,
+					 size_t size, int prot)
+{
+	return -EINVAL;
+}
+
+static inline int iommu_sync_dirty_log(struct iommu_domain *domain,
+				       unsigned long iova, size_t size,
+				       unsigned long *bitmap,
+				       unsigned long base_iova,
+				       unsigned long pgshift)
+{
+	return -EINVAL;
+}
+
+static inline int iommu_clear_dirty_log(struct iommu_domain *domain,
+					unsigned long iova, size_t size,
+					unsigned long *bitmap,
+					unsigned long base_iova,
+					unsigned long pgshift)
+{
+	return -EINVAL;
 }
 
 static inline int iommu_device_register(struct iommu_device *iommu,

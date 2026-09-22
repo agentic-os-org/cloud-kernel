@@ -445,6 +445,31 @@ config TEGRA241_CMDQV
 	  CMDQ-V extension.
 endif
 
+config ARM_SMMU_V3_PM
+	bool "Add arm_smmu_v3  suspend and resume support"
+	depends on ARM_SMMU_V3 && PM_SLEEP
+	default n
+	help
+	  Add support for suspend and resume support for arm smmu v3.
+
+config ARM_SMMU_V3_HTTU
+	bool "Add arm_smmu_v3  Hardware Translation Table Update"
+	depends on ARM_SMMU_V3
+	default n
+	help
+	  Add support for Hardware Translation Table Update arm smmu v3.
+
+config ARM_SMMU_V3_ECMDQ
+	bool "Add arm_smmu_v3 ecmdq support"
+	depends on ARM_SMMU_V3
+	default n
+	help
+	  Add support for ARM_SMMU_V3 ECMDQ. One smmu can have multiple
+	  ECMDQs which can be used to reduce competition when smmu try
+	  to send commands.
+
+	  If not sure, say no.
+
 config S390_IOMMU
 	def_bool y if S390 && PCI
 	depends on S390 && PCI
@@ -570,6 +595,15 @@ config IOMMU_LIVEUPDATE
 	  during kexec base kernel update.
 
 	  If unsure, say N.
+
+config  SMMU_BYPASS_DEV
+	bool "SMMU bypass streams for some specific devices"
+	depends on ARM_SMMU_V3=y
+	help
+	  according smmu.bypassdev cmdline, SMMU performs attribute
+	  transformation only,with no address translation.
+	  E.g:SMMU allow iMR3408/3416 Raid bypass at DMA default domain
+	  to support other devices Virtualization through.
 
 endif # IOMMU_SUPPORT
 
