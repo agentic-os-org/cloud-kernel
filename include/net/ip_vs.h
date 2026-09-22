@@ -858,9 +858,9 @@ struct ip_vs_app {
 
 	void (*unbind_conn)(struct ip_vs_app *, struct ip_vs_conn *);
 
-	int *			timeout_table;
-	int *			timeouts;
-	int			timeouts_size;
+	int *		timeout_table;
+	int *		timeouts;
+	int		timeouts_size;
 
 	int (*conn_schedule)(struct sk_buff *skb, struct ip_vs_app *app,
 			     int *verdict, struct ip_vs_conn **cpp);
@@ -910,35 +910,35 @@ struct netns_ipvs {
 	int			gen;		/* Generation */
 	int			enable;		/* enable like nf_hooks do */
 	/* Hash table: for real service lookups */
-	#define IP_VS_RTAB_BITS 4
-	#define IP_VS_RTAB_SIZE (1 << IP_VS_RTAB_BITS)
-	#define IP_VS_RTAB_MASK (IP_VS_RTAB_SIZE - 1)
+	 #define IP_VS_RTAB_BITS 4
+	 #define IP_VS_RTAB_SIZE (1 << IP_VS_RTAB_BITS)
+	 #define IP_VS_RTAB_MASK (IP_VS_RTAB_SIZE - 1)
 
 	struct hlist_head	rs_table[IP_VS_RTAB_SIZE];
 	/* ip_vs_app */
 	struct list_head	app_list;
 	/* ip_vs_proto */
-	#define IP_VS_PROTO_TAB_SIZE	32	/* must be power of 2 */
+	 #define IP_VS_PROTO_TAB_SIZE	32	/* must be power of 2 */
 	struct ip_vs_proto_data *proto_data_table[IP_VS_PROTO_TAB_SIZE];
 	/* ip_vs_proto_tcp */
 #ifdef CONFIG_IP_VS_PROTO_TCP
-	#define	TCP_APP_TAB_BITS	4
-	#define	TCP_APP_TAB_SIZE	(1 << TCP_APP_TAB_BITS)
-	#define	TCP_APP_TAB_MASK	(TCP_APP_TAB_SIZE - 1)
+	 #define	TCP_APP_TAB_BITS	4
+	 #define	TCP_APP_TAB_SIZE	(1 << TCP_APP_TAB_BITS)
+	 #define	TCP_APP_TAB_MASK	(TCP_APP_TAB_SIZE - 1)
 	struct list_head	tcp_apps[TCP_APP_TAB_SIZE];
 #endif
 	/* ip_vs_proto_udp */
 #ifdef CONFIG_IP_VS_PROTO_UDP
-	#define	UDP_APP_TAB_BITS	4
-	#define	UDP_APP_TAB_SIZE	(1 << UDP_APP_TAB_BITS)
-	#define	UDP_APP_TAB_MASK	(UDP_APP_TAB_SIZE - 1)
+	 #define	UDP_APP_TAB_BITS	4
+	 #define	UDP_APP_TAB_SIZE	(1 << UDP_APP_TAB_BITS)
+	 #define	UDP_APP_TAB_MASK	(UDP_APP_TAB_SIZE - 1)
 	struct list_head	udp_apps[UDP_APP_TAB_SIZE];
 #endif
 	/* ip_vs_proto_sctp */
 #ifdef CONFIG_IP_VS_PROTO_SCTP
-	#define SCTP_APP_TAB_BITS	4
-	#define SCTP_APP_TAB_SIZE	(1 << SCTP_APP_TAB_BITS)
-	#define SCTP_APP_TAB_MASK	(SCTP_APP_TAB_SIZE - 1)
+	 #define SCTP_APP_TAB_BITS	4
+	 #define SCTP_APP_TAB_SIZE	(1 << SCTP_APP_TAB_BITS)
+	 #define SCTP_APP_TAB_MASK	(SCTP_APP_TAB_SIZE - 1)
 	/* Hash table for SCTP application incarnations	 */
 	struct list_head	sctp_apps[SCTP_APP_TAB_SIZE];
 #endif
@@ -1724,7 +1724,7 @@ static inline char ip_vs_fwd_tag(struct ip_vs_conn *cp)
 	return fwd;
 }
 
-void ip_vs_nat_icmp(struct sk_buff *skb, struct ip_vs_protocol *pp,
+bool ip_vs_nat_icmp(struct sk_buff *skb, struct ip_vs_protocol *pp,
 		    struct ip_vs_conn *cp, int dir);
 
 #ifdef CONFIG_IP_VS_IPV6
