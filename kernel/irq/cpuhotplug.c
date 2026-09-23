@@ -12,6 +12,7 @@
 #include <linux/interrupt.h>
 #include <linux/ratelimit.h>
 #include <linux/irq.h>
+#include <linux/cpu.h>
 #include <linux/sched/isolation.h>
 
 #include "internals.h"
@@ -226,12 +227,12 @@ static int irq_check_affinity_of_irq(struct irq_desc *desc, unsigned int cpu)
 			return 0;
 
 	/*
-	 * If the onging offline CPU is the last one in the affinity,
+	 * If the ongoing offline CPU is the last one in the affinity,
 	 * the managed interrupts will be unavailable until one of
 	 * the assigned CPUs comes online. To prevent this unavailability,
 	 * return -EBUSY directly in this case.
 	 */
-	pr_warn("Affinity %*pbl of managed IRQ%u contains only one CPU%u that online\n",
+	pr_warn_ratelimited("Affinity %*pbl of managed IRQ%u contains only one CPU%u online\n",
 		cpumask_pr_args(affinity), data->irq, cpu);
 	return -EBUSY;
 }
@@ -270,6 +271,17 @@ int irq_affinity_offline_cpu(unsigned int cpu)
 	int ret = 0;
 
 	if (!managed_irqs_per_node)
+		return 0;
+
+	/*
+	 * Suspend and hibernation take down all non-boot CPUs with tasks
+	 * frozen, and device interrupts are usually not freed for that
+	 * (e.g. virtio-pci keeps its vq vectors across freeze). Refusing
+	 * the offline would fail the whole suspend cycle. Let the managed
+	 * interrupts go into managed shutdown instead; they are restarted
+	 * by irq_affinity_online_cpu() once the CPUs come back.
+	 */
+	if (cpuhp_tasks_frozen)
 		return 0;
 
 	irq_lock_sparse();
