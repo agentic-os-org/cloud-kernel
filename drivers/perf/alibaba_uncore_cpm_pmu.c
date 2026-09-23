@@ -9,6 +9,9 @@
 #include <linux/perf_event.h>
 #include <linux/iopoll.h>
 #include <linux/acpi.h>
+#include <linux/delay.h>
+#include <linux/math64.h>
+#include <linux/property.h>
 
 #define RISCV_PMU_CPM_PDEV_NAME    "riscv-pmu-cpm"
 
@@ -18,8 +21,13 @@
 #define CPM_EVENT_MONITOR	0
 #define CPM_OSTD_STAT		1
 #define CPM_LCRD_STAT		2
-//#define CPM_DEFAULT_MON_PERIOD	24  /* 2^24 clocks ≈ 8.8ms @1.9GHz */
-#define CPM_DEFAULT_MON_PERIOD	16	/* 2^16 clocks ≈ 8.6ms @7.6MHz */
+/* CPM input clocks, independent of the CPU clock. */
+#define CPM_SOC_CLK_HZ          1900000000U
+#define CPM_FPGA_CLK_HZ         7600000U
+#define CPM_SOC_MON_PERIOD      24
+#define CPM_FPGA_MON_PERIOD     16
+#define CPM_STOP_MARGIN_US      1000
+#define CPM_RESET_DELAY_US      1
 //#define CPM_DEFAULT_EVT_DURATION  4069  /* ASIC: TBD, 待实测 latency profile 后确定 */
 #define CPM_DEFAULT_EVT_DURATION  4069    /* HAPS: ~2-3x max_lat */
 
@@ -39,13 +47,13 @@
 #define CPM_GET_SEL(attr)		(((attr)->config1 >> 62) & 0x1)
 
 #define CPM_GET_ADDR_HI(attr)		((attr)->config2 & 0xFFFFFFFFFFFFULL)
-#define CPM_GET_MON_PERIOD(attr)	(((attr)->config2 >> 48) & 0x3F)
 
 /* CSR registers */
 #define CPM_CSR0              0x00
 #define CPM_CSR1              0x04
 #define CPM_CSR2              0x08
 /* CSR0 bit definitions */
+#define CPM_SWRST_N           BIT(0)
 #define CPM_INT_EN_MASK       GENMASK(12, 8)
 #define CPM_MON_EN            BIT(4)
 #define CPM_MON_DN_BIT        BIT(16)     /* mon_dn status in int_s */
@@ -95,6 +103,7 @@ struct cpm_pmu {
 	int		cpu;		/* administrative CPU for uncore PMU */
 	u32		cpm_sel;	/* 0=CPU Core0, 1=TPE */
 	u32		mon_period;	/* monitoring period exponent, written to CSR2 */
+	u64		stop_timeout_us;
 	int		active_events;	/* number of currently active events */
 	bool		hw_started;	/* whether hardware has been started */
 	struct hlist_node	node;	/* CPU hotplug instance list node */
@@ -258,7 +267,6 @@ PMU_FORMAT_ATTR(opcode_mask,  "config1:48-54");
 PMU_FORMAT_ATTR(opcode_tgt,   "config1:55-61");
 PMU_FORMAT_ATTR(cpm_sel,      "config1:62");
 PMU_FORMAT_ATTR(addr_hi,      "config2:0-47");
-PMU_FORMAT_ATTR(mon_period,   "config2:48-53");
 
 static struct attribute *cpm_pmu_format_attrs[] = {
 	&format_attr_event.attr,
@@ -275,7 +283,6 @@ static struct attribute *cpm_pmu_format_attrs[] = {
 	&format_attr_opcode_tgt.attr,
 	&format_attr_cpm_sel.attr,
 	&format_attr_addr_hi.attr,
-	&format_attr_mon_period.attr,
 	NULL,
 };
 
@@ -375,6 +382,10 @@ static int cpm_event_init(struct perf_event *event)
 
 	if (is_sampling_event(event))
 		return -EOPNOTSUPP;
+
+	/* config2 only carries the 48-bit upper address filter. */
+	if (event->attr.config2 & GENMASK_ULL(63, 48))
+		return -EINVAL;
 
 	event->cpu = cpm->cpu;
 
@@ -592,18 +603,47 @@ static void cpm_hw_start(struct cpm_pmu *cpm)
 	cpm->hw_started = true;
 }
 
+/*
+ * Called after the last event is removed. Leave monitoring and interrupts
+ * disabled; the next add/start sequence programs the hardware again.
+ * There is no reset-completion status to poll.
+ */
+static void cpm_hw_reset(struct cpm_pmu *cpm)
+{
+	writel(CPM_SWRST_N, cpm->base + CPM_CSR0);
+	readl(cpm->base + CPM_CSR0);
+	udelay(CPM_RESET_DELAY_US);
+	writel(0, cpm->base + CPM_CSR0);
+	readl(cpm->base + CPM_CSR0);
+	udelay(CPM_RESET_DELAY_US);
+	writel(CPM_SWRST_N, cpm->base + CPM_CSR0);
+	readl(cpm->base + CPM_CSR0);
+	udelay(CPM_RESET_DELAY_US);
+}
+
 static void cpm_hw_stop(struct cpm_pmu *cpm)
 {
 	u32 csr0;
+	int ret;
 
 	disable_irq_nosync(cpm->irq);
 
+	/* Request stop without acknowledging pending W1C status bits. */
 	csr0 = readl(cpm->base + CPM_CSR0);
-	csr0 &= ~CPM_MON_EN;
+	csr0 &= ~(CPM_MON_EN | CPM_INT_MASK);
 	writel(csr0, cpm->base + CPM_CSR0);
 
-	readl_poll_timeout_atomic(cpm->base + CPM_CSR0, csr0,
-			   csr0 & CPM_MON_DN_BIT, 10, 5000000);
+	ret = readl_poll_timeout_atomic(cpm->base + CPM_CSR0, csr0,
+					csr0 & CPM_MON_DN_BIT, 10,
+					cpm->stop_timeout_us);
+	if (ret) {
+		/* Discard the incomplete window instead of accepting its counts. */
+		cpm_hw_reset(cpm);
+		dev_err_ratelimited(cpm->dev,
+			"stop timeout (%llu us, period=%u, CSR0=%#x); window discarded, reset issued\n",
+			cpm->stop_timeout_us, cpm->mon_period, csr0);
+		goto out;
+	}
 
 	for (int idx = 0; idx < CPM_MAX_STAT_EVENTS; idx++) {
 		struct perf_event *event = cpm->events[idx];
@@ -613,10 +653,11 @@ static void cpm_hw_stop(struct cpm_pmu *cpm)
 		cpm_event_update(event);
 	}
 
-	writel(csr0, cpm->base + CPM_CSR0);
+	/* Acknowledge observed interrupts and keep monitoring disabled. */
+	writel(csr0 & ~CPM_MON_EN, cpm->base + CPM_CSR0);
 
+out:
 	cpm->hw_started = false;
-
 	enable_irq(cpm->irq);
 }
 
@@ -646,7 +687,6 @@ static int cpm_event_add(struct perf_event *event, int flags)
 	struct hw_perf_event *hwc = &event->hw;
 	u32 event_id = CPM_GET_EVENT(&event->attr);
 	u32 sel = CPM_GET_SEL(&event->attr);
-	u32 period = CPM_GET_MON_PERIOD(&event->attr);
 	int idx;
 
 	/*
@@ -656,21 +696,13 @@ static int cpm_event_add(struct perf_event *event, int flags)
 	 * events incrementally without stopping the hardware.
 	 */
 
-	/* global parameter consistency check (cpm_sel and mon_period are per-CPM) */
+	/* cpm_sel is shared by all events on this CPM instance. */
 	if (cpm->active_events == 0) {
 		cpm->cpm_sel = sel;
-		cpm->mon_period = period ? period : CPM_DEFAULT_MON_PERIOD;
-	} else {
-		if (cpm->cpm_sel != sel) {
-			dev_err(cpm->dev,
-				"All events must use the same cpm_sel (cpu=0 or tpe=1)\n");
-			return -EINVAL;
-		}
-		if (period && period != cpm->mon_period) {
-			dev_err(cpm->dev,
-				"All events must use the same mon_period\n");
-			return -EINVAL;
-		}
+	} else if (cpm->cpm_sel != sel) {
+		dev_err(cpm->dev,
+			"All events must use the same cpm_sel (cpu=0 or tpe=1)\n");
+		return -EINVAL;
 	}
 
 	switch (hwc->event_base) {
@@ -810,12 +842,30 @@ static int cpm_pmu_probe(struct platform_device *pdev)
 	struct resource *res;
 	const char *cpm_name;
 	char *name;
+	u32 clk_hz;
+	u64 window_us;
 	int ret;
 
 	cpm = devm_kzalloc(dev, sizeof(*cpm), GFP_KERNEL);
 	if (!cpm)
 		return -ENOMEM;
 	cpm->dev = dev;
+
+	/* Optional DT / ACPI _DSD boolean; absent means production silicon. */
+	if (device_property_read_bool(dev, "alibaba,fpga")) {
+		clk_hz = CPM_FPGA_CLK_HZ;
+		cpm->mon_period = CPM_FPGA_MON_PERIOD;
+	} else {
+		clk_hz = CPM_SOC_CLK_HZ;
+		cpm->mon_period = CPM_SOC_MON_PERIOD;
+	}
+	/* CSR2 encodes the exponent in five bits. */
+	if (cpm->mon_period > 31)
+		return -EINVAL;
+
+	window_us = DIV_ROUND_UP_ULL((1ULL << cpm->mon_period) * USEC_PER_SEC,
+				     clk_hz);
+	cpm->stop_timeout_us = 2 * window_us + CPM_STOP_MARGIN_US;
 
 	/* MMIO mapping: CPM event registers */
 	cpm->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
