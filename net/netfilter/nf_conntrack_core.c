@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Connection state tracking for netfilter.  This is separated from,
-   but required by, the NAT layer; it can also be used by an iptables
+   but required by, the NAT layer; it can also be used for iptables
    extension. */
 
 /* (C) 1999-2001 Paul `Rusty' Russell
@@ -1092,7 +1092,7 @@ __nf_conntrack_confirm(struct sk_buff *skb)
 	/* ipt_REJECT uses nf_conntrack_attach to attach related
 	   ICMP/TCP RST packets in other direction.  Actual packet
 	   which created connection will be IP_CT_NEW or for an
-	   expected connection, IP_CT_RELATED. */
+	   expected connection will be IP_CT_RELATED. */
 	if (CTINFO2DIR(ctinfo) != IP_CT_DIR_ORIGINAL)
 		return NF_ACCEPT;
 
@@ -1524,6 +1524,9 @@ void nf_conntrack_free(struct nf_conn *ct)
 	 */
 	WARN_ON(atomic_read(&ct->ct_general.use) != 0);
 
+	rcu_read_lock();
+	nf_ct_timeout_put(ct);
+	rcu_read_unlock();
 	nf_ct_ext_destroy(ct);
 	kmem_cache_free(nf_conntrack_cachep, ct);
 	smp_mb__before_atomic();
@@ -1577,7 +1580,7 @@ init_conntrack(struct net *net, struct nf_conn *tmpl,
 
 	ecache = tmpl ? nf_ct_ecache_find(tmpl) : NULL;
 	nf_ct_ecache_ext_add(ct, ecache ? ecache->ctmask : 0,
-				 ecache ? ecache->expmask : 0,
+			     ecache ? ecache->expmask : 0,
 			     GFP_ATOMIC);
 
 	local_bh_disable();
@@ -1828,7 +1831,8 @@ repeat:
 	ret = nf_conntrack_handle_packet(ct, skb, dataoff, ctinfo, state);
 	if (ret <= 0) {
 		/* Invalid: inverse of the return code tells
-		 * the netfilter core what to do */
+		 * the netfilter core what to do
+		 */
 		pr_debug("nf_conntrack_in: Can't track with proto module\n");
 		nf_conntrack_put(&ct->ct_general);
 		skb->_nfct = 0;
@@ -2381,359 +2385,4 @@ void nf_conntrack_cleanup_end(void)
 	nf_conntrack_expect_fini();
 
 	kmem_cache_destroy(nf_conntrack_cachep);
-}
-
-/*
- * Mishearing the voices in his head, our hero wonders how he's
- * supposed to kill the mall.
- */
-void nf_conntrack_cleanup_net(struct net *net)
-{
-	LIST_HEAD(single);
-
-	list_add(&net->exit_list, &single);
-	nf_conntrack_cleanup_net_list(&single);
-}
-
-void nf_conntrack_cleanup_net_list(struct list_head *net_exit_list)
-{
-	int busy;
-	struct net *net;
-
-	/*
-	 * This makes sure all current packets have passed through
-	 *  netfilter framework.  Roll on, two-stage module
-	 *  delete...
-	 */
-	synchronize_net();
-i_see_dead_people:
-	busy = 0;
-	list_for_each_entry(net, net_exit_list, exit_list) {
-		nf_ct_iterate_cleanup(kill_all, net, 0, 0);
-		if (atomic_read(&net->ct.count) != 0)
-			busy = 1;
-	}
-	if (busy) {
-		schedule();
-		goto i_see_dead_people;
-	}
-
-	list_for_each_entry(net, net_exit_list, exit_list) {
-		nf_conntrack_proto_pernet_fini(net);
-		nf_conntrack_ecache_pernet_fini(net);
-		nf_conntrack_expect_pernet_fini(net);
-		free_percpu(net->ct.stat);
-		free_percpu(net->ct.pcpu_lists);
-	}
-}
-
-void *nf_ct_alloc_hashtable(unsigned int *sizep, int nulls)
-{
-	struct hlist_nulls_head *hash;
-	unsigned int nr_slots, i;
-
-	if (*sizep > (UINT_MAX / sizeof(struct hlist_nulls_head)))
-		return NULL;
-
-	BUILD_BUG_ON(sizeof(struct hlist_nulls_head) != sizeof(struct hlist_head));
-	nr_slots = *sizep = roundup(*sizep, PAGE_SIZE / sizeof(struct hlist_nulls_head));
-
-	hash = kvcalloc(nr_slots, sizeof(struct hlist_nulls_head), GFP_KERNEL);
-
-	if (hash && nulls)
-		for (i = 0; i < nr_slots; i++)
-			INIT_HLIST_NULLS_HEAD(&hash[i], i);
-
-	return hash;
-}
-EXPORT_SYMBOL_GPL(nf_ct_alloc_hashtable);
-
-int nf_conntrack_hash_resize(unsigned int hashsize)
-{
-	int i, bucket;
-	unsigned int old_size;
-	struct hlist_nulls_head *hash, *old_hash;
-	struct nf_conntrack_tuple_hash *h;
-	struct nf_conn *ct;
-
-	if (!hashsize)
-		return -EINVAL;
-
-	hash = nf_ct_alloc_hashtable(&hashsize, 1);
-	if (!hash)
-		return -ENOMEM;
-
-	mutex_lock(&nf_conntrack_mutex);
-	old_size = nf_conntrack_htable_size;
-	if (old_size == hashsize) {
-		mutex_unlock(&nf_conntrack_mutex);
-		kvfree(hash);
-		return 0;
-	}
-
-	local_bh_disable();
-	nf_conntrack_all_lock();
-	write_seqcount_begin(&nf_conntrack_generation);
-
-	/* Lookups in the old hash might happen in parallel, which means we
-	 * might get false negatives during connection lookup. New connections
-	 * created because of a false negative won't make it into the hash
-	 * though since that required taking the locks.
-	 */
-
-	for (i = 0; i < nf_conntrack_htable_size; i++) {
-		while (!hlist_nulls_empty(&nf_conntrack_hash[i])) {
-			h = hlist_nulls_entry(nf_conntrack_hash[i].first,
-					      struct nf_conntrack_tuple_hash, hnnode);
-			ct = nf_ct_tuplehash_to_ctrack(h);
-			hlist_nulls_del_rcu(&h->hnnode);
-			bucket = __hash_conntrack(nf_ct_net(ct),
-						  &h->tuple, hashsize);
-			hlist_nulls_add_head_rcu(&h->hnnode, &hash[bucket]);
-		}
-	}
-	old_size = nf_conntrack_htable_size;
-	old_hash = nf_conntrack_hash;
-
-	nf_conntrack_hash = hash;
-	nf_conntrack_htable_size = hashsize;
-
-	write_seqcount_end(&nf_conntrack_generation);
-	nf_conntrack_all_unlock();
-	local_bh_enable();
-
-	mutex_unlock(&nf_conntrack_mutex);
-
-	synchronize_net();
-	kvfree(old_hash);
-	return 0;
-}
-
-int nf_conntrack_set_hashsize(const char *val, const struct kernel_param *kp)
-{
-	unsigned int hashsize;
-	int rc;
-
-	if (current->nsproxy->net_ns != &init_net)
-		return -EOPNOTSUPP;
-
-	/* On boot, we can set this without any fancy locking. */
-	if (!nf_conntrack_hash)
-		return param_set_uint(val, kp);
-
-	rc = kstrtouint(val, 0, &hashsize);
-	if (rc)
-		return rc;
-
-	return nf_conntrack_hash_resize(hashsize);
-}
-
-static __always_inline unsigned int total_extension_size(void)
-{
-	/* remember to add new extensions below */
-	BUILD_BUG_ON(NF_CT_EXT_NUM > 9);
-
-	return sizeof(struct nf_ct_ext) +
-	       sizeof(struct nf_conn_help)
-#if IS_ENABLED(CONFIG_NF_NAT)
-		+ sizeof(struct nf_conn_nat)
-#endif
-		+ sizeof(struct nf_conn_seqadj)
-		+ sizeof(struct nf_conn_acct)
-#ifdef CONFIG_NF_CONNTRACK_EVENTS
-		+ sizeof(struct nf_conntrack_ecache)
-#endif
-#ifdef CONFIG_NF_CONNTRACK_TIMESTAMP
-		+ sizeof(struct nf_conn_tstamp)
-#endif
-#ifdef CONFIG_NF_CONNTRACK_TIMEOUT
-		+ sizeof(struct nf_conn_timeout)
-#endif
-#ifdef CONFIG_NF_CONNTRACK_LABELS
-		+ sizeof(struct nf_conn_labels)
-#endif
-#if IS_ENABLED(CONFIG_NETFILTER_SYNPROXY)
-		+ sizeof(struct nf_conn_synproxy)
-#endif
-	;
-};
-
-int nf_conntrack_init_start(void)
-{
-	unsigned long nr_pages = totalram_pages();
-	int max_factor = 8;
-	int ret = -ENOMEM;
-	int i;
-
-	/* struct nf_ct_ext uses u8 to store offsets/size */
-	BUILD_BUG_ON(total_extension_size() > 255u);
-
-	seqcount_spinlock_init(&nf_conntrack_generation,
-			       &nf_conntrack_locks_all_lock);
-
-	for (i = 0; i < CONNTRACK_LOCKS; i++)
-		spin_lock_init(&nf_conntrack_locks[i]);
-
-	if (!nf_conntrack_htable_size) {
-		/* Idea from tcp.c: use 1/16384 of memory.
-		 * On i386: 32MB machine has 512 buckets.
-		 * >= 1GB machines have 16384 buckets.
-		 * >= 4GB machines have 65536 buckets.
-		 */
-		nf_conntrack_htable_size
-			= (((nr_pages << PAGE_SHIFT) / 16384)
-			   / sizeof(struct hlist_head));
-		if (nr_pages > (4 * (1024 * 1024 * 1024 / PAGE_SIZE)))
-			nf_conntrack_htable_size = 65536;
-		else if (nr_pages > (1024 * 1024 * 1024 / PAGE_SIZE))
-			nf_conntrack_htable_size = 16384;
-		if (nf_conntrack_htable_size < 32)
-			nf_conntrack_htable_size = 32;
-
-		/* Use a max. factor of four by default to get the same max as
-		 * with the old struct list_heads. When a table size is given
-		 * we use the old value of 8 to avoid reducing the max.
-		 * entries. */
-		max_factor = 4;
-	}
-
-	nf_conntrack_hash = nf_ct_alloc_hashtable(&nf_conntrack_htable_size, 1);
-	if (!nf_conntrack_hash)
-		return -ENOMEM;
-
-	nf_conntrack_max = max_factor * nf_conntrack_htable_size;
-
-	nf_conntrack_cachep = kmem_cache_create("nf_conntrack",
-						sizeof(struct nf_conn),
-						NFCT_INFOMASK + 1,
-						SLAB_TYPESAFE_BY_RCU | SLAB_HWCACHE_ALIGN, NULL);
-	if (!nf_conntrack_cachep)
-		goto err_cachep;
-
-	ret = nf_conntrack_expect_init();
-	if (ret < 0)
-		goto err_expect;
-
-	ret = nf_conntrack_acct_init();
-	if (ret < 0)
-		goto err_acct;
-
-	ret = nf_conntrack_tstamp_init();
-	if (ret < 0)
-		goto err_tstamp;
-
-	ret = nf_conntrack_ecache_init();
-	if (ret < 0)
-		goto err_ecache;
-
-	ret = nf_conntrack_timeout_init();
-	if (ret < 0)
-		goto err_timeout;
-
-	ret = nf_conntrack_helper_init();
-	if (ret < 0)
-		goto err_helper;
-
-	ret = nf_conntrack_labels_init();
-	if (ret < 0)
-		goto err_labels;
-
-	ret = nf_conntrack_seqadj_init();
-	if (ret < 0)
-		goto err_seqadj;
-
-	ret = nf_conntrack_proto_init();
-	if (ret < 0)
-		goto err_proto;
-
-	conntrack_gc_work_init(&conntrack_gc_work);
-	queue_delayed_work(system_power_efficient_wq, &conntrack_gc_work.dwork, HZ);
-
-	return 0;
-
-err_proto:
-	nf_conntrack_seqadj_fini();
-err_seqadj:
-	nf_conntrack_labels_fini();
-err_labels:
-	nf_conntrack_helper_fini();
-err_helper:
-	nf_conntrack_timeout_fini();
-err_timeout:
-	nf_conntrack_ecache_fini();
-err_ecache:
-	nf_conntrack_tstamp_fini();
-err_tstamp:
-	nf_conntrack_acct_fini();
-err_acct:
-	nf_conntrack_expect_fini();
-err_expect:
-	kmem_cache_destroy(nf_conntrack_cachep);
-err_cachep:
-	kvfree(nf_conntrack_hash);
-	return ret;
-}
-
-static struct nf_ct_hook nf_conntrack_hook = {
-	.update		= nf_conntrack_update,
-	.destroy	= destroy_conntrack,
-	.get_tuple_skb  = nf_conntrack_get_tuple_skb,
-};
-
-void nf_conntrack_init_end(void)
-{
-	/* For use by REJECT target */
-	RCU_INIT_POINTER(ip_ct_attach, nf_conntrack_attach);
-	RCU_INIT_POINTER(nf_ct_hook, &nf_conntrack_hook);
-}
-
-/*
- * We need to use special "null" values, not used in hash table
- */
-#define UNCONFIRMED_NULLS_VAL	((1<<30)+0)
-#define DYING_NULLS_VAL		((1<<30)+1)
-
-int nf_conntrack_init_net(struct net *net)
-{
-	int ret = -ENOMEM;
-	int cpu;
-
-	BUILD_BUG_ON(IP_CT_UNTRACKED == IP_CT_NUMBER);
-	BUILD_BUG_ON_NOT_POWER_OF_2(CONNTRACK_LOCKS);
-	atomic_set(&net->ct.count, 0);
-
-	net->ct.pcpu_lists = alloc_percpu(struct ct_pcpu);
-	if (!net->ct.pcpu_lists)
-		goto err_stat;
-
-	for_each_possible_cpu(cpu) {
-		struct ct_pcpu *pcpu = per_cpu_ptr(net->ct.pcpu_lists, cpu);
-
-		spin_lock_init(&pcpu->lock);
-		INIT_HLIST_NULLS_HEAD(&pcpu->unconfirmed, UNCONFIRMED_NULLS_VAL);
-		INIT_HLIST_NULLS_HEAD(&pcpu->dying, DYING_NULLS_VAL);
-	}
-
-	net->ct.stat = alloc_percpu(struct ip_conntrack_stat);
-	if (!net->ct.stat)
-		goto err_pcpu_lists;
-
-	ret = nf_conntrack_expect_pernet_init(net);
-	if (ret < 0)
-		goto err_expect;
-
-	nf_conntrack_acct_pernet_init(net);
-	nf_conntrack_tstamp_pernet_init(net);
-	nf_conntrack_ecache_pernet_init(net);
-	nf_conntrack_helper_pernet_init(net);
-	nf_conntrack_proto_pernet_init(net);
-
-	return 0;
-
-err_expect:
-	free_percpu(net->ct.stat);
-err_pcpu_lists:
-	free_percpu(net->ct.pcpu_lists);
-err_stat:
-	return ret;
 }
