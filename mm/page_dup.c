@@ -199,7 +199,11 @@ static bool delete_from_dup_pages(struct page *page, bool locked, bool ignore_ml
 
 			unlock_page(tmp_page);
 		}
+	}
 
+	try_to_unmap_flush();
+
+	list_for_each_entry_safe(tmp_page, next_page, list, lru) {
 		__delete_from_dup_pages(tmp_page, page);
 		put_page(tmp_page);
 	}
