@@ -46,6 +46,7 @@
 #define CPM_CSR1              0x04
 #define CPM_CSR2              0x08
 /* CSR0 bit definitions */
+#define CPM_INT_EN_MASK       GENMASK(12, 8)
 #define CPM_MON_EN            BIT(4)
 #define CPM_MON_DN_BIT        BIT(16)     /* mon_dn status in int_s */
 #define CPM_MON_DN_INT        BIT(24)     /* mon_dn status in int_rs (W1C) */
@@ -344,6 +345,9 @@ static int cpm_pmu_offline_cpu(unsigned int cpu, struct hlist_node *node)
 		return 0;
 
 	target = cpumask_any_but(cpu_online_mask, cpu);
+	if (target >= nr_cpu_ids)
+		return 0;
+
 	perf_pmu_migrate_context(&cpm->pmu, cpu, target);
 	cpm->cpu = target;
 
@@ -877,15 +881,34 @@ static int cpm_pmu_probe(struct platform_device *pdev)
 		goto out_cpuhp;
 	}
 
+	platform_set_drvdata(pdev, cpm);
+
 	dev_info(dev, "CPM PMU registered as %s\n", name);
 
 	return 0;
 
 out_cpuhp:
-	cpuhp_state_remove_instance(cpm_cpuhp_state, &cpm->node);
+	cpuhp_state_remove_instance_nocalls(cpm_cpuhp_state, &cpm->node);
 	return ret;
 }
 
+static void cpm_pmu_remove(struct platform_device *pdev)
+{
+	struct cpm_pmu *cpm = platform_get_drvdata(pdev);
+	u32 csr0;
+
+	cpuhp_state_remove_instance_nocalls(cpm_cpuhp_state, &cpm->node);
+	perf_pmu_unregister(&cpm->pmu);
+
+	/* Stop monitoring and mask interrupts without acknowledging W1C bits. */
+	csr0 = readl(cpm->base + CPM_CSR0);
+	csr0 &= ~(CPM_MON_EN | CPM_INT_EN_MASK | CPM_INT_MASK);
+	writel(csr0, cpm->base + CPM_CSR0);
+	readl(cpm->base + CPM_CSR0);
+
+	/* Wait for any running handler before devres releases the PMU memory. */
+	devm_free_irq(&pdev->dev, cpm->irq, cpm);
+}
 
 static const struct of_device_id cpm_pmu_of_match[] = {
 	{ .compatible = "xuantie,cpm" },
@@ -901,8 +924,11 @@ MODULE_DEVICE_TABLE(acpi, cpm_acpi_match);
 
 static struct platform_driver cpm_pmu_driver = {
 	.probe		= cpm_pmu_probe,
+	.remove_new	= cpm_pmu_remove,
 	.driver		= {
 		.name	= RISCV_PMU_CPM_PDEV_NAME,
+		/* Open perf events pin the module, but not a sysfs unbind. */
+		.suppress_bind_attrs = true,
 		.of_match_table = cpm_pmu_of_match,
 		.acpi_match_table = ACPI_PTR(cpm_acpi_match),
 	},
