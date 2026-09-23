@@ -6,11 +6,13 @@
 
 #define X86_FEATURE_POPCNT (4 * 32 + 23)
 #define X86_FEATURE_SMAP   (9 * 32 + 20)
+#define X86_FEATURE_LASS   (12 * 32 + 6)
 
 void arch_handle_alternative(unsigned short feature, struct special_alt *alt)
 {
 	switch (feature) {
 	case X86_FEATURE_SMAP:
+	case X86_FEATURE_LASS:
 		/*
 		 * If UACCESS validation is enabled; force that alternative;
 		 * otherwise force it the other way.
