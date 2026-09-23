@@ -720,12 +720,14 @@ extern int sched_group_set_shares(struct task_group *tg, unsigned long shares);
 extern int sched_group_set_idle(struct task_group *tg, long idle);
 
 extern int sched_group_set_slice(struct task_group *tg, u64 slice_us);
+extern void sched_group_release_slice(struct task_group *tg);
 
 extern void set_task_rq_fair(struct sched_entity *se,
 			     struct cfs_rq *prev, struct cfs_rq *next);
 #else /* !CONFIG_FAIR_GROUP_SCHED: */
 static inline int sched_group_set_shares(struct task_group *tg, unsigned long shares) { return 0; }
 static inline int sched_group_set_idle(struct task_group *tg, long idle) { return 0; }
+static inline void sched_group_release_slice(struct task_group *tg) { }
 #endif /* !CONFIG_FAIR_GROUP_SCHED */
 
 #else /* !CONFIG_CGROUP_SCHED: */

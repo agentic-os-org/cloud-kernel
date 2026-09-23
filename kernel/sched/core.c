@@ -9467,6 +9467,7 @@ static void cpu_cgroup_css_released(struct cgroup_subsys_state *css)
 {
 	struct task_group *tg = css_tg(css);
 
+	sched_group_release_slice(tg);
 	sched_release_group(tg);
 }
 
@@ -10144,7 +10145,7 @@ static int cpu_idle_write_s64(struct cgroup_subsys_state *css,
 static u64 cpu_slice_read_u64(struct cgroup_subsys_state *css,
 				   struct cftype *cft)
 {
-	u64 slice_us = css_tg(css)->slice;
+	u64 slice_us = READ_ONCE(css_tg(css)->slice);
 
 	do_div(slice_us, NSEC_PER_USEC);
 
