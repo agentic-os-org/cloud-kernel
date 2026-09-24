@@ -764,8 +764,10 @@ again:
 	 */
 	smp_rmb();
 
-	if ((err == -ERESTARTSYS) && (c->status == Connected)
-				  && (type == P9_TFLUSH)) {
+	if (err == -ERESTARTSYS && c->status == Connected &&
+	    type == P9_TFLUSH) {
+		if (fatal_signal_pending(current))
+			goto recalc_sigpending;
 		sigpending = 1;
 		clear_thread_flag(TIF_SIGPENDING);
 		goto again;
