@@ -357,6 +357,7 @@ static int cpm_pmu_offline_cpu(unsigned int cpu, struct hlist_node *node)
 
 	perf_pmu_migrate_context(&cpm->pmu, cpu, target);
 	cpm->cpu = target;
+	WARN_ON(irq_set_affinity(cpm->irq, cpumask_of(target)));
 
 	return 0;
 }
@@ -441,10 +442,7 @@ static void cpm_hw_config_filters(struct cpm_pmu *cpm, int idx, struct perf_even
 	writel(flt7, base + CPM_EVTx_FLT7(idx));
 }
 
-static void cpm_pmu_enable(struct pmu *pmu)
-{
-	/* Intentionally empty — see cpm_pmu_disable comment. */
-}
+static void cpm_pmu_enable(struct pmu *pmu);
 
 /*
  * Read one OSTD field (16-bit) from STT_OSTD0–OSTD3.
@@ -603,6 +601,30 @@ static void cpm_hw_start(struct cpm_pmu *cpm)
 	cpm->hw_started = true;
 }
 
+static void cpm_pmu_enable(struct pmu *pmu)
+{
+	struct cpm_pmu *cpm = to_cpm_pmu(pmu);
+	int idx;
+
+	if (cpm->hw_started || !cpm->active_events)
+		return;
+
+	/*
+	 * The default ADD transaction and perf's outer disable/enable nesting
+	 * keep this callback after the current batch of add/start calls.
+	 * Start once, with all slots configured, including independent groups.
+	 * active_events counts installed events; add() need not request START.
+	 */
+	for (idx = 0; idx < CPM_MAX_STAT_EVENTS; idx++) {
+		struct perf_event *event = cpm->events[idx];
+
+		if (event && !(event->hw.state & PERF_HES_STOPPED)) {
+			cpm_hw_start(cpm);
+			break;
+		}
+	}
+}
+
 /*
  * Called after the last event is removed. Leave monitoring and interrupts
  * disabled; the next add/start sequence programs the hardware again.
@@ -624,17 +646,20 @@ static void cpm_hw_reset(struct cpm_pmu *cpm)
 static void cpm_hw_stop(struct cpm_pmu *cpm)
 {
 	u32 csr0;
-	int ret;
+	int idx, ret;
 
 	disable_irq_nosync(cpm->irq);
 
-	/* Request stop without acknowledging pending W1C status bits. */
+	/*
+	 * Discard any old completion in the same write that requests stop.
+	 * Only the final window may satisfy the completion poll below.
+	 */
 	csr0 = readl(cpm->base + CPM_CSR0);
 	csr0 &= ~(CPM_MON_EN | CPM_INT_MASK);
-	writel(csr0, cpm->base + CPM_CSR0);
+	writel(csr0 | CPM_MON_DN_INT, cpm->base + CPM_CSR0);
 
 	ret = readl_poll_timeout_atomic(cpm->base + CPM_CSR0, csr0,
-					csr0 & CPM_MON_DN_BIT, 10,
+					csr0 & CPM_MON_DN_INT, 10,
 					cpm->stop_timeout_us);
 	if (ret) {
 		/* Discard the incomplete window instead of accepting its counts. */
@@ -657,18 +682,21 @@ static void cpm_hw_stop(struct cpm_pmu *cpm)
 	writel(csr0 & ~CPM_MON_EN, cpm->base + CPM_CSR0);
 
 out:
+	/* All events are gone and hardware is stopped (or was reset). */
+	for (idx = 0; idx < CPM_MAX_COUNTERS; idx++)
+		writel(0, cpm->base + CPM_EVTx_CTL0(idx));
+	readl(cpm->base + CPM_EVTx_CTL0(CPM_MAX_COUNTERS - 1));
 	cpm->hw_started = false;
 	enable_irq(cpm->irq);
 }
 
 static void cpm_event_start(struct perf_event *event, int flags)
 {
-	struct cpm_pmu *cpm = to_cpm_pmu(event->pmu);
-
+	/*
+	 * Mark this event runnable. Starting here would assert mon_en before
+	 * later members of the same scheduling batch have been configured.
+	 */
 	event->hw.state = 0;
-
-	if (!cpm->hw_started && cpm->active_events > 0)
-		cpm_hw_start(cpm);
 }
 
 static void cpm_event_stop(struct perf_event *event, int flags)
@@ -690,11 +718,15 @@ static int cpm_event_add(struct perf_event *event, int flags)
 	int idx;
 
 	/*
-	 * No hw_started check here — CPM hardware supports configuring
-	 * EVTx_CTL0 while monitoring is running; new slots take effect
-	 * at the next window boundary. This allows perf core to add
-	 * events incrementally without stopping the hardware.
+	 * A pinned event may survive a flexible reschedule. Check hardware
+	 * state, not attr.pinned: no new configuration is safe while running.
+	 * Reject before allocating a slot or writing any control register.
 	 */
+	if (cpm->hw_started) {
+		dev_warn_ratelimited(cpm->dev,
+				     "CPM is running; cannot add events until all active events are removed\n");
+		return -EBUSY;
+	}
 
 	/* cpm_sel is shared by all events on this CPM instance. */
 	if (cpm->active_events == 0) {
@@ -760,8 +792,15 @@ static void cpm_event_del(struct perf_event *event, int flags)
 
 	if (idx >= 0) {
 		cpm->events[idx] = NULL;
-		if (idx < CPM_MAX_COUNTERS)
+		if (idx < CPM_MAX_COUNTERS) {
+			/* Running slots are cleared only after the global stop. */
+			if (!cpm->hw_started) {
+				writel(0, cpm->base + CPM_EVTx_CTL0(idx));
+				readl(cpm->base + CPM_EVTx_CTL0(idx));
+			}
+			/* add() rejects reuse for as long as CPM is running. */
 			clear_bit(idx, cpm->used_mask);
+		}
 	}
 
 	cpm->active_events--;
@@ -775,12 +814,11 @@ static void cpm_event_del(struct perf_event *event, int flags)
 static void cpm_pmu_disable(struct pmu *pmu)
 {
 	/*
-	 * Intentionally empty. perf core calls pmu_disable/pmu_enable
-	 * frequently (default txn wrappers, tick handler, etc). Doing
-	 * real hardware stop/start here causes events added later to
-	 * miss counting windows (Bug A). Hardware lifecycle is managed
-	 * by event_start (first event → hw start) and event_del
-	 * (last event → hw stop) instead.
+	 * Keep an existing measurement running across perf scheduling calls.
+	 * add() rejects configuration changes until the last del() stops CPM.
+	 * For an idle CPM, pmu_enable() starts the completed add/start batch.
+	 * Keep the default perf transactions; a single group transaction does
+	 * not necessarily cover the whole scheduling batch.
 	 */
 }
 
@@ -899,9 +937,15 @@ static int cpm_pmu_probe(struct platform_device *pdev)
 		return cpm->irq;
 
 	ret = devm_request_irq(dev, cpm->irq, cpm_irq_handler,
-			       0, dev_name(dev), cpm);
+			       IRQF_NOBALANCING | IRQF_NO_THREAD,
+			       dev_name(dev), cpm);
 	if (ret)
 		return ret;
+
+	/* Serialize IRQ updates with perf callbacks on the management CPU. */
+	ret = irq_set_affinity(cpm->irq, cpumask_of(cpm->cpu));
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to set IRQ affinity\n");
 
 	/* register instance to hotplug state (callback registered in module init) */
 	ret = cpuhp_state_add_instance(cpm_cpuhp_state, &cpm->node);
