@@ -363,7 +363,7 @@ static int walk_page_test(unsigned long start, unsigned long end,
 	 * range, so we don't walk over it as we do for normal vmas. However,
 	 * Some callers are interested in handling hole range and they don't
 	 * want to just ignore any single address range. Such users certainly
-	 * define their ->pte_hole() callbacks, so let's delegate them to handle
+	 * define their ->pte_hole() callbacks, so let them to handle
 	 * vma(VM_PFNMAP).
 	 */
 	if (vma->vm_flags & VM_PFNMAP) {
@@ -553,7 +553,25 @@ int walk_page_range_novma(struct mm_struct *mm, unsigned long start,
 		.no_vma		= true
 	};
 
-	if (start >= end || !walk.mm)
+	/*
+	 * When walking userland page tables, an mmap write lock must be held to
+	 * account for munmap() downgrading to an mmap read lock when tearing
+	 * down page tables.
+	 *
+	 * When walking kernel page tables, an mmap write lock must also be held
+	 * to account for page table freeing on vmap huge page mapping.
+	 */
+	mmap_assert_write_locked(mm);
+	/*
+	 * x86, arm64 ptdump allow walks of efi mm's and x86 ptdump allows walks
+	 * of arbitrary mm's.
+	 *
+	 * However, they both must also hold the init_mm lock to account for
+	 * concurrent kernel page table freeing.
+	 */
+	mmap_assert_write_locked(&init_mm);
+
+	if (start >= end)
 		return -EINVAL;
 
 	mmap_assert_write_locked(walk.mm);
@@ -609,8 +627,8 @@ int walk_page_vma(struct vm_area_struct *vma, const struct mm_walk_ops *ops,
  * @private:	private data for callbacks' usage
  *
  * This function walks all memory areas mapped into a struct address_space.
- * The walk is limited to only the given page-size index range, but if
- * the index boundaries cross a huge page-table entry, that entry will be
+ * The walk is limited to only the given page-size index range, but if the
+ * index boundaries cross a huge page-table entry, that entry will be
  * included.
  *
  * Also see walk_page_range() for additional information.
