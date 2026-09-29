@@ -233,10 +233,12 @@ static int sp_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (ret)
 		goto free_irqs;
 
-	if (pdev->vendor == PCI_VENDOR_ID_HYGON) {
+	if (hygon_ccp_dev_wrapper_support()) {
 		ret = ccp_dev_wrapper_alloc(pdev);
 		if (ret) {
 			dev_err(dev, "ccp_dev_wrapper_alloc failed (%d)\n", ret);
+			/* Undo sp_init() before tearing down the irqs */
+			sp_destroy(sp);
 			goto free_irqs;
 		}
 	}
@@ -269,7 +271,7 @@ static void sp_pci_remove(struct pci_dev *pdev)
 	if (!sp)
 		return;
 
-	if (pdev->vendor == PCI_VENDOR_ID_HYGON)
+	if (hygon_ccp_dev_wrapper_support())
 		ccp_dev_wrapper_free(pdev);
 
 	sp_destroy(sp);
