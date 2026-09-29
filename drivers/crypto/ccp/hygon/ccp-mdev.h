@@ -15,6 +15,8 @@
 #include <linux/kfifo.h>
 #include <linux/eventfd.h>
 #include <linux/ccp.h>
+#include <linux/processor.h>
+#include <linux/iommu.h>
 
 #define MCCP_INSTANCE_MAX		1024
 #define MCCP_DEV_QUEUE			5
@@ -39,12 +41,27 @@ struct hygon_ccp_dev_wrapper {
 };
 
 bool ccp_mdev_is_available(void);
+
+#ifdef CONFIG_X86_64
+static inline bool hygon_ccp_dev_wrapper_support(void)
+{
+	if (boot_cpu_data.x86_vendor != X86_VENDOR_HYGON)
+		return false;
+	if (!ccp_mdev_is_available())
+		return false;
+	return true;
+}
+#else
+static inline bool hygon_ccp_dev_wrapper_support(void)
+{
+	return false;
+}
+#endif
+
 int ccp_dev_wrapper_list_empty(void);
 struct hygon_ccp_dev_wrapper *hygon_ccp_dev_wrapper_get(struct ccp_device *ccp);
 int ccp_dev_wrapper_alloc(struct pci_dev *pdev);
 void ccp_dev_wrapper_free(struct pci_dev *pdev);
-int ccp_mdev_pci_probe(struct pci_dev *pdev);
-void ccp_mdev_pci_remove(struct pci_dev *pdev);
 int ccp_mdev_init(void);
 void ccp_mdev_exit(void);
 
