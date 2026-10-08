@@ -62,6 +62,8 @@ struct nbd_sock {
 	bool dead;
 	int fallback_index;
 	int cookie;
+	struct work_struct work;
+	struct request *partial_req;
 };
 
 struct recv_thread_args {
@@ -140,6 +142,9 @@ struct nbd_device {
  * by cmd->lock.
  */
 #define NBD_CMD_INFLIGHT	2
+
+/* Just part of request header or data payload is sent successfully */
+#define NBD_CMD_PARTIAL_SEND	3
 
 struct nbd_cmd {
 	struct nbd_device *nbd;
@@ -432,6 +437,12 @@ static enum blk_eh_timer_return nbd_xmit_timeout(struct request *req)
 	if (!mutex_trylock(&cmd->lock))
 		return BLK_EH_RESET_TIMER;
 
+	/* partial send is handled in nbd_sock's work function */
+	if (test_bit(NBD_CMD_PARTIAL_SEND, &cmd->flags)) {
+		mutex_unlock(&cmd->lock);
+		return BLK_EH_RESET_TIMER;
+	}
+
 	if (!test_bit(NBD_CMD_INFLIGHT, &cmd->flags)) {
 		mutex_unlock(&cmd->lock);
 		return BLK_EH_DONE;
@@ -581,10 +592,47 @@ static inline int was_interrupted(int result)
 }
 
 /*
- * Returns BLK_STS_RESOURCE if the caller should retry after a delay. Returns
- * -EAGAIN if the caller should requeue @cmd. Returns -EIO if sending failed.
+ * We've already sent header or part of data payload, have no choice but
+ * to set pending and schedule it in work.
+ *
+ * And we have to return BLK_STS_OK to block core, otherwise this same
+ * request may be re-dispatched with different tag, but our header has
+ * been sent out with old tag, and this way does confuse reply handling.
  */
-static int nbd_send_cmd(struct nbd_device *nbd, struct nbd_cmd *cmd, int index)
+static void nbd_sched_pending_work(struct nbd_device *nbd,
+				   struct nbd_sock *nsock,
+				   struct nbd_cmd *cmd, int sent)
+{
+	struct request *req = blk_mq_rq_from_pdu(cmd);
+
+	nsock->pending = req;
+	nsock->sent = sent;
+
+	/*
+	 * Already armed: this is nbd_pending_cmd_work() re-entering because the
+	 * resumed send was interrupted again.  Its work is still running, so
+	 * just refresh the resume point above and let its loop pick it up
+	 * instead of taking another config reference and requeueing the work.
+	 */
+	if (test_and_set_bit(NBD_CMD_PARTIAL_SEND, &cmd->flags))
+		return;
+
+	/*
+	 * nbd_mark_nsock_dead() clears ->pending, so the work function cannot
+	 * rely on it to find the request it owns.  Keep a copy that only it
+	 * clears.
+	 */
+	nsock->partial_req = req;
+	refcount_inc(&nbd->config_refs);
+	schedule_work(&nsock->work);
+}
+
+/*
+ * Returns BLK_STS_RESOURCE if the caller should retry after a delay.
+ * Returns BLK_STS_IOERR if sending failed.
+ */
+static blk_status_t nbd_send_cmd(struct nbd_device *nbd, struct nbd_cmd *cmd,
+				 int index)
 {
 	struct request *req = blk_mq_rq_from_pdu(cmd);
 	struct nbd_config *config = nbd->config;
@@ -607,13 +655,13 @@ static int nbd_send_cmd(struct nbd_device *nbd, struct nbd_cmd *cmd, int index)
 
 	type = req_to_nbd_cmd_type(req);
 	if (type == U32_MAX)
-		return -EIO;
+		return BLK_STS_IOERR;
 
 	if (rq_data_dir(req) == WRITE &&
 	    (config->flags & NBD_FLAG_READ_ONLY)) {
 		dev_err_ratelimited(disk_to_dev(nbd->disk),
 				    "Write on read-only\n");
-		return -EIO;
+		return BLK_STS_IOERR;
 	}
 
 	if (req->cmd_flags & REQ_FUA)
@@ -663,15 +711,15 @@ static int nbd_send_cmd(struct nbd_device *nbd, struct nbd_cmd *cmd, int index)
 			 * completely done.
 			 */
 			if (sent) {
-				nsock->pending = req;
-				nsock->sent = sent;
+				nbd_sched_pending_work(nbd, nsock, cmd, sent);
+				return BLK_STS_OK;
 			}
 			set_bit(NBD_CMD_REQUEUED, &cmd->flags);
-			return (__force int)BLK_STS_RESOURCE;
+			return BLK_STS_RESOURCE;
 		}
 		dev_err_ratelimited(disk_to_dev(nbd->disk),
 			"Send control failed (result %d)\n", result);
-		return -EAGAIN;
+		goto requeue;
 	}
 send_pages:
 	if (type != NBD_CMD_WRITE)
@@ -701,19 +749,13 @@ send_pages:
 			result = sock_xmit(nbd, index, 1, &from, flags, &sent);
 			if (result < 0) {
 				if (was_interrupted(result)) {
-					/* We've already sent the header, we
-					 * have no choice but to set pending and
-					 * return BUSY.
-					 */
-					nsock->pending = req;
-					nsock->sent = sent;
-					set_bit(NBD_CMD_REQUEUED, &cmd->flags);
-					return (__force int)BLK_STS_RESOURCE;
+					nbd_sched_pending_work(nbd, nsock, cmd, sent);
+					return BLK_STS_OK;
 				}
 				dev_err(disk_to_dev(nbd->disk),
 					"Send data failed (result %d)\n",
 					result);
-				return -EAGAIN;
+				goto requeue;
 			}
 			/*
 			 * The completion might already have come in,
@@ -730,7 +772,105 @@ out:
 	trace_nbd_payload_sent(req, handle);
 	nsock->pending = NULL;
 	nsock->sent = 0;
-	return 0;
+	__set_bit(NBD_CMD_INFLIGHT, &cmd->flags);
+	return BLK_STS_OK;
+
+requeue:
+	/*
+	 * Can't requeue in case we are dealing with partial send
+	 *
+	 * We must run from pending work function.
+	 * */
+	if (test_bit(NBD_CMD_PARTIAL_SEND, &cmd->flags))
+		return BLK_STS_OK;
+
+	/* retry on a different socket */
+	dev_err_ratelimited(disk_to_dev(nbd->disk),
+			    "Request send failed, requeueing\n");
+	nbd_mark_nsock_dead(nbd, nsock, 1);
+	nbd_requeue_cmd(cmd);
+	return BLK_STS_OK;
+}
+
+/* handle partial sending */
+static void nbd_pending_cmd_work(struct work_struct *work)
+{
+	struct nbd_sock *nsock = container_of(work, struct nbd_sock, work);
+	struct request *req = nsock->partial_req;
+	struct nbd_cmd *cmd = blk_mq_rq_to_pdu(req);
+	struct nbd_device *nbd = cmd->nbd;
+	unsigned long deadline = READ_ONCE(req->deadline);
+	unsigned int wait_ms = 2;
+
+	mutex_lock(&cmd->lock);
+
+	WARN_ON_ONCE(test_bit(NBD_CMD_REQUEUED, &cmd->flags));
+	if (WARN_ON_ONCE(!test_bit(NBD_CMD_PARTIAL_SEND, &cmd->flags)))
+		goto out;
+
+	mutex_lock(&nsock->tx_lock);
+	/*
+	 * nbd_mark_nsock_dead() can tear the socket down between schedule_work()
+	 * and here, and it clears ->pending and ->sent.  The header is already
+	 * on the wire so this request can never be answered; fail it rather than
+	 * resuming a send on a socket that is gone.
+	 */
+	if (!nsock->pending) {
+		/*
+		 * NBD_CMD_INFLIGHT is only set once nbd_send_cmd() has put the
+		 * whole request out, so neither recv_work() nor nbd_clear_req()
+		 * will complete this one: both skip a request without the bit.
+		 * Teardown runs nbd_clear_que() right after sock_shutdown() and
+		 * nothing cancels this work in between, so this is the only place
+		 * left that can complete it, and it has to, or the tag never
+		 * comes back.
+		 */
+		cmd->status = BLK_STS_IOERR;
+		blk_mq_complete_request(req);
+		goto unlock;
+	}
+	while (true) {
+		nbd_send_cmd(nbd, cmd, cmd->index);
+		if (!nsock->pending)
+			break;
+
+		/* don't bother timeout handler for partial sending */
+		if (READ_ONCE(jiffies) + msecs_to_jiffies(wait_ms) >= deadline) {
+			cmd->status = BLK_STS_IOERR;
+			/*
+			 * The header is on the wire but the rest of the payload
+			 * never will be, so the stream is out of sync with the
+			 * server.  Marking the socket dead also drops the stale
+			 * nsock->pending, which would otherwise make
+			 * nbd_handle_cmd() requeue every later request forever.
+			 */
+			nbd_mark_nsock_dead(nbd, nsock, 1);
+			blk_mq_complete_request(req);
+			break;
+		}
+		msleep(wait_ms);
+		wait_ms *= 2;
+	}
+unlock:
+	/*
+	 * Clear it before dropping tx_lock.  nbd_sched_pending_work() arms
+	 * partial_req under tx_lock, so a command blocked there arms its own
+	 * request as soon as this unlock lets it in.
+	 */
+	nsock->partial_req = NULL;
+	mutex_unlock(&nsock->tx_lock);
+	clear_bit(NBD_CMD_PARTIAL_SEND, &cmd->flags);
+out:
+	mutex_unlock(&cmd->lock);
+	/*
+	 * Both failure branches complete the request above, while cmd->lock is
+	 * still held, rather than deferring it to here.  The request owns its
+	 * tag until blk_mq_end_request() releases it, and a new owner takes
+	 * cmd->lock in nbd_queue_rq() before it can reach cmd, so the
+	 * clear_bit() above cannot land in a recycled one.  nbd outlives all of
+	 * it, since nbd_config_put() below is what drops the reference.
+	 */
+	nbd_config_put(nbd);
 }
 
 static int nbd_read_reply(struct nbd_device *nbd, struct socket *sock,
@@ -1011,7 +1151,7 @@ static blk_status_t nbd_handle_cmd(struct nbd_cmd *cmd, int index)
 	struct nbd_device *nbd = cmd->nbd;
 	struct nbd_config *config;
 	struct nbd_sock *nsock;
-	int ret;
+	blk_status_t ret;
 
 	lockdep_assert_held(&cmd->lock);
 
@@ -1065,28 +1205,11 @@ again:
 		ret = BLK_STS_OK;
 		goto out;
 	}
-	/*
-	 * Some failures are related to the link going down, so anything that
-	 * returns EAGAIN can be retried on a different socket.
-	 */
 	ret = nbd_send_cmd(nbd, cmd, index);
-	/*
-	 * Access to this flag is protected by cmd->lock, thus it's safe to set
-	 * the flag after nbd_send_cmd() succeed to send request to server.
-	 */
-	if (!ret)
-		__set_bit(NBD_CMD_INFLIGHT, &cmd->flags);
-	else if (ret == -EAGAIN) {
-		dev_err_ratelimited(disk_to_dev(nbd->disk),
-				    "Request send failed, requeueing\n");
-		nbd_mark_nsock_dead(nbd, nsock, 1);
-		nbd_requeue_cmd(cmd);
-		ret = BLK_STS_OK;
-	}
 out:
 	mutex_unlock(&nsock->tx_lock);
 	nbd_config_put(nbd);
-	return ret < 0 ? BLK_STS_IOERR : (__force blk_status_t)ret;
+	return ret;
 }
 
 static blk_status_t nbd_queue_rq(struct blk_mq_hw_ctx *hctx,
@@ -1204,6 +1327,8 @@ static int nbd_add_socket(struct nbd_device *nbd, unsigned long arg,
 	nsock->pending = NULL;
 	nsock->sent = 0;
 	nsock->cookie = 0;
+	nsock->partial_req = NULL;
+	INIT_WORK(&nsock->work, nbd_pending_cmd_work);
 	socks[config->num_connections++] = nsock;
 	atomic_inc(&config->live_connections);
 	blk_mq_unfreeze_queue(nbd->disk->queue);
