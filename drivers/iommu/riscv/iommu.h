@@ -17,6 +17,7 @@
 #include <linux/irqdomain.h>
 #include <linux/rcupdate.h>
 #include <linux/sizes.h>
+#include <linux/xarray.h>
 
 #include "iommu-bits.h"
 
@@ -72,6 +73,11 @@ struct riscv_iommu_device {
 	struct irq_domain *irqdomain;
 };
 
+/* Tracks a guest IMSIC GPA mapped into an S2 domain on IOMMUs without MSI_FLAT. */
+struct riscv_iommu_noflat_imsic {
+	phys_addr_t hpa;
+};
+
 struct riscv_iommu_msi_table {
 	/* Protects attachment, interrupt forwarding state, and MSI PTE updates. */
 	raw_spinlock_t lock;
@@ -82,6 +88,7 @@ struct riscv_iommu_msi_table {
 	u64 msi_addr_pattern;
 	const void *owner;
 	u64 required_caps; /* RISCV_IOMMU_CAPABILITIES_* required by active MSI PTEs */
+	struct xarray noflat_imsics;
 };
 
 /* Private IOMMU data for managed devices, dev_iommu_priv_* */
@@ -107,6 +114,11 @@ bool riscv_iommu_msi_table_check_caps(struct riscv_iommu_msi_table *msi_table, u
 void riscv_iommu_msi_table_inval(struct riscv_iommu_msi_table *msi_table, unsigned long addr);
 void riscv_iommu_msi_table_inval_all(struct riscv_iommu_msi_table *msi_table);
 void riscv_iommu_msi_table_update(struct riscv_iommu_msi_table *msi_table, bool activate);
+int riscv_iommu_msi_table_map_gpa(struct riscv_iommu_msi_table *msi_table,
+				  dma_addr_t gpa, phys_addr_t hpa);
+int riscv_iommu_msi_table_replace_gpa_leaf(struct riscv_iommu_msi_table *msi_table,
+					   dma_addr_t gpa, phys_addr_t old_hpa,
+					   phys_addr_t new_hpa);
 
 #ifdef CONFIG_RISCV_IMSIC
 void riscv_iommu_ir_irq_domain_remove(struct riscv_iommu_device *iommu);

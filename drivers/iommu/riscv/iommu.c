@@ -25,6 +25,7 @@
 #include <linux/moduleparam.h>
 #include <linux/mutex.h>
 #include <linux/pci.h>
+#include <linux/pgtable.h>
 #include <linux/generic_pt/iommu.h>
 
 #include "../dma-iommu.h"
@@ -1197,6 +1198,92 @@ void riscv_iommu_msi_table_inval_all(struct riscv_iommu_msi_table *msi_table)
 	riscv_iommu_iotlb_inval(domain, &gather);
 }
 
+int riscv_iommu_msi_table_map_gpa(struct riscv_iommu_msi_table *msi_table,
+				  dma_addr_t gpa, phys_addr_t hpa)
+{
+	struct riscv_iommu_domain *domain =
+		container_of(msi_table, struct riscv_iommu_domain, msi_table);
+	const int prot = IOMMU_WRITE | IOMMU_NOEXEC | IOMMU_MMIO;
+
+	/* Guest IMSIC GPA mapping only exists in second-stage translations. */
+	if (!domain->gscid)
+		return -EOPNOTSUPP;
+
+	return iommu_map(&domain->domain, gpa, hpa, IMSIC_MMIO_PAGE_SZ, prot,
+			 GFP_ATOMIC);
+}
+
+int riscv_iommu_msi_table_replace_gpa_leaf(struct riscv_iommu_msi_table *msi_table,
+					   dma_addr_t gpa, phys_addr_t old_hpa,
+					   phys_addr_t new_hpa)
+{
+	struct riscv_iommu_domain *domain =
+		container_of(msi_table, struct riscv_iommu_domain, msi_table);
+	struct pt_iommu_riscv_64_hw_info pt_info;
+	u64 *root, *table, *ptep;
+	u64 old, new;
+	int top_level, level;
+
+	if (!IS_ALIGNED(gpa | old_hpa | new_hpa, PAGE_SIZE))
+		return -EINVAL;
+	if (!domain->gscid)
+		return -EOPNOTSUPP;
+
+	pt_iommu_riscv_64_hw_info(&domain->riscvpt, &pt_info);
+	switch (pt_info.iohgatp_mode) {
+	case RISCV_IOMMU_DC_IOHGATP_MODE_SV39X4:
+		top_level = 2;
+		break;
+	case RISCV_IOMMU_DC_IOHGATP_MODE_SV48X4:
+		top_level = 3;
+		break;
+	case RISCV_IOMMU_DC_IOHGATP_MODE_SV57X4:
+		top_level = 4;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	root = phys_to_virt(pt_info.ppn << PAGE_SHIFT);
+	for (;;) {
+		table = root;
+		for (level = top_level; level >= 0; level--) {
+			unsigned int shift = PAGE_SHIFT + level * 9;
+			unsigned int index = gpa >> shift;
+
+			if (level == top_level)
+				index &= GENMASK(10, 0);
+			else
+				index &= GENMASK(8, 0);
+			ptep = &table[index];
+			old = READ_ONCE(*ptep);
+
+			if (level) {
+				/* A valid non-leaf PTE has R/W/X clear. */
+				if ((old & (_PAGE_PRESENT | _PAGE_LEAF)) !=
+				    _PAGE_PRESENT)
+					return -EADDRINUSE;
+				table = phys_to_virt(FIELD_GET(_PAGE_PFN_MASK,
+							       old) << PAGE_SHIFT);
+				continue;
+			}
+
+			/* Replace only the L0 leaf previously installed for this GPA. */
+			if (!(old & _PAGE_PRESENT) || !(old & _PAGE_LEAF) ||
+			    FIELD_GET(_PAGE_PFN_MASK, old) !=
+			    old_hpa >> PAGE_SHIFT)
+				return -EADDRINUSE;
+
+			new = (old & ~_PAGE_PFN_MASK) |
+			      FIELD_PREP(_PAGE_PFN_MASK,
+					 new_hpa >> PAGE_SHIFT);
+			if (cmpxchg64(ptep, old, new) == old)
+				return 0;
+			break;
+		}
+	}
+}
+
 #define RISCV_IOMMU_FSC_BARE 0
 /*
  * This function sends IOTINVAL commands as required by the RISC-V
@@ -1407,6 +1494,8 @@ static void riscv_iommu_iotlb_sync(struct iommu_domain *iommu_domain,
 static void riscv_iommu_free_paging_domain(struct iommu_domain *iommu_domain)
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
+	struct riscv_iommu_noflat_imsic *imsic;
+	unsigned long index;
 
 	WARN_ON(!list_empty(&domain->bonds));
 
@@ -1416,6 +1505,10 @@ static void riscv_iommu_free_paging_domain(struct iommu_domain *iommu_domain)
 		ida_free(&riscv_iommu_pscids, domain->pscid);
 	if (domain->gscid > 0)
 		ida_free(&riscv_iommu_gscids, domain->gscid);
+
+	xa_for_each(&domain->msi_table.noflat_imsics, index, imsic)
+		kfree(imsic);
+	xa_destroy(&domain->msi_table.noflat_imsics);
 
 	pt_iommu_deinit(&domain->riscvpt.iommu);
 	iommu_free_pages(domain->msi_table.root);
@@ -1658,6 +1751,7 @@ riscv_iommu_domain_alloc_paging_flags(struct device *dev, u32 flags,
 	INIT_LIST_HEAD_RCU(&domain->bonds);
 	raw_spin_lock_init(&domain->lock);
 	raw_spin_lock_init(&domain->msi_table.lock);
+	xa_init(&domain->msi_table.noflat_imsics);
 	mutex_init(&domain->mutex);
 	iommu = dev_to_iommu(dev);
 	cfg.common.hw_max_oasz_lg2 = 56;
