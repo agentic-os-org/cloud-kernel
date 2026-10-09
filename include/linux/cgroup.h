@@ -700,6 +700,7 @@ static inline void css_account_procs_unlocked(struct task_struct *task, int num)
 /*
  * cgroup scalable recursive statistics.
  */
+void __cgroup_rstat_updated(struct cgroup *cgrp, int cpu);
 void cgroup_rstat_updated(struct cgroup *cgrp, int cpu);
 void cgroup_rstat_flush(struct cgroup *cgrp);
 void cgroup_rstat_flush_hold(struct cgroup *cgrp);
