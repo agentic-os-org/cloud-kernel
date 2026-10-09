@@ -376,6 +376,10 @@ static int cpm_event_init(struct perf_event *event)
 	if (is_sampling_event(event))
 		return -EOPNOTSUPP;
 
+	/* Instances without a selector resource only support the default domain. */
+	if (!cpm->sysreg_base && CPM_GET_SEL(&event->attr))
+		return -EINVAL;
+
 	/* config2 only carries the 48-bit upper address filter. */
 	if (event->attr.config2 & GENMASK_ULL(63, 48))
 		return -EINVAL;
