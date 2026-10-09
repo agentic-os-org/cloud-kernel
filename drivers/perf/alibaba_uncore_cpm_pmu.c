@@ -393,9 +393,12 @@ static int cpm_event_init(struct perf_event *event)
 	hwc->config = config;
 	hwc->idx = -1;
 
-	if (event_id < 0x100)
+	if (event_id < 0x100) {
+		/* The hardware monitor event selector is six bits wide. */
+		if (event_id > 0x3f)
+			return -EINVAL;
 		hwc->event_base = CPM_EVENT_MONITOR;
-	else if (event_id < 0x200)
+	} else if (event_id < 0x200)
 		hwc->event_base = CPM_OSTD_STAT;
 	else
 		hwc->event_base = CPM_LCRD_STAT;
