@@ -834,7 +834,7 @@ static irqreturn_t cpm_irq_handler(int irq, void *data)
 		for (int idx = 0; idx < CPM_MAX_STAT_EVENTS; idx++) {
 			struct perf_event *event = cpm->events[idx];
 
-			if (!event)
+			if (!event || (event->hw.state & PERF_HES_STOPPED))
 				continue;
 			cpm_event_update(event);
 		}
