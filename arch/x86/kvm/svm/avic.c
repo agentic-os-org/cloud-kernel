@@ -204,10 +204,12 @@ void avic_init_vmcb(struct vcpu_svm *svm)
 	vmcb->control.avic_logical_id = lpa & AVIC_HPA_MASK;
 	vmcb->control.avic_physical_id = ppa & AVIC_HPA_MASK;
 	vmcb->control.avic_physical_id |= AVIC_MAX_PHYSICAL_ID_COUNT;
-	if (kvm_apicv_activated(svm->vcpu.kvm))
+	if (kvm_vcpu_apicv_active(&svm->vcpu)) {
 		vmcb->control.int_ctl |= AVIC_ENABLE_MASK;
-	else
+		svm_clr_intercept(svm, INTERCEPT_CR8_WRITE);
+	} else {
 		vmcb->control.int_ctl &= ~AVIC_ENABLE_MASK;
+	}
 }
 
 static u64 *avic_get_physical_id_entry(struct kvm_vcpu *vcpu,
@@ -677,8 +679,12 @@ void svm_refresh_apicv_exec_ctrl(struct kvm_vcpu *vcpu)
 		 */
 		avic_post_state_restore(vcpu);
 		vmcb->control.int_ctl |= AVIC_ENABLE_MASK;
+		svm_clr_intercept(svm, INTERCEPT_CR8_WRITE);
 	} else {
 		vmcb->control.int_ctl &= ~AVIC_ENABLE_MASK;
+
+		if (!sev_es_guest(vcpu->kvm))
+			svm_set_intercept(svm, INTERCEPT_CR8_WRITE);
 	}
 	vmcb_mark_dirty(vmcb, VMCB_AVIC);
 

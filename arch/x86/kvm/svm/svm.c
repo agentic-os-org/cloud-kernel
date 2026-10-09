@@ -1178,8 +1178,7 @@ static void init_vmcb(struct vcpu_svm *svm)
 	svm_set_intercept(svm, INTERCEPT_CR0_WRITE);
 	svm_set_intercept(svm, INTERCEPT_CR3_WRITE);
 	svm_set_intercept(svm, INTERCEPT_CR4_WRITE);
-	if (!kvm_vcpu_apicv_active(&svm->vcpu))
-		svm_set_intercept(svm, INTERCEPT_CR8_WRITE);
+	svm_set_intercept(svm, INTERCEPT_CR8_WRITE);
 
 	set_dr_intercepts(svm);
 
@@ -1302,7 +1301,7 @@ static void init_vmcb(struct vcpu_svm *svm)
 
 	svm_check_invpcid(svm);
 
-	if (kvm_vcpu_apicv_active(&svm->vcpu))
+	if (avic && irqchip_in_kernel(svm->vcpu.kvm))
 		avic_init_vmcb(svm);
 
 	/*
@@ -2668,9 +2667,11 @@ static int dr_interception(struct vcpu_svm *svm)
 static int cr8_write_interception(struct vcpu_svm *svm)
 {
 	struct kvm_run *kvm_run = svm->vcpu.run;
+	u8 cr8_prev = kvm_get_cr8(&svm->vcpu);
 	int r;
 
-	u8 cr8_prev = kvm_get_cr8(&svm->vcpu);
+	WARN_ON_ONCE(kvm_vcpu_apicv_active(&svm->vcpu));
+
 	/* instruction emulation calls kvm_set_cr8() */
 	r = cr_interception(svm);
 	if (lapic_in_kernel(&svm->vcpu))
@@ -3784,8 +3785,7 @@ static inline void sync_lapic_to_cr8(struct kvm_vcpu *vcpu)
 	struct vcpu_svm *svm = to_svm(vcpu);
 	u64 cr8;
 
-	if (nested_svm_virtualize_tpr(vcpu) ||
-	    kvm_vcpu_apicv_active(vcpu))
+	if (nested_svm_virtualize_tpr(vcpu))
 		return;
 
 	cr8 = kvm_get_cr8(vcpu);
