@@ -233,6 +233,7 @@ static void convert_ccw0_to_ccw1(struct ccw1 *source, unsigned long len)
 }
 
 #define idal_is_2k(_cp) (!(_cp)->orb.cmd.c64 || (_cp)->orb.cmd.i2k)
+#define get_idaw_size(_cp) ((_cp)->orb.cmd.c64 ? sizeof(u64) : sizeof(u32))
 
 /*
  * Helpers to operate ccwchain.
@@ -507,7 +508,8 @@ static unsigned long *get_guest_idal(struct ccw1 *ccw,
 		&container_of(cp, struct vfio_ccw_private, cp)->vdev;
 	unsigned long *idaws;
 	unsigned int *idaws_f1;
-	int idal_len = idaw_nr * sizeof(*idaws);
+	u64 first_idaw;
+	int idal_len = idaw_nr * get_idaw_size(cp);
 	int idaw_size = idal_is_2k(cp) ? PAGE_SIZE / 2 : PAGE_SIZE;
 	int idaw_mask = ~(idaw_size - 1);
 	int i, ret;
@@ -522,6 +524,18 @@ static unsigned long *get_guest_idal(struct ccw1 *ccw,
 		if (ret) {
 			kfree(idaws);
 			return ERR_PTR(ret);
+		}
+
+		idaws_f1 = (unsigned int *)idaws;
+		if (cp->orb.cmd.c64)
+			first_idaw = idaws[0];
+		else
+			first_idaw = (unsigned long)(idaws_f1[0]);
+
+		/* Unexpected mismatch from earlier read */
+		if (first_idaw != cp->guest_iova) {
+			kfree(idaws);
+			return ERR_PTR(-EINVAL);
 		}
 	} else {
 		/* Fabricate an IDAL based off CCW data address */
@@ -560,7 +574,7 @@ static int ccw_count_idaws(struct ccw1 *ccw,
 	struct vfio_device *vdev =
 		&container_of(cp, struct vfio_ccw_private, cp)->vdev;
 	u64 iova;
-	int size = cp->orb.cmd.c64 ? sizeof(u64) : sizeof(u32);
+	int size = get_idaw_size(cp);
 	int ret;
 	int bytes = 1;
 
@@ -583,6 +597,9 @@ static int ccw_count_idaws(struct ccw1 *ccw,
 	} else {
 		iova = ccw->cda;
 	}
+
+	/* Save the read address for later */
+	cp->guest_iova = iova;
 
 	/* Format-1 IDAWs operate on 2K each */
 	if (!cp->orb.cmd.c64)
