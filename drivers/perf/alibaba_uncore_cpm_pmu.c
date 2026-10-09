@@ -28,8 +28,7 @@
 #define CPM_FPGA_MON_PERIOD     16
 #define CPM_STOP_MARGIN_US      1000
 #define CPM_RESET_DELAY_US      1
-//#define CPM_DEFAULT_EVT_DURATION  4069  /* ASIC: TBD, 待实测 latency profile 后确定 */
-#define CPM_DEFAULT_EVT_DURATION  4069    /* HAPS: ~2-3x max_lat */
+#define CPM_DEFAULT_EVT_DURATION  4096    /* Transaction timeout threshold in bus cycles. */
 
 #define CPM_GET_EVENT(attr)		((attr)->config & 0x3FF)
 #define CPM_GET_FILTER_EN(attr)		(((attr)->config >> 10) & 0x3F)
@@ -71,8 +70,8 @@
 /* EVT slot registers — each slot occupies 0x40 bytes */
 #define CPM_EVT_STRIDE        0x40
 #define CPM_EVT_BASE(idx)     (0x40 + (idx) * CPM_EVT_STRIDE)
-#define CPM_EVTx_CTL0(idx)    (CPM_EVT_BASE(idx) + 0x00)   /* +0x00 */
-#define CPM_EVTx_CTL1(idx)    (CPM_EVT_BASE(idx) + 0x04)   /* +0x04 */
+#define CPM_EVTx_CTL1(idx)    (CPM_EVT_BASE(idx) + 0x00)   /* +0x00 */
+#define CPM_EVTx_CTL2(idx)    (CPM_EVT_BASE(idx) + 0x04)   /* +0x04 */
 #define CPM_EVT_CNT(idx)      (CPM_EVT_BASE(idx) + 0x08)   /* +0x08 */
 #define CPM_EVTx_FLT0(idx)    (CPM_EVT_BASE(idx) + 0x10)   /* +0x10 */
 #define CPM_EVTx_FLT1(idx)    (CPM_EVT_BASE(idx) + 0x14)   /* +0x14 */
@@ -99,7 +98,6 @@ struct cpm_pmu {
 	void __iomem	*sysreg_base;	/* TPE_SYS_REG space, only for CPM_SEL at offset 0x34 */
 	int		irq;
 	struct pmu	pmu;
-	const char	*cpm_name;	/* name from DTS/ACPI, e.g. "d0_cpu0" */
 	int		cpu;		/* administrative CPU for uncore PMU */
 	u32		cpm_sel;	/* 0=CPU Core0, 1=TPE */
 	u32		mon_period;	/* monitoring period exponent, written to CSR2 */
@@ -360,12 +358,6 @@ static int cpm_pmu_offline_cpu(unsigned int cpu, struct hlist_node *node)
 	WARN_ON(irq_set_affinity(cpm->irq, cpumask_of(target)));
 
 	return 0;
-}
-
-static __maybe_unused void cpm_reg_dump(struct cpm_pmu *cpm)
-{
-	for (int i = 0; i <= 0x22c; i += 4)
-		dev_info(cpm->dev, "reg 0x%x = 0x%x\n", i, readl(cpm->base + i));
 }
 
 static int cpm_event_init(struct perf_event *event)
@@ -687,8 +679,8 @@ static void cpm_hw_stop(struct cpm_pmu *cpm)
 out:
 	/* All events are gone and hardware is stopped (or was reset). */
 	for (idx = 0; idx < CPM_MAX_COUNTERS; idx++)
-		writel(0, cpm->base + CPM_EVTx_CTL0(idx));
-	readl(cpm->base + CPM_EVTx_CTL0(CPM_MAX_COUNTERS - 1));
+		writel(0, cpm->base + CPM_EVTx_CTL1(idx));
+	readl(cpm->base + CPM_EVTx_CTL1(CPM_MAX_COUNTERS - 1));
 	cpm->hw_started = false;
 	enable_irq(cpm->irq);
 }
@@ -760,12 +752,12 @@ static int cpm_event_add(struct perf_event *event, int flags)
 		cpm->events[idx] = event;
 		hwc->idx = idx;
 
-		u32 ctl0 = (CPM_GET_FILTER_EN(&event->attr) << 16)
+		u32 ctl1 = (CPM_GET_FILTER_EN(&event->attr) << 16)
 			| ((event_id & 0x3F) << 8)
 			| 0x1;
-		writel(ctl0, cpm->base + CPM_EVTx_CTL0(idx));
+		writel(ctl1, cpm->base + CPM_EVTx_CTL1(idx));
 
-		writel(CPM_DEFAULT_EVT_DURATION, cpm->base + CPM_EVTx_CTL1(idx));
+		writel(CPM_DEFAULT_EVT_DURATION, cpm->base + CPM_EVTx_CTL2(idx));
 
 		if (CPM_GET_FILTER_EN(&event->attr))
 			cpm_hw_config_filters(cpm, idx, event);
@@ -798,8 +790,8 @@ static void cpm_event_del(struct perf_event *event, int flags)
 		if (idx < CPM_MAX_COUNTERS) {
 			/* Running slots are cleared only after the global stop. */
 			if (!cpm->hw_started) {
-				writel(0, cpm->base + CPM_EVTx_CTL0(idx));
-				readl(cpm->base + CPM_EVTx_CTL0(idx));
+				writel(0, cpm->base + CPM_EVTx_CTL1(idx));
+				readl(cpm->base + CPM_EVTx_CTL1(idx));
 			}
 			/* add() rejects reuse for as long as CPM is running. */
 			clear_bit(idx, cpm->used_mask);
@@ -969,8 +961,6 @@ static int cpm_pmu_probe(struct platform_device *pdev)
 		.attr_groups = cpm_pmu_attr_groups,
 		.capabilities = PERF_PMU_CAP_NO_EXCLUDE,	/* no privilege level filtering */
 	};
-
-	cpm->cpm_name = name;
 
 	ret = perf_pmu_register(&cpm->pmu, name, -1);
 	if (ret) {
