@@ -409,6 +409,36 @@ int ubase_query_fst_fvt_rqmt(struct ubase_dev *udev,
 	return ret;
 }
 
+static unsigned long ubase_get_sl_bitmap(struct ubase_dev *udev)
+{
+	struct ubase_adev_qos *qos = &udev->qos;
+	unsigned long sl_bitmap = 0;
+	u8 i;
+
+	for (i = 0; i < qos->nic_sl_num; i++)
+		sl_bitmap |= 1 << qos->nic_sl[i];
+	for (i = 0; i < qos->sl_num; i++)
+		sl_bitmap |= 1 << qos->sl[i];
+
+	return sl_bitmap;
+}
+
+static int ubase_check_sl_bitmap(struct ubase_dev *udev, unsigned long sl_bitmap)
+{
+	unsigned long sl_bitmap_cap;
+	u8 i;
+
+	sl_bitmap_cap = ubase_get_sl_bitmap(udev);
+	for (i = 0; i < UBASE_MAX_SL_NUM; i++) {
+		if (!test_bit(i, &sl_bitmap))
+			continue;
+		if (!test_bit(i, &sl_bitmap_cap))
+			return -EINVAL;
+	}
+
+	return 0;
+}
+
 int ubase_check_qos_sch_param(struct auxiliary_device *adev, u16 vl_bitmap,
 			      u8 *vl_bw, u8 *vl_tsa, bool is_ets)
 {
@@ -447,6 +477,9 @@ int ubase_set_priqos_info(struct device *dev, struct ubase_sl_priqos *sl_priqos)
 
 	udev = dev_get_drvdata(dev);
 
+	if (ubase_check_sl_bitmap(udev, sl_priqos->sl_bitmap))
+		return -EINVAL;
+
 	if (sl_priqos->port_bitmap)
 		return ubase_set_ets_priqos(udev, sl_priqos);
 
@@ -458,11 +491,12 @@ int ubase_get_priqos_info(struct device *dev, struct ubase_sl_priqos *sl_priqos)
 {
 	struct ubase_dev *udev;
 
-	if (!dev || !sl_priqos || !sl_priqos->sl_bitmap)
+	if (!dev || !sl_priqos)
 		return -EINVAL;
 
 	udev = dev_get_drvdata(dev);
 
+	sl_priqos->sl_bitmap = ubase_get_sl_bitmap(udev);
 	if (sl_priqos->port_bitmap)
 		return ubase_get_ets_priqos(udev, sl_priqos);
 
@@ -883,6 +917,29 @@ static void ubase_init_udma_dscp_vl(struct ubase_dev *udev)
 		qos->dscp_vl[i] = qos->tp_req_vl[0];
 }
 
+static void ubase_parse_max_vl(struct ubase_dev *udev)
+{
+	struct ubase_adev_caps *udma_caps = &udev->caps.udma_caps;
+	struct ubase_adev_qos *qos = &udev->qos;
+	u8 i, max_vl = 0;
+
+	for (i = 0; i < qos->nic_vl_num; i++)
+		max_vl = max(qos->nic_vl[i], max_vl);
+
+	for (i = 0; i < qos->tp_vl_num; i++)
+		max_vl = max(qos->tp_req_vl[i] +
+			     qos->tp_resp_vl_offset, max_vl);
+
+	for (i = 0; i < qos->ctp_vl_num; i++)
+		max_vl = max(qos->ctp_req_vl[i] +
+			     qos->ctp_resp_vl_offset, max_vl);
+
+	qos->ue_max_vl_id = max_vl;
+
+	if (ubase_dev_urma_supported(udev))
+		udma_caps->rc_max_cnt *= (max_vl + 1);
+}
+
 static int ubase_parse_sl_vl(struct ubase_dev *udev)
 {
 	int ret;
@@ -900,6 +957,8 @@ static int ubase_parse_sl_vl(struct ubase_dev *udev)
 
 	if (ubase_utp_supported(udev) && ubase_dev_urma_supported(udev))
 		udev->caps.unic_caps.tpg.max_cnt = udev->qos.nic_vl_num;
+
+	ubase_parse_max_vl(udev);
 
 	return 0;
 }
@@ -1049,3 +1108,119 @@ void ubase_update_udma_dscp_vl(struct auxiliary_device *adev, u8 *dscp_vl,
 				       dscp_vl[i] : qos->tp_req_vl[0];
 }
 EXPORT_SYMBOL(ubase_update_udma_dscp_vl);
+
+int ubase_query_tm_queue(struct ubase_dev *udev, u16 bus_ue_id,
+			 struct ubase_query_tm_queue_cmd *resp)
+{
+	struct ubase_query_tm_queue_cmd req = {0};
+	struct ubase_cmd_buf in, out;
+	int ret;
+
+	req.bus_ue_id = cpu_to_le16(bus_ue_id);
+
+	ubase_fill_inout_buf(&in, UBASE_OPC_QUERY_TM_Q_INFO, true,
+			     sizeof(req), &req);
+	ubase_fill_inout_buf(&out, UBASE_OPC_QUERY_TM_Q_INFO, false,
+			     sizeof(*resp), resp);
+
+	ret = __ubase_cmd_send_inout(udev, &in, &out);
+	if (ret == -EPERM)
+		return -EOPNOTSUPP;
+	if (ret)
+		ubase_err(udev,
+			  "failed to query tm queue info, bus_ue_id=%u, ret=%d.\n",
+			  bus_ue_id, ret);
+	return ret;
+}
+
+int ubase_query_tm_qset(struct ubase_dev *udev, u16 bus_ue_id,
+			struct ubase_query_tm_qset_cmd *resp)
+{
+	struct ubase_query_tm_qset_cmd req = {0};
+	struct ubase_cmd_buf in, out;
+	int ret;
+
+	req.bus_ue_id = cpu_to_le16(bus_ue_id);
+
+	ubase_fill_inout_buf(&in, UBASE_OPC_QUERY_TM_QS_INFO, true,
+			     sizeof(req), &req);
+	ubase_fill_inout_buf(&out, UBASE_OPC_QUERY_TM_QS_INFO, false,
+			     sizeof(*resp), resp);
+
+	ret = __ubase_cmd_send_inout(udev, &in, &out);
+	if (ret == -EPERM)
+		return -EOPNOTSUPP;
+	if (ret)
+		ubase_err(udev,
+			  "failed to query tm qset info, bus_ue_id = %u, ret = %d.\n",
+			  bus_ue_id, ret);
+	return ret;
+}
+
+int ubase_query_tm_pri(struct ubase_dev *udev, u16 bus_ue_id,
+		       struct ubase_query_tm_pri_cmd *resp)
+{
+	struct ubase_query_tm_pri_cmd req = {0};
+	struct ubase_cmd_buf in, out;
+	int ret;
+
+	req.bus_ue_id = cpu_to_le16(bus_ue_id);
+
+	ubase_fill_inout_buf(&in, UBASE_OPC_QUERY_TM_PRI_INFO, true,
+			     sizeof(req), &req);
+	ubase_fill_inout_buf(&out, UBASE_OPC_QUERY_TM_PRI_INFO, false,
+			     sizeof(*resp), resp);
+
+	ret = __ubase_cmd_send_inout(udev, &in, &out);
+	if (ret == -EPERM)
+		return -EOPNOTSUPP;
+	if (ret)
+		ubase_err(udev,
+			  "failed to query tm pri info, bus_ue_id = %u, ret = %d.\n",
+			  bus_ue_id, ret);
+	return ret;
+}
+
+int ubase_query_tm_pg(struct ubase_dev *udev, u16 bus_ue_id,
+		      struct ubase_query_tm_pg_cmd *resp)
+{
+	struct ubase_query_tm_pg_cmd req = {0};
+	struct ubase_cmd_buf in, out;
+	int ret;
+
+	req.bus_ue_id = cpu_to_le16(bus_ue_id);
+
+	ubase_fill_inout_buf(&in, UBASE_OPC_QUERY_TM_PG_INFO, true,
+			     sizeof(req), &req);
+	ubase_fill_inout_buf(&out, UBASE_OPC_QUERY_TM_PG_INFO, false,
+			     sizeof(*resp), resp);
+
+	ret = __ubase_cmd_send_inout(udev, &in, &out);
+	if (ret == -EPERM)
+		return -EOPNOTSUPP;
+	if (ret)
+		ubase_err(udev,
+			  "failed to query tm pg info, bus_ue_id = %u, ret = %d.\n",
+			  bus_ue_id, ret);
+	return ret;
+}
+
+int ubase_query_tm_port(struct ubase_dev *udev,
+			struct ubase_query_tm_port_cmd *resp)
+{
+	struct ubase_query_tm_port_cmd req = {0};
+	struct ubase_cmd_buf in, out;
+	int ret;
+
+	ubase_fill_inout_buf(&in, UBASE_OPC_QUERY_TM_PORT_INFO, true,
+			     sizeof(req), &req);
+	ubase_fill_inout_buf(&out, UBASE_OPC_QUERY_TM_PORT_INFO, false,
+			     sizeof(*resp), resp);
+
+	ret = __ubase_cmd_send_inout(udev, &in, &out);
+	if (ret == -EPERM)
+		return -EOPNOTSUPP;
+	if (ret)
+		ubase_err(udev, "failed to query tm port info, ret = %d.\n", ret);
+	return ret;
+}

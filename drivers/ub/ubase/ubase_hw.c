@@ -16,7 +16,7 @@
 #include "ubase_tp.h"
 #include "ubase_hw.h"
 
-#define UBASE_CTX_REMOVE_ALL		(-2)
+static DEFINE_MUTEX(ubase_perf_mutex);
 
 struct ubase_dma_buf_desc {
 	struct ubase_dma_buf	*buf;
@@ -412,15 +412,34 @@ static int ubase_alloc_and_fill_ctx_buf(struct ubase_dev *udev,
 	return ret;
 }
 
+static int ubase_config_jfs_ctx_buf_by_pmem(struct ubase_dev *udev,
+					    struct ubase_mbx_attr *attr)
+{
+	struct ubase_cmd_mailbox mailbox;
+	int ret;
+
+	mailbox.dma = udev->pmem_info.comm.dma_addr;
+	ret = __ubase_hw_upgrade_ctx(udev, attr, &mailbox);
+	if (ret)
+		ubase_err(udev,
+			  "failed to config jfs ctx buf, ret = %d.\n", ret);
+
+	return ret;
+}
+
 static int ubase_cmd_ctx_buf_alloc(struct ubase_dev *udev,
-			    struct ubase_ctx_buf_cap *ctx_buf,
-			    struct ubase_mbx_attr *attr)
+				   struct ubase_ctx_buf_cap *ctx_buf,
+				   struct ubase_mbx_attr *attr)
 {
 	size_t size = ctx_buf->entry_cnt * ctx_buf->entry_size;
 	int ret;
 
 	if (!size)
 		return 0;
+
+	if (attr->op == UBASE_MB_WRITE_JFS_CONTEXT_VA &&
+	    test_bit(UBASE_STATE_PREALLOC_OK_B, &udev->state_bits))
+		return ubase_config_jfs_ctx_buf_by_pmem(udev, attr);
 
 	xa_init(&ctx_buf->ctx_xa);
 	ret = ubase_alloc_and_fill_ctx_buf(udev, ctx_buf, attr, size);
@@ -530,10 +549,24 @@ static int ubase_config_dma_buf(struct ubase_dev *udev, u16 opc, u64 dma_addr)
 	return ret;
 }
 
+static int ubase_config_ta_timer_buf_by_pmem(struct ubase_dev *udev, u16 opc)
+{
+	u64 dma_addr, offset;
+
+	offset = ubase_jfs_ctx_align_size(udev);
+	dma_addr = udev->pmem_info.comm.dma_addr + offset;
+
+	return ubase_config_dma_buf(udev, opc, dma_addr);
+}
+
 static int ubase_init_dma_buf(struct ubase_dev *udev, struct ubase_dma_buf *buf,
 			      u16 opc)
 {
 	int ret;
+
+	if (opc == UBASE_OPC_TA_TIMER_VA_CONFIG &&
+	    test_bit(UBASE_STATE_PREALLOC_OK_B, &udev->state_bits))
+		return ubase_config_ta_timer_buf_by_pmem(udev, opc);
 
 	buf->addr = dma_alloc_coherent(udev->dev, buf->size, &buf->dma_addr,
 				       GFP_KERNEL);
@@ -617,6 +650,29 @@ int ubase_query_hw_oor_caps(struct ubase_dev *udev)
 	dev_caps->reorder_queue_shift = resp.reorder_cq_shift;
 	dev_caps->on_flight_size = le32_to_cpu(resp.on_flight_size);
 	dev_caps->at_times = resp.dynamic_ack_timeout;
+
+	return 0;
+}
+
+int ubase_query_port_bitmap(struct ubase_dev *udev)
+{
+	struct ubase_caps *dev_caps = &udev->caps.dev_caps;
+	struct ubase_query_port_bitmap_resp resp = {0};
+	struct ubase_cmd_buf in, out;
+	int ret;
+
+	ubase_fill_inout_buf(&in, UBASE_OPC_QUERY_PORT_BITMAP, true, 0, NULL);
+	ubase_fill_inout_buf(&out, UBASE_OPC_QUERY_PORT_BITMAP, true,
+			     sizeof(resp), &resp);
+
+	ret = __ubase_cmd_send_inout(udev, &in, &out);
+	if (ret && ret != -EPERM) {
+		dev_err(udev->dev,
+			"failed to query port bitmap, ret = %d.\n", ret);
+		return ret;
+	}
+
+	dev_caps->logic_port_bitmap = le32_to_cpu(resp.logic_port_bitmap);
 
 	return 0;
 }
@@ -846,3 +902,127 @@ void ubase_hw_uninit(struct ubase_dev *udev)
 
 	ubase_uninit_ctx_buf(udev);
 }
+
+static int ubase_start_perf_stats(struct ubase_dev *udev, u32 period,
+				  u64 port_bitmap)
+{
+	struct ubase_start_perf_stats_cmd req = {0};
+	struct ubase_cmd_buf in;
+	int ret;
+
+	req.period = cpu_to_le32(period);
+	req.logic_port_bitmap[0] = cpu_to_le32(lower_32_bits(port_bitmap));
+	req.logic_port_bitmap[1] = cpu_to_le32(upper_32_bits(port_bitmap));
+
+	__ubase_fill_inout_buf(&in, UBASE_OPC_START_PERF_STATS, false,
+			       sizeof(req), &req);
+	ret = __ubase_cmd_send_in(udev, &in);
+	if (ret && ret != -EPERM)
+		ubase_err(udev, "failed to cfg perf stats period, ret = %d.\n",
+			  ret);
+
+	return ret == -EPERM ? -EOPNOTSUPP : ret;
+}
+
+static int ubase_stop_perf_stats(struct ubase_dev *udev,
+				 struct ubase_stop_perf_stats_cmd *resp,
+				 u32 period, u16 port_id)
+{
+	struct ubase_stop_perf_stats_cmd req = {0};
+	struct ubase_cmd_buf in, out;
+	int ret;
+
+	req.period = cpu_to_le32(period);
+	req.port_id = cpu_to_le16(port_id);
+
+	__ubase_fill_inout_buf(&in, UBASE_OPC_STOP_PERF_STATS, true,
+			       sizeof(req), &req);
+	__ubase_fill_inout_buf(&out, UBASE_OPC_STOP_PERF_STATS, false,
+			       sizeof(*resp), resp);
+
+	ret = __ubase_cmd_send_inout(udev, &in, &out);
+	if (ret && ret != -EPERM)
+		ubase_err(udev, "failed to query perf stats, ret = %d.\n", ret);
+
+	return ret == -EPERM ? -EOPNOTSUPP : ret;
+}
+
+int __ubase_perf_stats(struct ubase_dev *udev, u64 port_bitmap, u32 period,
+		       struct ubase_perf_stats_result *data, u32 data_size)
+{
+#define UBASE_MS_TO_US(ms) (1000 * (ms))
+	struct ubase_stop_perf_stats_cmd resp = {0};
+	unsigned long logic_port_bitmap;
+	int ret, j, k, port_num;
+	u8 i;
+
+	if (!test_bit(UBASE_STATE_INITED_B, &udev->state_bits) ||
+	    test_bit(UBASE_STATE_RST_HANDLING_B, &udev->state_bits))
+		return -EBUSY;
+
+	logic_port_bitmap = udev->caps.dev_caps.logic_port_bitmap;
+
+	if (port_bitmap) {
+		if (data_size < bitmap_weight((unsigned long *)&port_bitmap,
+					      UBASE_MAX_PORT_NUM) ||
+		    !bitmap_subset((unsigned long *)&port_bitmap,
+				   &logic_port_bitmap,
+				   UBASE_MAX_PORT_NUM))
+			return -EINVAL;
+	} else {
+		if (data_size != UBASE_MAX_PORT_NUM)
+			return -EINVAL;
+
+		port_bitmap = logic_port_bitmap;
+	}
+
+	mutex_lock(&ubase_perf_mutex);
+	ret = ubase_start_perf_stats(udev, period, port_bitmap);
+	if (ret)
+		goto unlock;
+
+	usleep_range(UBASE_MS_TO_US(period), UBASE_MS_TO_US(period + 1));
+
+	port_num = bitmap_weight((unsigned long *)&port_bitmap,
+				 UBASE_MAX_PORT_NUM);
+	for (i = 0, k = 0; i < UBASE_MAX_PORT_NUM && k < port_num; i++) {
+		if (!test_bit(i, (unsigned long *)&port_bitmap))
+			continue;
+		ret = ubase_stop_perf_stats(udev, &resp, period, i);
+		if (ret)
+			goto unlock;
+
+		data[k].tx_port_bw = le32_to_cpu(resp.tx_port_bw);
+		data[k].rx_port_bw = le32_to_cpu(resp.rx_port_bw);
+		data[k].port_id = i;
+		data[k].valid = 1;
+
+		for (j = 0; j < UBASE_STATS_MAX_VL_NUM; j++) {
+			data[k].tx_vl_bw[j] = le32_to_cpu(resp.tx_vl_bw[j]);
+			data[k].rx_vl_bw[j] = le32_to_cpu(resp.rx_vl_bw[j]);
+		}
+
+		k++;
+	}
+
+unlock:
+	mutex_unlock(&ubase_perf_mutex);
+
+	return ret;
+}
+
+int ubase_perf_stats(struct auxiliary_device *adev, u64 port_bitmap, u32 period,
+		     struct ubase_perf_stats_result *data, u32 data_size)
+{
+	struct ubase_dev *udev;
+
+	if (!adev || !data || !period || !data_size)
+		return -EINVAL;
+
+	udev = ubase_get_udev_by_adev(adev);
+	if (!(ubase_dev_ubl_supported(udev) || ubase_dev_fwctl_supported(udev)))
+		return -EOPNOTSUPP;
+
+	return __ubase_perf_stats(udev, port_bitmap, period, data, data_size);
+}
+EXPORT_SYMBOL(ubase_perf_stats);

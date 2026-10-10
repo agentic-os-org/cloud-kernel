@@ -221,6 +221,7 @@ struct ubase_bus_eid {
 bool ubase_adev_ubl_supported(struct auxiliary_device *adev);
 bool ubase_adev_ctrlq_supported(struct auxiliary_device *adev);
 bool ubase_adev_eth_mac_supported(struct auxiliary_device *adev);
+bool ubase_adev_prealloc_supported(struct auxiliary_device *aux_dev);
 
 struct ubase_resource_space *ubase_get_io_base(struct auxiliary_device *adev);
 struct ubase_resource_space *ubase_get_mem_base(struct auxiliary_device *adev);
@@ -239,10 +240,24 @@ void ubase_virt_register(struct auxiliary_device *adev,
 					      u16 bus_ue_id, bool is_en));
 void ubase_virt_unregister(struct auxiliary_device *adev);
 
+void ubase_port_register(struct auxiliary_device *adev,
+			 void (*port_handler)(struct auxiliary_device *adev,
+					      bool link_up));
+void ubase_port_unregister(struct auxiliary_device *adev);
+
 void ubase_reset_register(struct auxiliary_device *adev,
 			  void (*reset_handler)(struct auxiliary_device *adev,
 						enum ubase_reset_stage stage));
 void ubase_reset_unregister(struct auxiliary_device *adev);
+
+void ubase_activate_register(struct auxiliary_device *adev,
+			     void (*activate_handler)(struct auxiliary_device *adev,
+						      bool activate));
+void ubase_activate_unregister(struct auxiliary_device *adev);
+
+int ubase_activate_dev(struct auxiliary_device *adev);
+int ubase_deactivate_dev(struct auxiliary_device *adev);
+
 int ubase_get_bus_eid(struct auxiliary_device *adev, struct ubase_bus_eid *eid);
 
 #endif

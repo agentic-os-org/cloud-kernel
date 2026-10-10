@@ -350,11 +350,7 @@ static int ubase_ubus_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(ubase_ubus_pm_ops, ubase_ubus_suspend, ubase_ubus_resume);
-
-static const struct device_driver ubase_ue_driver = {
-	.pm = &ubase_ubus_pm_ops,
-};
+static DEFINE_SIMPLE_DEV_PM_OPS(ubase_ubus_pm_ops, ubase_ubus_suspend, ubase_ubus_resume);
 
 static int ubase_ubus_virt_configure(struct ub_entity *ue, int bus_ue_id, bool is_en)
 {
@@ -386,6 +382,24 @@ static int ubase_ubus_virt_notify(struct ub_entity *ue, int bus_ue_id, bool is_e
 	ubase_virt_handler(udev, (u16)bus_ue_id, is_en);
 
 	return 0;
+}
+
+static int ubase_ubus_activate(struct ub_entity *ue, u32 bus_ue_id)
+{
+	struct ubase_dev *udev = dev_get_drvdata(&ue->dev);
+
+	ubase_info(udev, "ubase activate ue id = %u.\n", bus_ue_id);
+
+	return ubase_activate_handler(udev, bus_ue_id);
+}
+
+static int ubase_ubus_deactivate(struct ub_entity *ue, u32 bus_ue_id)
+{
+	struct ubase_dev *udev = dev_get_drvdata(&ue->dev);
+
+	ubase_info(udev, "ubase deactivate ue id = %u.\n", bus_ue_id);
+
+	return ubase_deactivate_handler(udev, bus_ue_id);
 }
 
 static void ubase_ubus_reset_prepare(struct ub_entity *ue)
@@ -437,6 +451,8 @@ static struct ub_driver ubase_ubus_driver = {
 	.virt_configure	= ubase_ubus_virt_configure,
 	.virt_notify	= ubase_ubus_virt_notify,
 	.err_handler	= &ubase_ubus_err_handler,
+	.activate	= ubase_ubus_activate,
+	.deactivate	= ubase_ubus_deactivate,
 	.driver		= {
 		.pm = &ubase_ubus_pm_ops,
 	},
