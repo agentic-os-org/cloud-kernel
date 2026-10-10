@@ -35,6 +35,9 @@
 #include <linux/switchtec.h>
 #include <linux/vgaarb.h>
 #include "pci.h"
+#ifdef CONFIG_PSWIOTLB
+#include <linux/pswiotlb.h>
+#endif
 
 static bool pcie_lbms_seen(struct pci_dev *dev, u16 lnksta)
 {
@@ -6470,3 +6473,12 @@ static void quirk_save_yitian710_regs(struct pci_dev *dev)
 }
 DECLARE_PCI_FIXUP_CLASS_EARLY(PCI_VENDOR_ID_ALIBABA, 0x8000,
 			      PCI_CLASS_BRIDGE_PCI, 8, quirk_save_yitian710_regs);
+
+void pci_configure_pswiotlb(struct pci_dev *dev, struct pci_bus *bus)
+{
+#ifdef CONFIG_PSWIOTLB
+	if ((pswiotlb_force_disable != true) &&
+		is_phytium_ps_socs())
+		pswiotlb_store_local_node(dev, bus);
+#endif
+}

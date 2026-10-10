@@ -12,6 +12,10 @@
 #include <asm/cacheflush.h>
 #include <asm/xen/xen-ops.h>
 
+#ifdef CONFIG_PSWIOTLB
+#include <linux/pswiotlb.h>
+#endif
+
 void arch_sync_dma_for_device(phys_addr_t paddr, size_t size,
 			      enum dma_data_direction dir)
 {
@@ -49,6 +53,10 @@ void arch_setup_dma_ops(struct device *dev, bool coherent)
 		   ARCH_DMA_MINALIGN, cls);
 
 	dev->dma_coherent = coherent;
+
+#ifdef CONFIG_PSWIOTLB
+	pswiotlb_setup_dma_ops(dev);
+#endif
 
 	xen_setup_dma_ops(dev);
 }

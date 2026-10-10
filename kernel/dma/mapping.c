@@ -134,7 +134,6 @@ static bool dma_go_direct(struct device *dev, dma_addr_t mask,
 	return false;
 }
 
-
 /*
  * Check if the devices uses a direct mapping for streaming DMA operations.
  * This allows IOMMU drivers to set a bypass mode if the DMA mask is large
@@ -343,7 +342,6 @@ int dma_map_sgtable(struct device *dev, struct sg_table *sgt,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(dma_map_sgtable);
-
 void dma_unmap_sg_attrs(struct device *dev, struct scatterlist *sg,
 				      int nents, enum dma_data_direction dir,
 				      unsigned long attrs)
