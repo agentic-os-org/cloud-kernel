@@ -33,13 +33,145 @@
 
 #define CC KVM_NESTED_VMENTER_CONSISTENCY_CHECK
 
+static void nested_svm_invalidate_insn_bytes(struct vmcb *vmcb)
+{
+	vmcb->control.insn_len = 0;
+}
+
+static void nested_svm_copy_insn_bytes(struct vmcb *to,
+				       const struct vmcb *from)
+{
+	u8 insn_len = from->control.insn_len;
+
+	if (WARN_ON_ONCE(insn_len > sizeof(from->control.insn_bytes))) {
+		nested_svm_invalidate_insn_bytes(to);
+		return;
+	}
+
+	memcpy(to->control.insn_bytes, from->control.insn_bytes, insn_len);
+	to->control.insn_len = insn_len;
+}
+
+static bool nested_svm_vmexit_supports_insn_bytes(const struct vmcb *vmcb)
+{
+	u64 exit_code = vmcb->control.exit_code;
+
+	if (exit_code != SVM_EXIT_NPF &&
+	    exit_code != SVM_EXIT_EXCP_BASE + PF_VECTOR)
+		return false;
+
+	return !(vmcb->control.exit_info_1 & PFERR_FETCH_MASK);
+}
+
+static void nested_svm_set_vmcb02_insn_bytes_valid(struct vcpu_svm *svm)
+{
+	svm->nested.vmcb02_insn_bytes_valid =
+		cpu_feature_enabled(X86_FEATURE_DECODEASSISTS) &&
+		nested_svm_vmexit_supports_insn_bytes(svm->nested.vmcb02.ptr);
+}
+
+static void nested_svm_invalidate_vmcb02_insn_bytes(struct vcpu_svm *svm)
+{
+	nested_svm_invalidate_insn_bytes(svm->nested.vmcb02.ptr);
+	svm->nested.vmcb02_insn_bytes_valid = false;
+}
+
+static u8 nested_svm_get_insn_bytes_len(struct kvm_vcpu *vcpu, u8 max_bytes)
+{
+	if (!is_64_bit_mode(vcpu)) {
+		u32 eip = kvm_rip_read(vcpu);
+		u32 limit = to_svm(vcpu)->vmcb->save.cs.limit;
+
+		if (eip > limit)
+			return 0;
+		max_bytes = min_t(u64, max_bytes, (u64)limit - eip + 1);
+	}
+
+	return max_bytes;
+}
+
+static u8 nested_svm_fetch_insn_bytes(struct kvm_vcpu *vcpu, u8 *bytes,
+				      u8 count, u8 max_bytes)
+{
+	gva_t rip = kvm_get_linear_rip(vcpu);
+
+	max_bytes = nested_svm_get_insn_bytes_len(vcpu, max_bytes);
+	count = min(count, max_bytes);
+
+	return count + kvm_fetch_guest_virt(vcpu, rip + count, bytes + count,
+					   max_bytes - count);
+}
+
+static void nested_svm_prepare_synthesized_insn_bytes(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+	struct vmcb *vmcb02 = svm->nested.vmcb02.ptr;
+	struct x86_emulate_ctxt *ctxt = vcpu->arch.emulate_ctxt;
+	u8 max_bytes = sizeof(vmcb02->control.insn_bytes);
+	u8 count;
+
+	nested_svm_invalidate_vmcb02_insn_bytes(svm);
+
+	if (!guest_cpu_cap_has(vcpu, X86_FEATURE_DECODEASSISTS))
+		return;
+
+	max_bytes = nested_svm_get_insn_bytes_len(vcpu, max_bytes);
+	count = x86_emulator_copy_insn_bytes(ctxt, kvm_rip_read(vcpu),
+					     vmcb02->control.insn_bytes, max_bytes);
+	if (!sev_guest(vcpu->kvm))
+		count = nested_svm_fetch_insn_bytes(vcpu,
+						    vmcb02->control.insn_bytes,
+						    count, max_bytes);
+	vmcb02->control.insn_len = count;
+
+	svm->nested.vmcb02_insn_bytes_valid = true;
+}
+
+static void nested_svm_update_vmcb12_insn_bytes(struct kvm_vcpu *vcpu,
+						struct vmcb *vmcb12,
+						const struct vmcb *vmcb02)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+	const u8 max_bytes = sizeof(vmcb12->control.insn_bytes);
+
+	if (!guest_cpu_cap_has(vcpu, X86_FEATURE_DECODEASSISTS))
+		goto out;
+
+	if (!nested_svm_vmexit_supports_insn_bytes(vmcb02)) {
+		nested_svm_invalidate_insn_bytes(vmcb12);
+		goto out;
+	}
+
+	if (svm->nested.vmcb02_insn_bytes_valid) {
+		nested_svm_copy_insn_bytes(vmcb12, vmcb02);
+		goto out;
+	}
+
+	if (!sev_guest(vcpu->kvm))
+		vmcb12->control.insn_len =
+			nested_svm_fetch_insn_bytes(vcpu,
+						    vmcb12->control.insn_bytes,
+						    0,
+						    max_bytes);
+	else
+		nested_svm_invalidate_insn_bytes(vmcb12);
+
+out:
+	svm->nested.vmcb02_insn_bytes_valid = false;
+}
+
 static void nested_svm_inject_npf_exit(struct kvm_vcpu *vcpu,
 				       struct x86_exception *fault)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 	struct vmcb *vmcb = svm->vmcb;
+	struct x86_emulate_ctxt *ctxt = vcpu->arch.emulate_ctxt;
+	bool from_emulation = ctxt && fault == &ctxt->exception;
+	bool from_hardware = !from_emulation &&
+		(vmcb->control.exit_code == SVM_EXIT_NPF ||
+		 vmcb->control.exit_code == SVM_EXIT_EXCP_BASE + PF_VECTOR);
 
-	if (vmcb->control.exit_code != SVM_EXIT_NPF) {
+	if (!from_hardware || vmcb->control.exit_code != SVM_EXIT_NPF) {
 		/*
 		 * TODO: track the cause of the nested page fault, and
 		 * correctly fill in the high bits of exit_info_1.
@@ -53,6 +185,12 @@ static void nested_svm_inject_npf_exit(struct kvm_vcpu *vcpu,
 	vmcb->control.exit_info_1 &= ~0xffffffffULL;
 	vmcb->control.exit_info_1 |= fault->error_code;
 
+	if (from_hardware)
+		nested_svm_set_vmcb02_insn_bytes_valid(svm);
+	else if (from_emulation && !(fault->error_code & PFERR_FETCH_MASK))
+		nested_svm_prepare_synthesized_insn_bytes(vcpu);
+	else
+		nested_svm_invalidate_vmcb02_insn_bytes(svm);
 	nested_svm_vmexit(svm);
 }
 
@@ -777,6 +915,7 @@ static void nested_vmcb02_prepare_control(struct vcpu_svm *svm,
 	 * exit_int_info, exit_int_info_err, next_rip, insn_len, insn_bytes.
 	 */
 
+	nested_svm_invalidate_vmcb02_insn_bytes(svm);
 	if (guest_cpu_cap_has(vcpu, X86_FEATURE_VGIF) &&
 	    (svm->nested.ctl.int_ctl & V_GIF_ENABLE_MASK))
 		int_ctl_vmcb12_bits |= (V_GIF_MASK | V_GIF_ENABLE_MASK);
@@ -1150,6 +1289,8 @@ int nested_svm_vmexit(struct vcpu_svm *svm)
 	if (guest_cpu_cap_has(vcpu, X86_FEATURE_NRIPS))
 		vmcb12->control.next_rip  = vmcb02->control.next_rip;
 
+	nested_svm_update_vmcb12_insn_bytes(vcpu, vmcb12, vmcb02);
+
 	vmcb12->control.event_inj	  = 0;
 	vmcb12->control.event_inj_err	  = 0;
 	vmcb12->control.int_ctl           = svm->nested.ctl.int_ctl;
@@ -1477,8 +1618,10 @@ int nested_svm_exit_handled(struct vcpu_svm *svm)
 
 	vmexit = nested_svm_intercept(svm);
 
-	if (vmexit == NESTED_EXIT_DONE)
+	if (vmexit == NESTED_EXIT_DONE) {
+		nested_svm_set_vmcb02_insn_bytes_valid(svm);
 		nested_svm_vmexit(svm);
+	}
 
 	return vmexit;
 }
