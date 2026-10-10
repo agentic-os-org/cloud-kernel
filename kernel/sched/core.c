@@ -10154,7 +10154,7 @@ static int cpu_group_balancer_write_u64(struct cgroup_subsys_state *css,
 					struct cftype *cftype, u64 new)
 {
 	struct task_group *tg = css_tg(css);
-	bool old;
+	unsigned int old;
 	int retval = 0;
 
 	if (!group_balancer_enabled())
