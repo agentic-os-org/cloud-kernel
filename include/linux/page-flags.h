@@ -205,6 +205,13 @@ enum pageflags {
 #endif
 	/* Only valid for buddy pages. Used to trace page that are initialized */
 	PG_inited = PG_owner_priv_1,
+
+#ifdef CONFIG_PSWIOTLB
+	/* check if pswiotlb is sync already */
+	PG_pswiotlbsync = __NR_PAGEFLAGS + 1,
+	/* check if the page is used for pswiotlb */
+	PG_pswiotlb,
+#endif
 };
 
 #define PAGEFLAGS_MASK		((1UL << NR_PAGEFLAGS) - 1)

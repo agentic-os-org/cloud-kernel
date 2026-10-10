@@ -12,6 +12,7 @@
 #ifndef _DEVICE_H_
 #define _DEVICE_H_
 
+#include <linux/ky_kabi.h>
 #include <linux/dev_printk.h>
 #include <linux/energy_model.h>
 #include <linux/ioport.h>
@@ -555,6 +556,11 @@ enum struct_device_flags {
  * @dma_io_tlb_pools:	List of transient swiotlb memory pools.
  * @dma_io_tlb_lock:	Protects changes to the list of active pools.
  * @dma_uses_io_tlb: %true if device has used the software IO TLB.
+ * @dma_p_io_tlb_mem: Phytium Software IO TLB allocator.  Not for driver use.
+ * @orig_dma_ops:    Original DMA mapping operations for this device.
+ * @local_node:	NUMA node this device is really belong to.
+ * @dma_uses_p_io_tlb: %true if device has used the Phytium software IO TLB.
+ * @can_use_pswiotlb: %true if device can use the Phytium software IO TLB.
  * @archdata:	For arch-specific additions.
  * @of_node:	Associated device tree node.
  * @fwnode:	Associated device node supplied by platform firmware.
@@ -668,6 +674,19 @@ struct device {
 #endif
 #ifdef CONFIG_SWIOTLB
 	struct io_tlb_mem *dma_io_tlb_mem;
+#endif
+#ifdef CONFIG_PSWIOTLB
+	struct p_io_tlb_mem *dma_p_io_tlb_mem;
+#ifdef CONFIG_DMA_OPS
+	const struct dma_map_ops *orig_dma_ops;
+#endif
+	struct {
+#ifdef CONFIG_NUMA
+		int local_node;
+#endif
+		bool dma_uses_p_io_tlb;
+		bool can_use_pswiotlb;
+	};
 #endif
 #ifdef CONFIG_SWIOTLB_DYNAMIC
 	struct list_head dma_io_tlb_pools;

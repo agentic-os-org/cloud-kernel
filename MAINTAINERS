@@ -3026,6 +3026,19 @@ F:	drivers/mmc/host/sdhci-of-arasan.c
 N:	zynq
 N:	xilinx
 
+PSWIOTLB (PHYTIUM DMA COPY)
+M:	Cui Chao <cuichao1753@phytium.com.cn>
+S:	Maintained
+F:	include/linux/pswiotlb.h
+F:	include/trace/events/pswiotlb.h
+F:	kernel/dma/phytium/Kconfig
+F:	kernel/dma/phytium/Makefile
+F:	kernel/dma/phytium/pswiotlb-direct.c
+F:	kernel/dma/phytium/pswiotlb-dma.h
+F:	kernel/dma/phytium/pswiotlb-iommu.c
+F:	kernel/dma/phytium/pswiotlb-mapping.c
+F:	kernel/dma/phytium/pswiotlb.c
+
 ARM64 PORT (AARCH64 ARCHITECTURE)
 M:	Catalin Marinas <catalin.marinas@arm.com>
 M:	Will Deacon <will@kernel.org>
