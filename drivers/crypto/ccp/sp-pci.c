@@ -363,18 +363,13 @@ static int sp_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (ret)
 		goto free_irqs;
 
-	if (is_vendor_hygon()) {
+	if (hygon_ccp_dev_wrapper_support()) {
 		ret = ccp_dev_wrapper_alloc(pdev);
 		if (ret) {
-			/*
-			 * Non-fatal: the device can still be brought up, only the
-			 * mediated-device (ccp-mdev) functionality is unavailable.
-			 * ccp_dev_wrapper_alloc() already disabled the mdev path, so
-			 * every later ccp-mdev access is blocked gracefully instead
-			 * of failing the probe.
-			 */
-			dev_warn(dev, "ccp_dev_wrapper_alloc failed (%d), ccp-mdev disabled\n",
-				 ret);
+			dev_err(dev, "ccp_dev_wrapper_alloc failed (%d)\n", ret);
+			/* Undo sp_init() before tearing down the irqs */
+			sp_destroy(sp);
+			goto free_irqs;
 		}
 	}
 
@@ -406,7 +401,7 @@ static void sp_pci_remove(struct pci_dev *pdev)
 	if (!sp)
 		return;
 
-	if (is_vendor_hygon())
+	if (hygon_ccp_dev_wrapper_support())
 		ccp_dev_wrapper_free(pdev);
 
 	sp_destroy(sp);

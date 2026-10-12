@@ -269,7 +269,7 @@ static int __init sp_mod_init(void)
 #ifdef CONFIG_X86
 	int ret;
 
-	if (is_vendor_hygon()) {
+	if (hygon_ccp_dev_wrapper_support()) {
 		ret = ccp_mdev_init();
 		if (ret)
 			return ret;
@@ -309,7 +309,7 @@ static void __exit sp_mod_exit(void)
 
 	sp_pci_exit();
 
-	if (is_vendor_hygon())
+	if (hygon_ccp_dev_wrapper_support())
 		ccp_mdev_exit();
 #endif
 
