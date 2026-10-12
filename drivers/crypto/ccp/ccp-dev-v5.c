@@ -1147,7 +1147,7 @@ static void ccp5_irq_bh(unsigned long data)
 	u32 status;
 	unsigned int i;
 
-	if (is_vendor_hygon())
+	if (hygon_ccp_dev_wrapper_support())
 		ccp_wrapper = hygon_ccp_dev_wrapper_get(ccp);
 
 	for (i = 0; i < ccp->cmd_q_count; i++) {
@@ -1169,8 +1169,9 @@ static void ccp5_irq_bh(unsigned long data)
 			/* Acknowledge the interrupt and wake the kthread */
 			iowrite32(status, cmd_q->reg_interrupt_status);
 
-			if (is_vendor_hygon()) {
-				if (ccp_wrapper->used_mode == _KERNEL_SPACE_USED) {
+			if (hygon_ccp_dev_wrapper_support()) {
+				if (!ccp_wrapper ||
+				    ccp_wrapper->used_mode == _KERNEL_SPACE_USED) {
 					cmd_q->int_rcvd = 1;
 					wake_up_interruptible(&cmd_q->int_queue);
 				} else {

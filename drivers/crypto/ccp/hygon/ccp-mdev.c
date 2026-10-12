@@ -203,6 +203,7 @@ struct mccp_pci_id {
 
 static LIST_HEAD(ccp_dev_wrapper_list);
 static DEFINE_MUTEX(ccp_dev_wrapper_lock);
+static bool ccp_mdev_available = true;
 
 static int handle_pci_cfg_read(struct mdev_state *mdev_state, int offset,
 				 __le32 *val, int count)
@@ -1845,6 +1846,11 @@ struct hygon_ccp_dev_wrapper *hygon_ccp_dev_wrapper_get(struct ccp_device *ccp)
 	return NULL;
 }
 
+bool ccp_mdev_is_available(void)
+{
+	return READ_ONCE(ccp_mdev_available);
+}
+
 int ccp_dev_wrapper_list_empty(void)
 {
 	return list_empty(&ccp_dev_wrapper_list);
@@ -1875,15 +1881,25 @@ static int ccp_pci_device_create(struct pci_dev *pdev,
 
 	device = device_create(ccp_mdev.vd_class, NULL,
 			MKDEV(ccp_mdev.major, i), NULL, "ccp%lu", i);
-	if (device == NULL) {
+	if (IS_ERR(device)) {
 		pr_err("device_create for /dev/ccp%lu fail.\n", i);
+		ret = PTR_ERR(device);
 		goto exit;
 	}
 
 	ret = 0;
 exit:
-	if (ret)
+	if (ret) {
+		mutex_lock(&ccp_mdev_data.iommu[i].lock);
+		ccp_mdev_data.iommu[i].magic = 0;
+		ccp_mdev_data.iommu[i].id = 0;
+		ccp_mdev_data.iommu[i].pdev = NULL;
+		ccp_mdev_data.iommu[i].wrapper = NULL;
+		mutex_unlock(&ccp_mdev_data.iommu[i].lock);
+		mutex_lock(&ccp_mdev_data.lock);
 		bitmap_clear(&ccp_mdev_data.bitmap, i, 1);
+		mutex_unlock(&ccp_mdev_data.lock);
+	}
 	return ret;
 }
 
@@ -1937,6 +1953,9 @@ int ccp_dev_wrapper_alloc(struct pci_dev *pdev)
 	ret = ccp_pci_device_create(pdev, ccp_wrapper);
 	if (ret) {
 		pr_err("Error: ccp pci device create failed.\n");
+		mutex_lock(&ccp_dev_wrapper_lock);
+		list_del(&ccp_wrapper->entry);
+		mutex_unlock(&ccp_dev_wrapper_lock);
 		kfree(ccp_wrapper);
 		return ret;
 	}
@@ -1978,6 +1997,7 @@ int ccp_mdev_init(void)
 
 	if (!iommu_present(&pci_bus_type)) {
 		pr_info("iommu is disabled\n");
+		WRITE_ONCE(ccp_mdev_available, false);
 		return 0;
 	}
 
