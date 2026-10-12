@@ -12,6 +12,7 @@
 int ub_update_msi_domain(struct device *dev,
 			 enum irq_domain_bus_token bus_token)
 {
+#ifdef CONFIG_GENERIC_MSI_IRQ
 	struct fwnode_handle *fwnode;
 	struct irq_domain *domain;
 
@@ -35,7 +36,7 @@ int ub_update_msi_domain(struct device *dev,
 
 	/* Update msi domain with new bus_token */
 	dev_set_msi_domain(dev, domain);
-
+#endif
 	return 0;
 }
 EXPORT_SYMBOL_GPL(ub_update_msi_domain);
@@ -61,8 +62,10 @@ int ubrt_register_gsi(u32 hwirq, int trigger, int polarity, const char *name,
 	res->start = irq;
 	res->end = irq;
 	res->flags = IORESOURCE_IRQ;
-#endif
 	return 0;
+#else
+	return -EINVAL;
+#endif
 }
 EXPORT_SYMBOL_GPL(ubrt_register_gsi);
 

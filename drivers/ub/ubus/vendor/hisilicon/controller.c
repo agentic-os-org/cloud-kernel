@@ -10,6 +10,7 @@
 #include <ub/ubus/ubus.h>
 
 #include "../../ubus_controller.h"
+#include "hisi-decoder.h"
 #include "hisi-ubus.h"
 #include "hisi-msg.h"
 
@@ -17,18 +18,17 @@ static struct ub_bus_controller_ops hi_ubc_ops = {
 	.eu_table_init = hi_eu_table_init,
 	.eu_table_uninit = hi_eu_table_uninit,
 	.eu_cfg = hi_eu_cfg,
+	.mem_decoder_create = hi_mem_decoder_create,
+	.mem_decoder_remove = hi_mem_decoder_remove,
+	.register_ubmem_irq = hi_register_ubmem_irq,
+	.unregister_ubmem_irq = hi_unregister_ubmem_irq,
 	.register_decoder_base_addr = hi_register_decoder_base_addr,
 	.entity_enable = hi_send_entity_enable_msg,
+	.create_decoder_table = hi_create_decoder_table,
+	.free_decoder_table = hi_free_decoder_table,
+	.decoder_map = hi_decoder_map,
+	.decoder_unmap = hi_decoder_unmap,
 };
-
-void hi_register_decoder_base_addr(struct ub_bus_controller *ubc, u64 *cmd_queue,
-				   u64 *event_queue)
-{
-	struct hi_ubc_private_data *data = (struct hi_ubc_private_data *)ubc->data;
-
-	*cmd_queue = data->io_decoder_cmdq;
-	*event_queue = data->io_decoder_evtq;
-}
 
 static void ub_bus_controller_debugfs_init(struct ub_bus_controller *ubc)
 {
