@@ -1567,9 +1567,7 @@ fail:
 		hwc->sample_period = perf_ibs->min_period;
 
 out:
-	if (throttle) {
-		perf_ibs_stop(event, 0);
-	} else {
+	if (!throttle) {
 		if (ibs_caps & IBS_CAPS_DIS)
 			wrmsrl(hwc->extra_reg.reg, perf_ibs->disable_mask);
 
