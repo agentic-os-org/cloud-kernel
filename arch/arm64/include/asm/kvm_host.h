@@ -219,6 +219,15 @@ struct kvm_s2_mmu {
 	 */
 	bool	pending_unmap;
 
+	bool	nested_revmap_broken;
+	/* canonical IPA to nested IPA range lookup */
+	struct maple_tree nested_revmap_mt;
+	/*
+	 * Nested IPA to canonical IPA range lookup, essentially a cache of
+	 * the guest's stage-2.
+	 */
+	struct maple_tree nested_direct_mt;
+
 	/*
 	 *  0: Nobody is currently using this, check vttbr for validity
 	 * >0: Somebody is actively using this.
