@@ -10557,13 +10557,18 @@ simple:
 	if (prev)
 		put_prev_task(rq, prev);
 
+	throttled = false;
+
 	do {
+		throttled |= check_cfs_rq_runtime(cfs_rq);
 		se = pick_next_entity(cfs_rq, NULL);
 		set_next_entity(cfs_rq, se);
 		cfs_rq = group_cfs_rq(se);
 	} while (cfs_rq);
 
 	p = task_of(se);
+	if (unlikely(throttled))
+		task_throttle_setup_work(p);
 
 done: __maybe_unused;
 #ifdef CONFIG_SMP
