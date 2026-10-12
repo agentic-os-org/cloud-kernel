@@ -25,6 +25,7 @@
 #include <linux/perf_event.h>
 #include <linux/preempt.h>
 #include <linux/hugetlb.h>
+#include <linux/sysctl.h>
 
 #include <asm/acpi.h>
 #include <asm/bug.h>
@@ -42,6 +43,31 @@
 #include <asm/system_misc.h>
 #include <asm/tlbflush.h>
 #include <asm/traps.h>
+
+static int sysctl_machine_check_safe = IS_ENABLED(CONFIG_ARCH_HAS_COPY_MC);
+
+#ifdef CONFIG_ARCH_HAS_COPY_MC
+static struct ctl_table machine_check_safe_sysctl_table[] = {
+	{
+		.procname       = "machine_check_safe",
+		.data           = &sysctl_machine_check_safe,
+		.maxlen         = sizeof(sysctl_machine_check_safe),
+		.mode           = 0644,
+		.proc_handler   = proc_dointvec_minmax,
+		.extra1         = SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE,
+	},
+};
+
+static int __init machine_check_safe_sysctl_init(void)
+{
+	if (!register_sysctl("kernel", machine_check_safe_sysctl_table))
+		return -EINVAL;
+	return 0;
+}
+
+core_initcall(machine_check_safe_sysctl_init);
+#endif
 
 struct fault_info {
 	int	(*fn)(unsigned long far, unsigned long esr,
@@ -713,29 +739,23 @@ static int do_bad(unsigned long far, unsigned long esr, struct pt_regs *regs)
 	return 1; /* "fault" */
 }
 
-static bool arm64_do_kernel_sea(unsigned long addr, unsigned int esr,
-				     struct pt_regs *regs, int sig, int code)
+/*
+ * APEI claimed this as a firmware-first notification.
+ * Some processing deferred to task_work before ret_to_user().
+ */
+static bool do_apei_claim_sea(struct pt_regs *regs)
 {
-	if (!IS_ENABLED(CONFIG_ARCH_HAS_COPY_MC))
-		return false;
+	if (user_mode(regs)) {
+		if (!apei_claim_sea(regs))
+			return true;
+	} else if (IS_ENABLED(CONFIG_ARCH_HAS_COPY_MC)) {
+		if (sysctl_machine_check_safe &&
+		    fixup_exception_me(regs) &&
+		    !apei_claim_sea(regs))
+			return true;
+	}
 
-	if (user_mode(regs))
-		return false;
-
-	if (apei_claim_sea(regs) < 0)
-		return false;
-
-	if (!fixup_exception_mc(regs))
-		return false;
-
-	if (current->flags & PF_KTHREAD)
-		return true;
-
-	set_thread_esr(0, esr);
-	arm64_force_sig_fault(sig, code, addr,
-		"Uncorrected memory error on access to user memory\n");
-
-	return true;
+	return false;
 }
 
 static int do_sea(unsigned long far, unsigned long esr, struct pt_regs *regs)
@@ -743,16 +763,10 @@ static int do_sea(unsigned long far, unsigned long esr, struct pt_regs *regs)
 	const struct fault_info *inf;
 	unsigned long siaddr;
 
-	inf = esr_to_fault_info(esr);
-
-	if (user_mode(regs) && apei_claim_sea(regs) == 0) {
-		/*
-		 * APEI claimed this as a firmware-first notification.
-		 * Some processing deferred to task_work before ret_to_user().
-		 */
+	if (do_apei_claim_sea(regs))
 		return 0;
-	}
 
+	inf = esr_to_fault_info(esr);
 	if (esr & ESR_ELx_FnV) {
 		siaddr = 0;
 	} else {
@@ -765,8 +779,7 @@ static int do_sea(unsigned long far, unsigned long esr, struct pt_regs *regs)
 	}
 
 	add_taint(TAINT_MACHINE_CHECK, LOCKDEP_STILL_OK);
-	if (!arm64_do_kernel_sea(siaddr, esr, regs, inf->sig, inf->code))
-		arm64_notify_die(inf->name, regs, inf->sig, inf->code, siaddr, esr);
+	arm64_notify_die(inf->name, regs, inf->sig, inf->code, siaddr, esr);
 
 	return 0;
 }
