@@ -776,8 +776,6 @@ static int cpm_event_add(struct perf_event *event, int flags)
 				break;
 		if (idx == CPM_MAX_STAT_EVENTS)
 			return -ENOSPC;
-		hwc->idx = idx;
-		cpm->events[idx] = event;
 		break;
 	case CPM_EVENT_MONITOR:
 		idx = find_first_zero_bit(cpm->used_mask, CPM_MAX_COUNTERS);
@@ -785,8 +783,6 @@ static int cpm_event_add(struct perf_event *event, int flags)
 			return -ENOSPC;
 
 		set_bit(idx, cpm->used_mask);
-		cpm->events[idx] = event;
-		hwc->idx = idx;
 
 		u32 ctl1 = (CPM_GET_FILTER_EN(&event->attr) << 16)
 			| ((event_id & 0x3F) << 8)
@@ -798,15 +794,18 @@ static int cpm_event_add(struct perf_event *event, int flags)
 		if (CPM_GET_FILTER_EN(&event->attr))
 			cpm_hw_config_filters(cpm, idx, event);
 		break;
+	default:
+		return -EINVAL;
 	}
 
-	cpm->active_events++;
-
-	if (hwc->idx >= 0 && hwc->idx < CPM_MAX_STAT_EVENTS) {
-		cpm->avg_sum[hwc->idx] = 0;
-		cpm->avg_nr[hwc->idx] = 0;
-	}
+	hwc->idx = idx;
+	cpm->avg_sum[idx] = 0;
+	cpm->avg_nr[idx] = 0;
 	hwc->state = PERF_HES_STOPPED | PERF_HES_UPTODATE;
+
+	/* Perf callbacks and the affine IRQ serialize on the management CPU. */
+	cpm->events[idx] = event;
+	cpm->active_events++;
 
 	if (flags & PERF_EF_START)
 		cpm_event_start(event, PERF_EF_START);
