@@ -1070,6 +1070,6 @@ static void __exit cpm_pmu_exit(void)
 module_init(cpm_pmu_init);
 module_exit(cpm_pmu_exit);
 
-MODULE_AUTHOR("dong.yan <nanli.yd@alibaba-inc.com>");
+MODULE_AUTHOR("Dong Yan <yandong@linux.alibaba.com>");
 MODULE_DESCRIPTION("CHI performance monitor driver");
 MODULE_LICENSE("GPL v2");
