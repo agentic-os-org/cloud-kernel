@@ -241,12 +241,17 @@ static ssize_t show_cpus_attr(struct device *dev,
 	else
 		cpumask_copy(&cpuset_allowed, ca->map);
 
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
-	if (info) {
-		if (!BPF_CGROUP_RUN_PROG_RICH_CONTAINER_CPU(info, 1))
-			cpumask_copy(&cpuset_allowed, &info->cpus_mask);
-		kfree(info);
+#ifdef CONFIG_CGROUP_BPF
+	if (cgroup_bpf_enabled(CGROUP_RICH_CONTAINER_CPU)) {
+		info = kzalloc(sizeof(*info), GFP_KERNEL);
+		if (info) {
+			if (!__cgroup_bpf_run_filter_rich_container(info,
+								    CGROUP_RICH_CONTAINER_CPU))
+				cpumask_copy(&cpuset_allowed, &info->cpus_mask);
+			kfree(info);
+		}
 	}
+#endif
 
 	return cpumap_print_to_pagebuf(true, buf, &cpuset_allowed);
 }

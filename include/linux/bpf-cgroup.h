@@ -406,24 +406,6 @@ static inline bool cgroup_bpf_sock_enabled(struct sock *sk,
 	__ret;								       \
 })
 
-#define BPF_CGROUP_RUN_PROG_RICH_CONTAINER_CPU(info, retval)		       \
-({									       \
-	int __ret = retval;						       \
-	if (cgroup_bpf_enabled(CGROUP_RICH_CONTAINER_CPU))		       \
-		__ret = __cgroup_bpf_run_filter_rich_container(		       \
-				info, CGROUP_RICH_CONTAINER_CPU);	       \
-	__ret;								       \
-})
-
-#define BPF_CGROUP_RUN_PROG_RICH_CONTAINER_MEM(info, retval)		       \
-({									       \
-	int __ret = retval;						       \
-	if (cgroup_bpf_enabled(CGROUP_RICH_CONTAINER_MEM))		       \
-		__ret = __cgroup_bpf_run_filter_rich_container(		       \
-				info, CGROUP_RICH_CONTAINER_MEM);	       \
-	__ret;								       \
-})
-
 int cgroup_bpf_prog_attach(const union bpf_attr *attr,
 			   enum bpf_prog_type ptype, struct bpf_prog *prog);
 int cgroup_bpf_prog_detach(const union bpf_attr *attr,
@@ -521,8 +503,6 @@ static inline int bpf_percpu_cgroup_storage_update(struct bpf_map *map,
 					    optlen, retval) ({ retval; })
 #define BPF_CGROUP_RUN_PROG_SETSOCKOPT(sock, level, optname, optval, optlen, \
 				       kernel_optval) ({ 0; })
-#define BPF_CGROUP_RUN_PROG_RICH_CONTAINER_CPU(info, retval) ({ retval; })
-#define BPF_CGROUP_RUN_PROG_RICH_CONTAINER_MEM(info, retval) ({ retval; })
 
 #endif /* CONFIG_CGROUP_BPF */
 

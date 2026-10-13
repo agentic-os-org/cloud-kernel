@@ -84,14 +84,19 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 		memcg_meminfo(memcg, &i, &ext);
 	}
 
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
-	if (info) {
-		if (!BPF_CGROUP_RUN_PROG_RICH_CONTAINER_MEM(info, 1)) {
-			memcpy(&i, &info->sysinfo, sizeof(i));
-			memcpy(&ext, &info->sysinfo_ext, sizeof(ext));
+#ifdef CONFIG_CGROUP_BPF
+	if (cgroup_bpf_enabled(CGROUP_RICH_CONTAINER_MEM)) {
+		info = kzalloc(sizeof(*info), GFP_KERNEL);
+		if (info) {
+			if (!__cgroup_bpf_run_filter_rich_container(info,
+								    CGROUP_RICH_CONTAINER_MEM)) {
+				memcpy(&i, &info->sysinfo, sizeof(i));
+				memcpy(&ext, &info->sysinfo_ext, sizeof(ext));
+			}
+			kfree(info);
 		}
-		kfree(info);
 	}
+#endif
 
 	committed = percpu_counter_read_positive(&vm_committed_as);
 	sreclaimable = global_node_page_state_pages(NR_SLAB_RECLAIMABLE_B);
