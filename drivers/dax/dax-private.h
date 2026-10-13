@@ -8,6 +8,10 @@
 #include <linux/device.h>
 #include <linux/cdev.h>
 #include <linux/idr.h>
+#include <linux/list.h>
+#include <linux/memremap.h>
+#include <linux/rcupdate.h>
+#include <linux/range.h>
 
 /* private routines between core files */
 struct dax_device;
@@ -46,6 +50,37 @@ struct dax_mapping {
 	int id;
 };
 
+struct dev_dax_range {
+	unsigned long pgoff;
+	struct range range;
+	struct dax_mapping *mapping;
+};
+
+/*
+ * Immutable RCU snapshot of dev_dax->ranges, so the fault path
+ * (dax_pgoff_to_phys) can walk it without device_lock. Writers serialize on
+ * device_lock(&dev_dax->region->dev) -- the only lock all mutation paths
+ * hold, since delete_store() drops device_lock(&dev_dax->dev) first -- and
+ * replace the whole snapshot via rcu_assign_pointer.
+ *
+ * Only .pgoff and .range are meaningful here: .mapping is filled in by
+ * devm_register_dax_mapping() after the publish, so a snapshot's copy is
+ * NULL or stale and must not be dereferenced.
+ */
+struct dev_dax_ranges {
+	struct rcu_head rcu;
+	int nr_range;
+	struct dev_dax_range ranges[];
+};
+
+/* Per-range pgmap of a growable region: an extend maps only the new range. */
+struct dev_dax_pgmap {
+	struct list_head node;
+	u64 start;
+	struct resource *iomem_res;
+	struct dev_pagemap pgmap;
+};
+
 /**
  * struct dev_dax - instance data for a subdivision of a dax region, and
  * data while the device is activated in the driver.
@@ -59,6 +94,8 @@ struct dax_mapping {
  * @pgmap - pgmap for memmap setup / lifetime (driver owned)
  * @nr_range: size of @ranges
  * @ranges: resource-span + pgoff tuples for the instance
+ * @ranges_rcu: RCU-protected snapshot of @ranges, read by the fault path
+ * @pgmaps: per-range &struct dev_dax_pgmap list of a growable region
  */
 struct dev_dax {
 	struct dax_region *region;
@@ -71,11 +108,9 @@ struct dev_dax {
 	struct device dev;
 	struct dev_pagemap *pgmap;
 	int nr_range;
-	struct dev_dax_range {
-		unsigned long pgoff;
-		struct range range;
-		struct dax_mapping *mapping;
-	} *ranges;
+	struct dev_dax_range *ranges;
+	struct dev_dax_ranges __rcu *ranges_rcu;
+	struct list_head pgmaps;
 };
 
 /*
@@ -84,6 +119,7 @@ struct dev_dax {
  * outside of drivers/dax/
  */
 void run_dax(struct dax_device *dax_dev);
+void dax_drain_faults(void);
 
 static inline struct dev_dax *to_dev_dax(struct device *dev)
 {

@@ -1,0 +1,193 @@
+What:		/sys/bus/dax/devices/daxX.Y/align
+Date:		October, 2020
+KernelVersion:	v5.10
+Contact:	nvdimm@lists.linux.dev
+Description:
+		(RW) Provides a way to specify an alignment for a dax device.
+		Values allowed are constrained by the physical address ranges
+		that back the dax device, and also by arch requirements.
+
+		Write access requires: (1) the device must not be bound to any
+		driver (otherwise -EBUSY); (2) the value must parse as a number and
+		the region driver must be bound (otherwise -ENXIO); (3) the value must
+		be in the set {PAGE_SIZE, PMD_SIZE (if transparent hugepages
+		available), PUD_SIZE (if CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD)}
+		-- other values return -EINVAL; (4) after changing, all existing
+		ranges are re-validated against the new alignment -- if any range
+		fails validation, the change is rolled back and -EINVAL is returned.
+
+		For static (pmem-backed) regions, this attribute is read-only (0444).
+
+What:		/sys/bus/dax/devices/daxX.Y/mapping
+Date:		October, 2020
+KernelVersion:	v5.10
+Contact:	nvdimm@lists.linux.dev
+Description:
+		(WO) Provides a way to allocate a mapping range under a dax
+		device. Specified in the format <start>-<end>.
+
+		For growable devices bound to device_dax, writing a physical address
+		range in "start-end" format (hexadecimal) triggers online extend. The
+		range must be within the parent dax_region's free space, aligned to the
+		device alignment, and not overlap existing ranges. On success a new
+		mappingN subdirectory appears. Returns -EINVAL for a malformed or
+		misaligned range, -ENXIO if the region driver is not bound, -EBUSY if
+		the range overlaps existing allocations or lies outside the region, or
+		if the device is bound to a driver other than device_dax.
+
+What:		/sys/bus/dax/devices/daxX.Y/mapping[0..N]/start
+What:		/sys/bus/dax/devices/daxX.Y/mapping[0..N]/end
+What:		/sys/bus/dax/devices/daxX.Y/mapping[0..N]/page_offset
+Date:		October, 2020
+KernelVersion:	v5.10
+Contact:	nvdimm@lists.linux.dev
+Description:
+		(RO) A dax device may have multiple constituent discontiguous
+		address ranges. These are represented by the different
+		'mappingX' subdirectories. The 'start' attribute indicates the
+		start physical address for the given range. The 'end' attribute
+		indicates the end physical address for the given range. The
+		'page_offset' attribute indicates the offset of the current
+		range in the dax device.
+
+What:		/sys/bus/dax/devices/daxX.Y/resource
+Date:		June, 2019
+KernelVersion:	v5.3
+Contact:	nvdimm@lists.linux.dev
+Description:
+		(RO) Read-only attribute showing the physical start address of the
+		first range of the DAX device, formatted as hexadecimal with a 0x
+		prefix. When the device has no ranges (e.g. a freshly created seed
+		device with size 0), the parent dax_region's base address is returned
+		instead.
+
+What:		/sys/bus/dax/devices/daxX.Y/size
+Date:		October, 2020
+KernelVersion:	v5.10
+Contact:	nvdimm@lists.linux.dev
+Description:
+		(RW) The size attribute indicates the total size of a dax
+		device. For creating subdivided dax devices, or for resizing
+		an existing device, the new size can be written to this as
+		part of the reconfiguration process.
+
+		For devices in growable regions that are bound to the device_dax
+		driver, online resize is supported:
+
+		- Grow: appends new physical address ranges. Each grow creates a new
+		mappingN subdirectory. Ranges are never merged with adjacent ones,
+		so the fault path scans linearly by range count.
+
+		- Shrink: removes whole tail mappings only. The target size must equal
+		the current size minus the sum of one or more trailing range lengths;
+		attempting to cut through a mapping returns -EINVAL. Each reclaimed
+		range must have its own per-range pgmap (otherwise -EBUSY).
+		Applications accessing reclaimed regions receive SIGBUS.
+		Shrink is rejected with -EBUSY if the device has active mmap regions.
+
+		- Alignment: all size values must be a multiple of max(device alignment,
+		architecture memremap compat alignment -- typically 2MB on x86/arm64,
+		16MB on powerpc with CONFIG_ARCH_HAS_MEMREMAP_COMPAT_ALIGN).
+		Misaligned values return -EINVAL.
+
+		- Error conditions: -EINVAL (misaligned or would cut a mapping),
+		-EBUSY (device bound to non-device_dax driver such as dax_kmem, or
+		device has active mappings), -ENOSPC (region has insufficient free
+		space), -ENOMEM (kernel allocation failure), -ENXIO (region driver
+		not bound).
+
+		- Events: KOBJ_CHANGE uevent and sysfs_notify are sent on every
+		successful write (including idempotent writes where size does not
+		change), and also on failed writes where the actual size did change
+		(partial multi-span grow). NOT sent on early-return paths (-EINVAL
+		for misalignment, -ENXIO for unbound region driver).
+
+		- Multi-span grow is not transactional: if growing by multiple alignment
+		quanta and an intermediate span fails, previously committed spans are
+		retained. Userspace must re-read 'size' after any error to determine
+		the actual device size.
+
+What:		/sys/bus/dax/devices/daxX.Y/numa_node
+Date:		November, 2019
+KernelVersion:	v5.5
+Contact:	nvdimm@lists.linux.dev
+Description:
+		(RO) If NUMA is enabled and the platform has affinitized the
+		backing device for this dax device, emit the CPU node
+		affinity for this device.
+
+What:		/sys/bus/dax/devices/daxX.Y/target_node
+Date:		February, 2019
+KernelVersion:	v5.1
+Contact:	nvdimm@lists.linux.dev
+Description:
+		(RO) The target-node attribute is the Linux numa-node that a
+		device-dax instance may create when it is online. Prior to
+		being online the device's 'numa_node' property reflects the
+		closest online cpu node which is the typical expectation of a
+		device 'numa_node'. Once it is online it becomes its own
+		distinct numa node.
+
+What:		$(readlink -f /sys/bus/dax/devices/daxX.Y)/../dax_region/available_size
+Date:		October, 2020
+KernelVersion:	v5.10
+Contact:	nvdimm@lists.linux.dev
+Description:
+		(RO) The available_size attribute tracks available dax region
+		capacity. This only applies to volatile hmem devices, not pmem
+		devices, since pmem devices are defined by nvdimm namespace
+		boundaries.
+
+What:		$(readlink -f /sys/bus/dax/devices/daxX.Y)/../dax_region/size
+Date:		July, 2017
+KernelVersion:	v5.1
+Contact:	nvdimm@lists.linux.dev
+Description:
+		(RO) The size attribute indicates the size of a given dax region
+		in bytes.
+
+What:		$(readlink -f /sys/bus/dax/devices/daxX.Y)/../dax_region/align
+Date:		October, 2020
+KernelVersion:	v5.10
+Contact:	nvdimm@lists.linux.dev
+Description:
+		(RO) The align attribute indicates alignment of the dax region.
+		Changes on align may not always be valid, when say certain
+		mappings were created with 2M and then we switch to 1G. This
+		validates all ranges against the new value being attempted, post
+		resizing.
+
+What:		$(readlink -f /sys/bus/dax/devices/daxX.Y)/../dax_region/seed
+Date:		October, 2020
+KernelVersion:	v5.10
+Contact:	nvdimm@lists.linux.dev
+Description:
+		(RO) The seed device is a concept for dynamic dax regions to be
+		able to split the region amongst multiple sub-instances.  The
+		seed device, similar to libnvdimm seed devices, is a device
+		that starts with zero capacity allocated and unbound to a
+		driver.
+
+What:		$(readlink -f /sys/bus/dax/devices/daxX.Y)/../dax_region/create
+Date:		October, 2020
+KernelVersion:	v5.10
+Contact:	nvdimm@lists.linux.dev
+Description:
+		(RW) The create interface to the dax region provides a way to
+		create a new unconfigured dax device under the given region, which
+		can then be configured (with a size etc.) and then probed.
+
+What:		$(readlink -f /sys/bus/dax/devices/daxX.Y)/../dax_region/delete
+Date:		October, 2020
+KernelVersion:	v5.10
+Contact:	nvdimm@lists.linux.dev
+Description:
+		(WO) The delete interface for a dax region provides for deletion
+		of any 0-sized and idle dax devices.
+
+What:		$(readlink -f /sys/bus/dax/devices/daxX.Y)/../dax_region/id
+Date:		July, 2017
+KernelVersion:	v5.1
+Contact:	nvdimm@lists.linux.dev
+Description:
+		(RO) The id attribute indicates the region id of a dax region.

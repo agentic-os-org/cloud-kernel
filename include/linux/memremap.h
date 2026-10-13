@@ -224,6 +224,22 @@ unsigned long vmem_altmap_offset(struct vmem_altmap *altmap);
 void vmem_altmap_free(struct vmem_altmap *altmap, unsigned long nr_pfns);
 unsigned long memremap_compat_align(void);
 #else
+static inline void *memremap_pages(struct dev_pagemap *pgmap, int nid)
+{
+	/*
+	 * Fail attempts to call memremap_pages() without ZONE_DEVICE
+	 * support enabled: there is no memmap to establish for the range,
+	 * so callers must treat the mapping as unavailable and fall back
+	 * based on config.
+	 */
+	WARN_ON_ONCE(1);
+	return ERR_PTR(-ENXIO);
+}
+
+static inline void memunmap_pages(struct dev_pagemap *pgmap)
+{
+}
+
 static inline void *devm_memremap_pages(struct device *dev,
 		struct dev_pagemap *pgmap)
 {

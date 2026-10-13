@@ -54,10 +54,21 @@ static int check_vma(struct dev_dax *dev_dax, struct vm_area_struct *vma,
 __weak phys_addr_t dax_pgoff_to_phys(struct dev_dax *dev_dax, pgoff_t pgoff,
 		unsigned long size)
 {
+	struct dev_dax_ranges *r;
+	phys_addr_t result = -1;
 	int i;
 
-	for (i = 0; i < dev_dax->nr_range; i++) {
-		struct dev_dax_range *dax_range = &dev_dax->ranges[i];
+	/*
+	 * Walk the RCU snapshot, not the writable ranges[]; writers publish a
+	 * fresh one under device_lock(&dax_region->dev).
+	 */
+	rcu_read_lock();
+	r = rcu_dereference(dev_dax->ranges_rcu);
+	if (!r)
+		goto out;
+
+	for (i = 0; i < r->nr_range; i++) {
+		struct dev_dax_range *dax_range = &r->ranges[i];
 		struct range *range = &dax_range->range;
 		unsigned long long pgoff_end;
 		phys_addr_t phys;
@@ -66,11 +77,15 @@ __weak phys_addr_t dax_pgoff_to_phys(struct dev_dax *dev_dax, pgoff_t pgoff,
 		if (pgoff < dax_range->pgoff || pgoff > pgoff_end)
 			continue;
 		phys = PFN_PHYS(pgoff - dax_range->pgoff) + range->start;
-		if (phys + size - 1 <= range->end)
-			return phys;
+		if (phys + size - 1 <= range->end) {
+			result = phys;
+			goto out;
+		}
 		break;
 	}
-	return -1;
+out:
+	rcu_read_unlock();
+	return result;
 }
 
 static int dax_set_mapping(struct vm_fault *vmf, pfn_t pfn,
@@ -81,8 +96,20 @@ static int dax_set_mapping(struct vm_fault *vmf, pfn_t pfn,
 	struct dev_dax *dev_dax = filp->private_data;
 	pgoff_t pgoff;
 
-	/* mapping is only set on the head */
-	if (dev_dax->pgmap->vmemmap_shift)
+	/*
+	 * page->mapping is only set on the head of a compound folio. Whether
+	 * the backing pages are compound is decided by the vmemmap_shift the
+	 * struct page metadata was initialized with, so mirror that exact
+	 * source: growable regions use per-range pgmaps and leave
+	 * dev_dax->pgmap NULL (their shift is order_base_2(align >> PAGE_SHIFT),
+	 * i.e. compound iff align > PAGE_SIZE), every other device reads its
+	 * own pgmap->vmemmap_shift -- which is set by the probe common tail
+	 * based on align (non-zero when align > PAGE_SIZE). For growable
+	 * devices pgmap is NULL at fault time, so we fall back to the align
+	 * comparison directly.
+	 */
+	if (dev_dax->pgmap ? dev_dax->pgmap->vmemmap_shift
+			   : dev_dax->align > PAGE_SIZE)
 		nr_pages = 1;
 
 	pgoff = linear_page_index(vmf->vma,
@@ -413,6 +440,19 @@ static int dev_dax_probe(struct dev_dax *dev_dax)
 	void *addr;
 	int rc, i;
 
+	if (growable_dev_dax(dev_dax)) {
+		/* growable uses per-range pgmaps; ->pgmap must stay NULL */
+		if (dev_dax->pgmap) {
+			dev_warn(dev,
+				 "growable dev_dax must not pre-populate pgmap\n");
+			return -EINVAL;
+		}
+		rc = dev_dax_install_pgmaps(dev_dax);
+		if (rc)
+			return rc;
+		goto cdev_setup;
+	}
+
 	if (static_dev_dax(dev_dax))  {
 		if (dev_dax->nr_range > 1) {
 			dev_warn(dev,
@@ -462,6 +502,7 @@ static int dev_dax_probe(struct dev_dax *dev_dax)
 	if (IS_ERR(addr))
 		return PTR_ERR(addr);
 
+cdev_setup:
 	inode = dax_inode(dax_dev);
 	cdev = inode->i_cdev;
 	cdev_init(cdev, &dax_fops);
