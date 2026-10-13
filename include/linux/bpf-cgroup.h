@@ -22,6 +22,7 @@ struct bpf_cgroup_storage;
 struct ctl_table;
 struct ctl_table_header;
 struct task_struct;
+struct bpf_rich_container_info;
 
 unsigned int __cgroup_bpf_run_lsm_sock(const void *ctx,
 				       const struct bpf_insn *insn);
@@ -67,6 +68,8 @@ to_cgroup_bpf_attach_type(enum bpf_attach_type attach_type)
 	CGROUP_ATYPE(CGROUP_INET6_GETSOCKNAME);
 	CGROUP_ATYPE(CGROUP_UNIX_GETSOCKNAME);
 	CGROUP_ATYPE(CGROUP_INET_SOCK_RELEASE);
+	CGROUP_ATYPE(CGROUP_RICH_CONTAINER_CPU);
+	CGROUP_ATYPE(CGROUP_RICH_CONTAINER_MEM);
 	default:
 		return CGROUP_BPF_ATTACH_TYPE_INVALID;
 	}
@@ -137,6 +140,9 @@ int __cgroup_bpf_run_filter_sysctl(struct ctl_table_header *head,
 				   const struct ctl_table *table, int write,
 				   char **buf, size_t *pcount, loff_t *ppos,
 				   enum cgroup_bpf_attach_type atype);
+
+int __cgroup_bpf_run_filter_rich_container(struct bpf_rich_container_info *info,
+					   enum cgroup_bpf_attach_type atype);
 
 int __cgroup_bpf_run_filter_setsockopt(struct sock *sock, int *level,
 				       int *optname, sockptr_t optval,

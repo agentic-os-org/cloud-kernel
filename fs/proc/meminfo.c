@@ -21,6 +21,7 @@
 #include <asm/page.h>
 #include "internal.h"
 #include <linux/pid_namespace.h>
+#include <linux/bpf-cgroup.h>
 
 void __attribute__((weak)) arch_report_meminfo(struct seq_file *m)
 {
@@ -41,6 +42,7 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 
 	struct mem_cgroup *memcg = NULL;
 	struct sysinfo_ext ext;
+	struct bpf_rich_container_info *info;
 
 #ifdef CONFIG_MEMCG
 	rcu_read_lock();
@@ -80,6 +82,20 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	} else {
 		memcg_meminfo(memcg, &i, &ext);
 	}
+
+#ifdef CONFIG_CGROUP_BPF
+	if (cgroup_bpf_enabled(CGROUP_RICH_CONTAINER_MEM)) {
+		info = kzalloc_obj(*info);
+		if (info) {
+			if (!__cgroup_bpf_run_filter_rich_container(info,
+								    CGROUP_RICH_CONTAINER_MEM)) {
+				memcpy(&i, &info->sysinfo, sizeof(i));
+				memcpy(&ext, &info->sysinfo_ext, sizeof(ext));
+			}
+			kfree(info);
+		}
+	}
+#endif
 
 	committed = percpu_counter_read_positive(&vm_committed_as);
 	sreclaimable = global_node_page_state_pages(NR_SLAB_RECLAIMABLE_B);
