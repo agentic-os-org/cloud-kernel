@@ -88,6 +88,8 @@ static const char *const hwcap_str[] = {
 	[KERNEL_HWCAP_SB]		= "sb",
 	[KERNEL_HWCAP_PACA]		= "paca",
 	[KERNEL_HWCAP_PACG]		= "pacg",
+	[KERNEL_HWCAP_LS64]		= "ls64",
+	[KERNEL_HWCAP_LS64_V]		= "ls64_v",
 	[KERNEL_HWCAP_DCPODP]		= "dcpodp",
 	[KERNEL_HWCAP_SVE2]		= "sve2",
 	[KERNEL_HWCAP_SVEAES]		= "sveaes",
@@ -152,7 +154,7 @@ static const char *const hwcap_str[] = {
 	[KERNEL_HWCAP_POE]		= "poe",
 };
 
-#ifdef CONFIG_COMPAT
+#ifdef CONFIG_AARCH32_EL0
 #define COMPAT_KERNEL_HWCAP(x)	const_ilog2(COMPAT_HWCAP_ ## x)
 static const char *const compat_hwcap_str[] = {
 	[COMPAT_KERNEL_HWCAP(SWP)]	= "swp",
@@ -195,12 +197,12 @@ static const char *const compat_hwcap2_str[] = {
 	[COMPAT_KERNEL_HWCAP2(SB)]	= "sb",
 	[COMPAT_KERNEL_HWCAP2(SSBS)]	= "ssbs",
 };
-#endif /* CONFIG_COMPAT */
+#endif /* CONFIG_AARCH32_EL0 */
 
 static int c_show(struct seq_file *m, void *v)
 {
 	int i, j;
-	bool compat = personality(current->personality) == PER_LINUX32;
+	bool aarch32 = personality(current->personality) == PER_LINUX32;
 	unsigned int cpu, index, total, freq;
 	bool rich_container = false;
 
@@ -231,7 +233,7 @@ static int c_show(struct seq_file *m, void *v)
 		 * "processor".  Give glibc what it expects.
 		 */
 		seq_printf(m, "processor\t: %d\n", index);
-		if (compat)
+		if (aarch32)
 			seq_printf(m, "model name\t: ARMv8 Processor rev %d (%s)\n",
 				   MIDR_REVISION(midr), COMPAT_ELF_PLATFORM);
 
@@ -246,10 +248,10 @@ static int c_show(struct seq_file *m, void *v)
 		 * software which does already (at least for 32-bit).
 		 */
 		seq_puts(m, "Features\t:");
-		if (compat) {
-#ifdef CONFIG_COMPAT
+		if (aarch32) {
+#ifdef CONFIG_AARCH32_EL0
 			for (j = 0; j < ARRAY_SIZE(compat_hwcap_str); j++) {
-				if (compat_elf_hwcap & (1 << j)) {
+				if (a32_elf_hwcap & (1 << j)) {
 					/*
 					 * Warn once if any feature should not
 					 * have been present on arm64 platform.
@@ -262,9 +264,9 @@ static int c_show(struct seq_file *m, void *v)
 			}
 
 			for (j = 0; j < ARRAY_SIZE(compat_hwcap2_str); j++)
-				if (compat_elf_hwcap2 & (1 << j))
+				if (a32_elf_hwcap2 & (1 << j))
 					seq_printf(m, " %s", compat_hwcap2_str[j]);
-#endif /* CONFIG_COMPAT */
+#endif /* CONFIG_AARCH32_EL0 */
 		} else {
 			for (j = 0; j < ARRAY_SIZE(hwcap_str); j++)
 				if (cpu_have_feature(j))

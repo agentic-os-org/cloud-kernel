@@ -97,14 +97,15 @@
 /* Kernel representation of AT_HWCAP and AT_HWCAP2 */
 static DECLARE_BITMAP(elf_hwcap, MAX_CPU_FEATURES) __read_mostly;
 
-#ifdef CONFIG_COMPAT
-#define COMPAT_ELF_HWCAP_DEFAULT	\
+#ifdef CONFIG_AARCH32_EL0
+#define AARCH32_EL0_ELF_HWCAP_DEFAULT \
 				(COMPAT_HWCAP_HALF|COMPAT_HWCAP_THUMB|\
 				 COMPAT_HWCAP_FAST_MULT|COMPAT_HWCAP_EDSP|\
 				 COMPAT_HWCAP_TLS|COMPAT_HWCAP_IDIV|\
 				 COMPAT_HWCAP_LPAE)
-unsigned int compat_elf_hwcap __read_mostly = COMPAT_ELF_HWCAP_DEFAULT;
-unsigned int compat_elf_hwcap2 __read_mostly;
+unsigned int a32_elf_hwcap __read_mostly = AARCH32_EL0_ELF_HWCAP_DEFAULT;
+unsigned int a32_elf_hwcap2 __read_mostly;
+unsigned int a32_elf_hwcap3 __read_mostly;
 #endif
 
 DECLARE_BITMAP(system_cpucaps, ARM64_NCAPS);
@@ -233,6 +234,7 @@ static const struct arm64_ftr_bits ftr_id_aa64isar0[] = {
 
 static const struct arm64_ftr_bits ftr_id_aa64isar1[] = {
 	ARM64_FTR_BITS(FTR_HIDDEN, FTR_STRICT, FTR_LOWER_SAFE, ID_AA64ISAR1_EL1_XS_SHIFT, 4, 0),
+	ARM64_FTR_BITS(FTR_VISIBLE, FTR_STRICT, FTR_LOWER_SAFE, ID_AA64ISAR1_EL1_LS64_SHIFT, 4, 0),
 	ARM64_FTR_BITS(FTR_VISIBLE, FTR_STRICT, FTR_LOWER_SAFE, ID_AA64ISAR1_EL1_I8MM_SHIFT, 4, 0),
 	ARM64_FTR_BITS(FTR_VISIBLE, FTR_STRICT, FTR_LOWER_SAFE, ID_AA64ISAR1_EL1_DGH_SHIFT, 4, 0),
 	ARM64_FTR_BITS(FTR_VISIBLE, FTR_STRICT, FTR_LOWER_SAFE, ID_AA64ISAR1_EL1_BF16_SHIFT, 4, 0),
@@ -2297,6 +2299,38 @@ static void cpu_enable_e0pd(struct arm64_cpu_capabilities const *cap)
 static bool enable_pseudo_nmi;
 #endif
 
+static bool has_ls64(const struct arm64_cpu_capabilities *entry, int __unused)
+{
+	u64 ls64;
+
+	ls64 = cpuid_feature_extract_field(__read_sysreg_by_encoding(entry->sys_reg),
+					   entry->field_pos, entry->sign);
+
+	if (ls64 == ID_AA64ISAR1_EL1_LS64_NI ||
+	    ls64 > ID_AA64ISAR1_EL1_LS64_LS64_ACCDATA)
+		return false;
+
+	if (entry->capability == ARM64_HAS_LS64 &&
+	    ls64 >= ID_AA64ISAR1_EL1_LS64_LS64)
+		return true;
+
+	if (entry->capability == ARM64_HAS_LS64_V &&
+	    ls64 >= ID_AA64ISAR1_EL1_LS64_LS64_V)
+		return true;
+
+	return false;
+}
+
+static void cpu_enable_ls64(struct arm64_cpu_capabilities const *cap)
+{
+	sysreg_clear_set(sctlr_el1, SCTLR_EL1_EnALS, SCTLR_EL1_EnALS);
+}
+
+static void cpu_enable_ls64_v(struct arm64_cpu_capabilities const *cap)
+{
+	sysreg_clear_set(sctlr_el1, SCTLR_EL1_EnASR, SCTLR_EL1_EnASR);
+}
+
 #ifdef CONFIG_ARM64_PSEUDO_NMI
 static int __init early_enable_pseudo_nmi(char *p)
 {
@@ -2436,7 +2470,7 @@ static void elf_hwcap_fixup(void)
 {
 #ifdef CONFIG_ARM64_ERRATUM_1742098
 	if (cpus_have_const_cap(ARM64_WORKAROUND_1742098))
-		compat_elf_hwcap2 &= ~COMPAT_HWCAP2_AES;
+		a32_elf_hwcap2 &= ~COMPAT_HWCAP2_AES;
 #endif /* ARM64_ERRATUM_1742098 */
 }
 
@@ -3103,6 +3137,20 @@ static const struct arm64_cpu_capabilities arm64_features[] = {
 		.type = ARM64_CPUCAP_SYSTEM_FEATURE,
 		.matches = has_cpuid_feature,
 		ARM64_CPUID_FIELDS(ID_AA64MMFR3_EL1, SCTLRX, IMP)
+		.desc = "LS64",
+		.capability = ARM64_HAS_LS64,
+		.type = ARM64_CPUCAP_SYSTEM_FEATURE,
+		.matches = has_ls64,
+		.cpu_enable = cpu_enable_ls64,
+		ARM64_CPUID_FIELDS(ID_AA64ISAR1_EL1, LS64, LS64)
+	},
+	{
+		.desc = "LS64_V",
+		.capability = ARM64_HAS_LS64_V,
+		.type = ARM64_CPUCAP_SYSTEM_FEATURE,
+		.matches = has_ls64,
+		.cpu_enable = cpu_enable_ls64_v,
+		ARM64_CPUID_FIELDS(ID_AA64ISAR1_EL1, LS64, LS64_V)
 	},
 	{},
 };
@@ -3222,6 +3270,8 @@ static const struct arm64_cpu_capabilities arm64_elf_hwcaps[] = {
 	HWCAP_CAP(ID_AA64ISAR1_EL1, I8MM, IMP, CAP_HWCAP, KERNEL_HWCAP_I8MM),
 	HWCAP_CAP(ID_AA64ISAR2_EL1, LUT, IMP, CAP_HWCAP, KERNEL_HWCAP_LUT),
 	HWCAP_CAP(ID_AA64ISAR3_EL1, FAMINMAX, IMP, CAP_HWCAP, KERNEL_HWCAP_FAMINMAX),
+	HWCAP_CAP(ID_AA64ISAR1_EL1, LS64, LS64, CAP_HWCAP, KERNEL_HWCAP_LS64),
+	HWCAP_CAP(ID_AA64ISAR1_EL1, LS64, LS64_V, CAP_HWCAP, KERNEL_HWCAP_LS64_V),
 	HWCAP_CAP(ID_AA64MMFR2_EL1, AT, IMP, CAP_HWCAP, KERNEL_HWCAP_USCAT),
 #ifdef CONFIG_ARM64_SVE
 	HWCAP_CAP(ID_AA64PFR0_EL1, SVE, IMP, CAP_HWCAP, KERNEL_HWCAP_SVE),
@@ -3293,7 +3343,7 @@ static const struct arm64_cpu_capabilities arm64_elf_hwcaps[] = {
 	{},
 };
 
-#ifdef CONFIG_COMPAT
+#ifdef CONFIG_AARCH32_EL0
 static bool compat_has_neon(const struct arm64_cpu_capabilities *cap, int scope)
 {
 	/*
@@ -3316,7 +3366,7 @@ static bool compat_has_neon(const struct arm64_cpu_capabilities *cap, int scope)
 #endif
 
 static const struct arm64_cpu_capabilities compat_elf_hwcaps[] = {
-#ifdef CONFIG_COMPAT
+#ifdef CONFIG_AARCH32_EL0
 	HWCAP_CAP_MATCH(compat_has_neon, CAP_COMPAT_HWCAP, COMPAT_HWCAP_NEON),
 	HWCAP_CAP(MVFR1_EL1, SIMDFMAC, IMP, CAP_COMPAT_HWCAP, COMPAT_HWCAP_VFPv4),
 	/* Arm v8 mandates MVFR0.FPDP == {0, 2}. So, piggy back on this for the presence of VFP support */
@@ -3345,12 +3395,12 @@ static void cap_set_elf_hwcap(const struct arm64_cpu_capabilities *cap)
 	case CAP_HWCAP:
 		cpu_set_feature(cap->hwcap);
 		break;
-#ifdef CONFIG_COMPAT
+#ifdef CONFIG_AARCH32_EL0
 	case CAP_COMPAT_HWCAP:
-		compat_elf_hwcap |= (u32)cap->hwcap;
+		a32_elf_hwcap |= (u32)cap->hwcap;
 		break;
 	case CAP_COMPAT_HWCAP2:
-		compat_elf_hwcap2 |= (u32)cap->hwcap;
+		a32_elf_hwcap2 |= (u32)cap->hwcap;
 		break;
 #endif
 	default:
@@ -3368,12 +3418,12 @@ static bool cpus_have_elf_hwcap(const struct arm64_cpu_capabilities *cap)
 	case CAP_HWCAP:
 		rc = cpu_have_feature(cap->hwcap);
 		break;
-#ifdef CONFIG_COMPAT
+#ifdef CONFIG_AARCH32_EL0
 	case CAP_COMPAT_HWCAP:
-		rc = (compat_elf_hwcap & (u32)cap->hwcap) != 0;
+		rc = (a32_elf_hwcap & (u32)cap->hwcap) != 0;
 		break;
 	case CAP_COMPAT_HWCAP2:
-		rc = (compat_elf_hwcap2 & (u32)cap->hwcap) != 0;
+		rc = (a32_elf_hwcap2 & (u32)cap->hwcap) != 0;
 		break;
 #endif
 	default:
@@ -3790,6 +3840,11 @@ unsigned long cpu_get_elf_hwcap(void)
 unsigned long cpu_get_elf_hwcap2(void)
 {
 	return elf_hwcap[1];
+}
+
+unsigned long cpu_get_elf_hwcap3(void)
+{
+	return elf_hwcap[2];
 }
 
 static void __init setup_system_capabilities(void)

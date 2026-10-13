@@ -274,6 +274,12 @@ static inline void __activate_traps_common(struct kvm_vcpu *vcpu)
 			hcrx &= ~clr;
 		}
 
+		if (cpus_have_final_cap(ARM64_HAS_LS64))
+			hcrx |= HCRX_EL2_EnALS;
+
+		if (cpus_have_final_cap(ARM64_HAS_LS64_V))
+			hcrx |= HCRX_EL2_EnASR;
+
 		ctxt_sys_reg(hctxt, HCRX_EL2) = read_sysreg_s(SYS_HCRX_EL2);
 		write_sysreg_s(hcrx, SYS_HCRX_EL2);
 	}
