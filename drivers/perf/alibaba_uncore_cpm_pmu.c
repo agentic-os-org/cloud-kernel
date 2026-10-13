@@ -758,6 +758,7 @@ static int cpm_event_add(struct perf_event *event, int flags)
 	struct hw_perf_event *hwc = &event->hw;
 	u32 event_id = CPM_GET_EVENT(&event->attr);
 	u32 sel = CPM_GET_SEL(&event->attr);
+	u32 ctl1;
 	int idx;
 
 	/*
@@ -796,7 +797,7 @@ static int cpm_event_add(struct perf_event *event, int flags)
 
 		set_bit(idx, cpm->used_mask);
 
-		u32 ctl1 = (CPM_GET_FILTER_EN(&event->attr) << 16)
+		ctl1 = (CPM_GET_FILTER_EN(&event->attr) << 16)
 			| ((event_id & 0x3F) << 8)
 			| 0x1;
 		writel(ctl1, cpm->base + CPM_EVTx_CTL1(idx));
@@ -905,7 +906,7 @@ static int cpm_pmu_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct cpm_pmu *cpm;
-	struct resource *res;
+	struct resource *res, *sysreg_res;
 	const char *cpm_name;
 	char *name;
 	u32 clk_hz;
@@ -939,7 +940,7 @@ static int cpm_pmu_probe(struct platform_device *pdev)
 		return PTR_ERR(cpm->base);
 
 	/* MMIO mapping: CPM_SEL register (CPU_SS only, DDR_SS has no second reg) */
-	struct resource *sysreg_res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+	sysreg_res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
 
 	if (sysreg_res) {
 		cpm->sysreg_base = devm_ioremap_resource(dev, sysreg_res);
