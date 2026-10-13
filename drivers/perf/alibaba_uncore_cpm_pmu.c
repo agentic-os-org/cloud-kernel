@@ -112,9 +112,8 @@ struct cpm_pmu {
 	 *                                 Allocated via used_mask / find_first_zero_bit.
 	 *   [CPM_MAX_COUNTERS, CPM_MAX_STAT_EVENTS) — OSTD/LCRD stat events (avg/min/max/real).
 	 *                                 No hardware counter, read STT registers in ISR.
-	 *   "real" events are tracked here too (same as avg/min/max), so the ISR and
-	 *   cpm_hw_stop() keep them updated; cpm_event_read() additionally does an
-	 *   on-demand register read for real events when the event is still ACTIVE.
+	 *   "real" events are sampled on read and stop; the ISR skips them.
+	 *   Other statistics are updated on mon_dn.
 	 *
 	 * ISR iterates the full array, skipping NULL entries.
 	 * cpm_event_update() dispatches by event_base to read the correct register.
@@ -153,9 +152,9 @@ CPM_PMU_EVENT_ATTR(wr_min_lat,		0x31);
 /*
  * OSTD / LCRD events — no hardware counter slot needed.
  *   - "real" and "avg/min/max" events: idx = 8+ (placed in events[] stat
- *     region), ISR reads register and updates event->count on mon_dn.
- *   - "real" events additionally get an on-demand register read in
- *     cpm_event_read() while the event is ACTIVE (see cpm_event_read()).
+ *     region). The ISR updates avg/min/max on mon_dn.
+ *   - "real" is read on demand while running and sampled once on stop;
+ *     subsequent reads preserve the final snapshot.
  */
 CPM_PMU_EVENT_ATTR(ostd_rd_avg,		0x100);
 CPM_PMU_EVENT_ATTR(ostd_rd_real,	0x101);  /* real-time */
@@ -190,6 +189,24 @@ CPM_PMU_EVENT_ATTR(lcrd_rxreq_min,	0x215);
 CPM_PMU_EVENT_ATTR(lcrd_rxreq_max,	0x216);
 CPM_PMU_EVENT_ATTR(lcrd_rxreq_real,	0x217);	/* real-time */
 
+/* Tell perf stat to report real snapshots without interval subtraction. */
+PMU_EVENT_ATTR_STRING(ostd_rd_real.snapshot,
+		      cpm_event_attr_ostd_rd_real_snapshot, "1");
+PMU_EVENT_ATTR_STRING(ostd_wr_real.snapshot,
+		      cpm_event_attr_ostd_wr_real_snapshot, "1");
+PMU_EVENT_ATTR_STRING(lcrd_txdat_real.snapshot,
+		      cpm_event_attr_lcrd_txdat_real_snapshot, "1");
+PMU_EVENT_ATTR_STRING(lcrd_txreq_real.snapshot,
+		      cpm_event_attr_lcrd_txreq_real_snapshot, "1");
+PMU_EVENT_ATTR_STRING(lcrd_rxdat_real.snapshot,
+		      cpm_event_attr_lcrd_rxdat_real_snapshot, "1");
+PMU_EVENT_ATTR_STRING(lcrd_txrsp_real.snapshot,
+		      cpm_event_attr_lcrd_txrsp_real_snapshot, "1");
+PMU_EVENT_ATTR_STRING(lcrd_rxsnp_real.snapshot,
+		      cpm_event_attr_lcrd_rxsnp_real_snapshot, "1");
+PMU_EVENT_ATTR_STRING(lcrd_rxreq_real.snapshot,
+		      cpm_event_attr_lcrd_rxreq_real_snapshot, "1");
+
 static struct attribute *cpm_pmu_events_attrs[] = {
 	&cpm_event_attr_rd_trans.attr.attr,
 	&cpm_event_attr_wr_trans.attr.attr,
@@ -211,36 +228,44 @@ static struct attribute *cpm_pmu_events_attrs[] = {
 	&cpm_event_attr_wr_min_lat.attr.attr,
 	&cpm_event_attr_ostd_rd_avg.attr.attr,
 	&cpm_event_attr_ostd_rd_real.attr.attr,
+	&cpm_event_attr_ostd_rd_real_snapshot.attr.attr,
 	&cpm_event_attr_ostd_rd_min.attr.attr,
 	&cpm_event_attr_ostd_rd_max.attr.attr,
 	&cpm_event_attr_ostd_wr_avg.attr.attr,
 	&cpm_event_attr_ostd_wr_real.attr.attr,
+	&cpm_event_attr_ostd_wr_real_snapshot.attr.attr,
 	&cpm_event_attr_ostd_wr_min.attr.attr,
 	&cpm_event_attr_ostd_wr_max.attr.attr,
 	&cpm_event_attr_lcrd_txdat_avg.attr.attr,
 	&cpm_event_attr_lcrd_txdat_min.attr.attr,
 	&cpm_event_attr_lcrd_txdat_max.attr.attr,
 	&cpm_event_attr_lcrd_txdat_real.attr.attr,
+	&cpm_event_attr_lcrd_txdat_real_snapshot.attr.attr,
 	&cpm_event_attr_lcrd_txreq_avg.attr.attr,
 	&cpm_event_attr_lcrd_txreq_min.attr.attr,
 	&cpm_event_attr_lcrd_txreq_max.attr.attr,
 	&cpm_event_attr_lcrd_txreq_real.attr.attr,
+	&cpm_event_attr_lcrd_txreq_real_snapshot.attr.attr,
 	&cpm_event_attr_lcrd_rxdat_avg.attr.attr,
 	&cpm_event_attr_lcrd_rxdat_min.attr.attr,
 	&cpm_event_attr_lcrd_rxdat_max.attr.attr,
 	&cpm_event_attr_lcrd_rxdat_real.attr.attr,
+	&cpm_event_attr_lcrd_rxdat_real_snapshot.attr.attr,
 	&cpm_event_attr_lcrd_txrsp_avg.attr.attr,
 	&cpm_event_attr_lcrd_txrsp_min.attr.attr,
 	&cpm_event_attr_lcrd_txrsp_max.attr.attr,
 	&cpm_event_attr_lcrd_txrsp_real.attr.attr,
+	&cpm_event_attr_lcrd_txrsp_real_snapshot.attr.attr,
 	&cpm_event_attr_lcrd_rxsnp_avg.attr.attr,
 	&cpm_event_attr_lcrd_rxsnp_min.attr.attr,
 	&cpm_event_attr_lcrd_rxsnp_max.attr.attr,
 	&cpm_event_attr_lcrd_rxsnp_real.attr.attr,
+	&cpm_event_attr_lcrd_rxsnp_real_snapshot.attr.attr,
 	&cpm_event_attr_lcrd_rxreq_avg.attr.attr,
 	&cpm_event_attr_lcrd_rxreq_min.attr.attr,
 	&cpm_event_attr_lcrd_rxreq_max.attr.attr,
 	&cpm_event_attr_lcrd_rxreq_real.attr.attr,
+	&cpm_event_attr_lcrd_rxreq_real_snapshot.attr.attr,
 	NULL,
 };
 
@@ -326,18 +351,15 @@ static bool cpm_is_avg_latency_event(u32 event_id)
 	return (event_id >= 0x20 && event_id <= 0x21);
 }
 
-/*
- * Returns true for OSTD/LCRD events whose register value is a
- * live hardware snapshot (can be read anytime).  Returns false
- * for avg/min/max which are window-based statistics (only valid
- * at mon_dn).
- */
-static bool cpm_is_realtime_stat(u32 event_id)
+/* Only real statistics are valid independently of window completion. */
+static bool cpm_is_realtime_stat(struct perf_event *event)
 {
-	if (event_id >= 0x200)
-		return (event_id & 0x3) == 0x3;   /* LCRD: xxx_real ends in 0x3 */
-	if (event_id >= 0x100)
-		return (event_id & 0xF) == 0x1;   /* OSTD: xxx_real ends in 0x1 */
+	u32 event_id = CPM_GET_EVENT(&event->attr);
+
+	if (event->hw.event_base == CPM_OSTD_STAT)
+		return (event_id & 0x3) == 1;
+	if (event->hw.event_base == CPM_LCRD_STAT)
+		return (event_id & 0x3) == 3;
 	return false;
 }
 
@@ -672,7 +694,7 @@ static void cpm_hw_stop(struct cpm_pmu *cpm)
 	for (int idx = 0; idx < CPM_MAX_STAT_EVENTS; idx++) {
 		struct perf_event *event = cpm->events[idx];
 
-		if (!event)
+		if (!event || cpm_is_realtime_stat(event))
 			continue;
 		cpm_event_update(event);
 	}
@@ -700,10 +722,15 @@ static void cpm_event_start(struct perf_event *event, int flags)
 
 static void cpm_event_stop(struct perf_event *event, int flags)
 {
+	struct cpm_pmu *cpm = to_cpm_pmu(event->pmu);
 	struct hw_perf_event *hwc = &event->hw;
 
 	if (hwc->state & PERF_HES_STOPPED)
 		return;
+
+	/* Capture before del() removes the event or stops the hardware. */
+	if (cpm->hw_started && cpm_is_realtime_stat(event))
+		cpm_event_update(event);
 
 	hwc->state |= PERF_HES_STOPPED | PERF_HES_UPTODATE;
 }
@@ -833,7 +860,8 @@ static irqreturn_t cpm_irq_handler(int irq, void *data)
 		for (int idx = 0; idx < CPM_MAX_STAT_EVENTS; idx++) {
 			struct perf_event *event = cpm->events[idx];
 
-			if (!event || (event->hw.state & PERF_HES_STOPPED))
+			if (!event || (event->hw.state & PERF_HES_STOPPED) ||
+			    cpm_is_realtime_stat(event))
 				continue;
 			cpm_event_update(event);
 		}
@@ -848,28 +876,13 @@ static irqreturn_t cpm_irq_handler(int irq, void *data)
 static void cpm_event_read(struct perf_event *event)
 {
 	struct cpm_pmu *cpm = to_cpm_pmu(event->pmu);
-	u32 event_id = CPM_GET_EVENT(&event->attr);
 
-	if (!cpm->hw_started)
+	/* Window statistics are maintained by the mon_dn ISR. */
+	if (!cpm_is_realtime_stat(event) || !cpm->hw_started ||
+	    (event->hw.state & PERF_HES_STOPPED))
 		return;
 
-	if (event_id >= 0x200) {
-		/* LCRD real: live hardware value, read register directly */
-		if (cpm_is_realtime_stat(event_id))
-			local64_set(&event->count, cpm_read_lcrd(cpm, event_id));
-		/* LCRD avg/min/max: window-based, already updated by ISR — no-op */
-	} else if (event_id >= 0x100) {
-		/* OSTD real: live hardware value, read register directly */
-		if (cpm_is_realtime_stat(event_id))
-			local64_set(&event->count, cpm_read_ostd(cpm, event_id));
-		/* OSTD avg/min/max: window-based, already updated by ISR — no-op */
-	} else {
-		/*
-		 * EVENT_MONITOR (count and latency):
-		 * No-op. event->count is maintained by ISR on every mon_dn.
-		 * perf core reads event->count directly after calling read().
-		 */
-	}
+	cpm_event_update(event);
 }
 
 static int cpm_pmu_probe(struct platform_device *pdev)
