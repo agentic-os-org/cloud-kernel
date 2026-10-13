@@ -615,7 +615,6 @@ static void cpm_event_update(struct perf_event *event)
 
 static void cpm_hw_start(struct cpm_pmu *cpm)
 {
-
 	if (cpm->sysreg_base)
 		writel(cpm->cpm_sel, cpm->sysreg_base);
 
