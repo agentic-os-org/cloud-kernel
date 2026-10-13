@@ -367,6 +367,7 @@ static int cpm_pmu_offline_cpu(unsigned int cpu, struct hlist_node *node)
 {
 	struct cpm_pmu *cpm = hlist_entry_safe(node, struct cpm_pmu, node);
 	unsigned int target;
+	int ret;
 
 	if (cpu != cpm->cpu)
 		return 0;
@@ -375,9 +376,20 @@ static int cpm_pmu_offline_cpu(unsigned int cpu, struct hlist_node *node)
 	if (target >= nr_cpu_ids)
 		return 0;
 
+	/* Quiesce IRQ updates until affinity and perf context agree again. */
+	disable_irq(cpm->irq);
+	ret = irq_set_affinity(cpm->irq, cpumask_of(target));
+	if (ret) {
+		dev_err(cpm->dev, "failed to move IRQ to CPU%u: %d\n",
+			target, ret);
+		enable_irq(cpm->irq);
+		return ret;
+	}
+
+	/* On affinity failure above, the original context remains untouched. */
 	perf_pmu_migrate_context(&cpm->pmu, cpu, target);
 	cpm->cpu = target;
-	WARN_ON(irq_set_affinity(cpm->irq, cpumask_of(target)));
+	enable_irq(cpm->irq);
 
 	return 0;
 }
