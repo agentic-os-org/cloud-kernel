@@ -45,6 +45,16 @@ static unsigned int reaper_pages_scan = 1310720;
 
 static DECLARE_WAIT_QUEUE_HEAD(reaper_waitq);
 
+/* globally print once */
+#define warn_zombie_reaper_deprecated() do {					\
+	static bool __warned;							\
+	if (unlikely(!__warned)) {						\
+		__warned = true;						\
+		pr_warn("Current kernel has supported lru folio reparenting, "	\
+			"zombie memcg reaper is deprecated.\n");		\
+	}									\
+} while (0)
+
 void memcg_reap_background_set(void)
 {
 	reaper_kthread_on |= REAP_BACKGROUND_MEMCG;
@@ -149,6 +159,7 @@ static ssize_t reap_background_store(struct kobject *kobj,
 	if (err || (enable != 0 && enable != 1))
 		return -EINVAL;
 
+	warn_zombie_reaper_deprecated();
 	reaper_kthread_on &= ~REAP_BACKGROUND_GLOBAL;
 
 	if (enable) {
@@ -177,6 +188,7 @@ static ssize_t reap_store(struct kobject *kobj,
 	if (err || enable != 1)
 		return -EINVAL;
 
+	warn_zombie_reaper_deprecated();
 	reap_zombie_memcgs(false);
 
 	return count;
@@ -329,6 +341,7 @@ static int __init global_memcg_reaper_setup(char *str)
 	if (!str || kstrtobool(str, &enable))
 		return -EINVAL;
 
+	warn_zombie_reaper_deprecated();
 	if (enable) {
 		reaper_kthread_on |= REAP_BACKGROUND_GLOBAL;
 		pr_info("memcg zombie reaper: global mode enabled via kernel cmdline\n");
