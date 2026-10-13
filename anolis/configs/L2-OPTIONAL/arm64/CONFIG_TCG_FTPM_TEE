@@ -1,1 +1,1 @@
-# CONFIG_TCG_FTPM_TEE is not set
+CONFIG_TCG_FTPM_TEE=m
