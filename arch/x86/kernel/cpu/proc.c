@@ -80,15 +80,20 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	index = cpu = c->cpu_index;
 
 	/* Get cpu mask and check it */
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
-	if (info) {
-		if (!BPF_CGROUP_RUN_PROG_RICH_CONTAINER_CPU(info, 1) &&
-					!cpumask_test_cpu(cpu, &info->cpus_mask)) {
+#ifdef CONFIG_CGROUP_BPF
+	if (cgroup_bpf_enabled(CGROUP_RICH_CONTAINER_CPU)) {
+		info = kzalloc(sizeof(*info), GFP_KERNEL);
+		if (info) {
+			if (!__cgroup_bpf_run_filter_rich_container(info,
+								    CGROUP_RICH_CONTAINER_CPU) &&
+			    !cpumask_test_cpu(cpu, &info->cpus_mask)) {
+				kfree(info);
+				return 0;
+			}
 			kfree(info);
-			return 0;
 		}
-		kfree(info);
 	}
+#endif
 
 	if (check_rich_container(cpu, &index, &rich_container, &total))
 		return 0;
