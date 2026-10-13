@@ -5,7 +5,6 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <linux/limits.h>
-#include <linux/err.h>
 
 #include <linux/filter.h>
 #include <bpf/bpf.h>
@@ -71,7 +70,7 @@ int main(int argc, char **argv)
 	struct bpf_link *link = NULL;
 	int error = EXIT_FAILURE;
 	int ret;
-	int prog_fd, cgroup_fd;
+	int prog_fd = -1, cgroup_fd;
 	char origin_cpus[PATH_MAX], now_cpus[PATH_MAX];
 
 	ret = get_cpu_info(origin_cpus, sizeof(origin_cpus));
@@ -119,6 +118,8 @@ int main(int argc, char **argv)
 		printf("Unexpected attach result, ret=%d, errno=%d\n", ret, errno);
 		goto clean_cg;
 	}
+	close(prog_fd);
+	prog_fd = -1;
 
 	/* test wrong prog_type */
 	prog_fd = load_empty_prog(BPF_PROG_TYPE_KPROBE, 0, true);
@@ -131,11 +132,13 @@ int main(int argc, char **argv)
 		printf("Unexpected attach result, ret=%d, errno=%d\n", ret, errno);
 		goto clean_cg;
 	}
+	close(prog_fd);
+	prog_fd = -1;
 
 	/* Attach cpu program */
 	link = bpf_program__attach_cgroup(skel->progs.bpf_prog1, cgroup_fd);
-	if (IS_ERR(link)) {
-		printf("Failed to attach cgroup\n");
+	if (!link) {
+		printf("Failed to attach cgroup, errno=%d\n", errno);
 		goto clean_cg;
 	}
 
@@ -174,10 +177,13 @@ int main(int argc, char **argv)
 	printf("test_rich_container:PASS\n");
 
 clean_cg:
+	if (prog_fd >= 0)
+		close(prog_fd);
+	bpf_link__destroy(link);
+	close(cgroup_fd);
 	cleanup_cgroup_environment();
 
 out:
-	bpf_link__destroy(link);
 	rich_container__destroy(skel);
 	return error;
 }
