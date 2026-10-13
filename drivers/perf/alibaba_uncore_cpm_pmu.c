@@ -416,10 +416,16 @@ static int cpm_event_init(struct perf_event *event)
 		if (event_id > 0x3f)
 			return -EINVAL;
 		hwc->event_base = CPM_EVENT_MONITOR;
-	} else if (event_id < 0x200)
+	} else if ((event_id >= 0x100 && event_id <= 0x103) ||
+		   (event_id >= 0x110 && event_id <= 0x113)) {
+		/* Two OSTD directions, each with avg/real/min/max fields. */
 		hwc->event_base = CPM_OSTD_STAT;
-	else
+	} else if (event_id >= 0x200 && event_id <= 0x217) {
+		/* Six LCRD channels, each with four statistics. */
 		hwc->event_base = CPM_LCRD_STAT;
+	} else {
+		return -EINVAL;
+	}
 
 	return 0;
 }
