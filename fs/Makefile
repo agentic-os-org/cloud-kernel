@@ -130,3 +130,6 @@ obj-$(CONFIG_EROFS_FS)		+= erofs/
 obj-$(CONFIG_VBOXSF_FS)		+= vboxsf/
 obj-$(CONFIG_ZONEFS_FS)		+= zonefs/
 obj-$(CONFIG_RESCTRL_FS)	+= resctrl/
+ifneq ($(CONFIG_RESCTRL_FS),y)
+obj-$(CONFIG_RISCV_CBQRI)	+= resctrl/
+endif

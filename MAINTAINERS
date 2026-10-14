@@ -18744,6 +18744,21 @@ F:	drivers/perf/riscv_pmu.c
 F:	drivers/perf/riscv_pmu_legacy.c
 F:	drivers/perf/riscv_pmu_sbi.c
 
+RISC-V QOS RESCTRL SUPPORT
+M:	Drew Fustini <fustini@kernel.org>
+R:	yunhui cui <cuiyunhui@bytedance.com>
+L:	linux-riscv@lists.infradead.org
+S:	Supported
+F:	Documentation/devicetree/bindings/riscv/riscv,cbqri.yaml
+F:	arch/riscv/include/asm/qos.h
+F:	arch/riscv/include/asm/resctrl.h
+F:	arch/riscv/kernel/qos.c
+F:	fs/resctrl/cbqri_capacity.c
+F:	fs/resctrl/cbqri_devices.c
+F:	fs/resctrl/cbqri_internal.h
+F:	fs/resctrl/cbqri_resctrl.c
+F:	include/linux/riscv_cbqri.h
+
 RISC-V RPMI AND MPXY DRIVERS
 M:	Rahul Pathak <rahul@summations.net>
 M:	Anup Patel <anup@brainfault.org>
