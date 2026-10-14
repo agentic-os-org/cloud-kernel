@@ -61,6 +61,97 @@ void ntfs_index_ctx_put(ntfs_index_context *ictx)
 	return;
 }
 
+static int ntfs_index_header_inconsistent(ntfs_volume *vol,
+		const INDEX_HEADER *ih, u32 bytes_available,
+		unsigned long inum)
+{
+	u32 entries_offset, index_length, allocated_size;
+
+	if (bytes_available < sizeof(INDEX_HEADER)) {
+		ntfs_error(vol->sb,
+			   "index block in inode %llu is smaller than an index header.",
+			   (unsigned long long)inum);
+		return -EIO;
+	}
+
+	entries_offset = le32_to_cpu(ih->entries_offset);
+	index_length = le32_to_cpu(ih->index_length);
+	allocated_size = le32_to_cpu(ih->allocated_size);
+
+	if (entries_offset < sizeof(INDEX_HEADER) ||
+	    entries_offset > bytes_available) {
+		ntfs_error(vol->sb,
+			   "Invalid index entry offset in inode %llu.",
+			   (unsigned long long)inum);
+		return -EIO;
+	}
+
+	if (index_length <= entries_offset) {
+		ntfs_error(vol->sb,
+			   "No space for index entries in inode %llu.",
+			   (unsigned long long)inum);
+		return -EIO;
+	}
+
+	if (allocated_size < index_length) {
+		ntfs_error(vol->sb,
+			   "Index entries overflow in inode %llu.",
+			   (unsigned long long)inum);
+		return -EIO;
+	}
+
+	if (allocated_size > bytes_available || index_length > bytes_available) {
+		ntfs_error(vol->sb,
+			   "Index entries in inode %llu exceed the available buffer.",
+			   (unsigned long long)inum);
+		return -EIO;
+	}
+
+	return 0;
+}
+
+int ntfs_index_block_inconsistent(ntfs_volume *vol,
+		const INDEX_ALLOCATION *ia, u32 block_size,
+		VCN vcn, unsigned long inum)
+{
+	u32 ia_size = (unsigned int)le32_to_cpu(ia->index.allocated_size) +
+		offsetof(INDEX_BLOCK, index);
+	struct super_block *sb = vol->sb;
+
+	if (!ntfs_is_indx_record(ia->magic)) {
+		ntfs_error(sb, "Index record with vcn 0x%llx is corrupt.  "
+			   "Corrupt inode 0x%lx.  Run chkdsk.",
+			   (unsigned long long)vcn, inum);
+		return -EIO;
+	}
+
+	if (sle64_to_cpu(ia->index_block_vcn) != vcn) {
+		ntfs_error(sb, "Actual VCN (0x%llx) of index buffer is "
+			   "different from expected VCN (0x%llx).  Inode "
+			   "0x%lx is corrupt or driver bug.",
+			   (unsigned long long)sle64_to_cpu(ia->index_block_vcn),
+			   (unsigned long long)vcn, inum);
+		return -EIO;
+	}
+
+	if (ia_size != block_size) {
+		ntfs_error(sb, "Index buffer (VCN 0x%llx) of inode 0x%lx has "
+			   "a size (%u) differing from the index "
+			   "specified size (%u).  Inode is corrupt or "
+			   "driver bug.",
+			   (unsigned long long)vcn, inum, ia_size,
+			   block_size);
+		return -EIO;
+	}
+
+	if (ntfs_index_header_inconsistent(vol, &ia->index,
+			(u32)(block_size - offsetof(INDEX_BLOCK, index)),
+			inum))
+		return -EIO;
+
+	return 0;
+}
+
 /**
  * ntfs_index_lookup - find a key in an index and return its index entry
  * @key:	[IN] key for which to search in the index
@@ -281,33 +372,6 @@ fast_descend_into_child_node:
 				"0x%lx or driver bug.", idx_ni->mft_no);
 		goto unm_err_out;
 	}
-	/* Catch multi sector transfer fixup errors. */
-	if (unlikely(!ntfs_is_indx_record(ia->magic))) {
-		ntfs_error(sb, "Index record with vcn 0x%llx is corrupt.  "
-				"Corrupt inode 0x%lx.  Run chkdsk.",
-				(long long)vcn, idx_ni->mft_no);
-		goto unm_err_out;
-	}
-	if (sle64_to_cpu(ia->index_block_vcn) != vcn) {
-		ntfs_error(sb, "Actual VCN (0x%llx) of index buffer is "
-				"different from expected VCN (0x%llx).  Inode "
-				"0x%lx is corrupt or driver bug.",
-				(unsigned long long)
-				sle64_to_cpu(ia->index_block_vcn),
-				(unsigned long long)vcn, idx_ni->mft_no);
-		goto unm_err_out;
-	}
-	if (le32_to_cpu(ia->index.allocated_size) + 0x18 !=
-			idx_ni->itype.index.block_size) {
-		ntfs_error(sb, "Index buffer (VCN 0x%llx) of inode 0x%lx has "
-				"a size (%u) differing from the index "
-				"specified size (%u).  Inode is corrupt or "
-				"driver bug.", (unsigned long long)vcn,
-				idx_ni->mft_no,
-				le32_to_cpu(ia->index.allocated_size) + 0x18,
-				idx_ni->itype.index.block_size);
-		goto unm_err_out;
-	}
 	index_end = (u8*)ia + idx_ni->itype.index.block_size;
 	if (index_end > kaddr + PAGE_SIZE) {
 		ntfs_error(sb, "Index buffer (VCN 0x%llx) of inode 0x%lx "
@@ -317,13 +381,12 @@ fast_descend_into_child_node:
 				idx_ni->mft_no);
 		goto unm_err_out;
 	}
-	index_end = (u8*)&ia->index + le32_to_cpu(ia->index.index_length);
-	if (index_end > (u8*)ia + idx_ni->itype.index.block_size) {
-		ntfs_error(sb, "Size of index buffer (VCN 0x%llx) of inode "
-				"0x%lx exceeds maximum size.",
-				(unsigned long long)vcn, idx_ni->mft_no);
+	err = ntfs_index_block_inconsistent(vol, ia,
+			idx_ni->itype.index.block_size,
+			vcn, idx_ni->mft_no);
+	if (err)
 		goto unm_err_out;
-	}
+	index_end = (u8*)&ia->index + le32_to_cpu(ia->index.index_length);
 	/* The first index entry. */
 	ie = (INDEX_ENTRY*)((u8*)&ia->index +
 			le32_to_cpu(ia->index.entries_offset));

@@ -16,6 +16,7 @@
 #include "mft.h"
 #include "debug.h"
 #include "ntfs.h"
+#include "index.h"
 
 /*
  * The little endian Unicode string $I30 as a global constant.
@@ -325,33 +326,6 @@ fast_descend_into_child_node:
 				"inode 0x%lx or driver bug.", dir_ni->mft_no);
 		goto unm_err_out;
 	}
-	/* Catch multi sector transfer fixup errors. */
-	if (unlikely(!ntfs_is_indx_record(ia->magic))) {
-		ntfs_error(sb, "Directory index record with vcn 0x%llx is "
-				"corrupt.  Corrupt inode 0x%lx.  Run chkdsk.",
-				(unsigned long long)vcn, dir_ni->mft_no);
-		goto unm_err_out;
-	}
-	if (sle64_to_cpu(ia->index_block_vcn) != vcn) {
-		ntfs_error(sb, "Actual VCN (0x%llx) of index buffer is "
-				"different from expected VCN (0x%llx). "
-				"Directory inode 0x%lx is corrupt or driver "
-				"bug.", (unsigned long long)
-				sle64_to_cpu(ia->index_block_vcn),
-				(unsigned long long)vcn, dir_ni->mft_no);
-		goto unm_err_out;
-	}
-	if (le32_to_cpu(ia->index.allocated_size) + 0x18 !=
-			dir_ni->itype.index.block_size) {
-		ntfs_error(sb, "Index buffer (VCN 0x%llx) of directory inode "
-				"0x%lx has a size (%u) differing from the "
-				"directory specified size (%u). Directory "
-				"inode is corrupt or driver bug.",
-				(unsigned long long)vcn, dir_ni->mft_no,
-				le32_to_cpu(ia->index.allocated_size) + 0x18,
-				dir_ni->itype.index.block_size);
-		goto unm_err_out;
-	}
 	index_end = (u8*)ia + dir_ni->itype.index.block_size;
 	if (index_end > kaddr + PAGE_SIZE) {
 		ntfs_error(sb, "Index buffer (VCN 0x%llx) of directory inode "
@@ -361,13 +335,12 @@ fast_descend_into_child_node:
 				dir_ni->mft_no);
 		goto unm_err_out;
 	}
-	index_end = (u8*)&ia->index + le32_to_cpu(ia->index.index_length);
-	if (index_end > (u8*)ia + dir_ni->itype.index.block_size) {
-		ntfs_error(sb, "Size of index buffer (VCN 0x%llx) of directory "
-				"inode 0x%lx exceeds maximum size.",
-				(unsigned long long)vcn, dir_ni->mft_no);
+	err = ntfs_index_block_inconsistent(vol, ia,
+			dir_ni->itype.index.block_size,
+			vcn, dir_ni->mft_no);
+	if (err)
 		goto unm_err_out;
-	}
+	index_end = (u8*)&ia->index + le32_to_cpu(ia->index.index_length);
 	/* The first index entry. */
 	ie = (INDEX_ENTRY*)((u8*)&ia->index +
 			le32_to_cpu(ia->index.entries_offset));
@@ -1086,7 +1059,7 @@ static inline int ntfs_filldir(ntfs_volume *vol,
 static int ntfs_readdir(struct file *file, struct dir_context *actor)
 {
 	s64 ia_pos, ia_start, prev_ia_pos, bmp_pos;
-	loff_t i_size;
+	off_t i_size;
 	struct inode *bmp_vi, *vdir = file_inode(file);
 	struct super_block *sb = vdir->i_sb;
 	ntfs_inode *ndir = NTFS_I(vdir);
