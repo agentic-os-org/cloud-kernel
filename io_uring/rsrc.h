@@ -12,6 +12,8 @@
 #define IO_RSRC_TAG_TABLE_MAX	(1U << IO_RSRC_TAG_TABLE_SHIFT)
 #define IO_RSRC_TAG_TABLE_MASK	(IO_RSRC_TAG_TABLE_MAX - 1)
 
+#define IO_VEC_CACHE_SOFT_CAP		256
+
 enum {
 	IORING_RSRC_FILE		= 0,
 	IORING_RSRC_BUFFER		= 1,
@@ -85,6 +87,11 @@ int io_queue_rsrc_removal(struct io_rsrc_data *data, unsigned idx, void *rsrc);
 int io_import_fixed(int ddir, struct iov_iter *iter,
 			   struct io_mapped_ubuf *imu,
 			   u64 buf_addr, size_t len);
+int io_import_reg_vec(int ddir, struct iov_iter *iter,
+			struct io_kiocb *req, struct iou_vec *vec,
+			unsigned nr_iovs, unsigned issue_flags);
+int io_prep_reg_iovec(struct io_kiocb *req, struct iou_vec *iv,
+			const struct iovec __user *uvec, size_t uvec_segs);
 
 void __io_sqe_buffers_unregister(struct io_ring_ctx *ctx);
 int io_sqe_buffers_unregister(struct io_ring_ctx *ctx);
@@ -160,6 +167,15 @@ static inline void __io_unaccount_mem(struct user_struct *user,
 				      unsigned long nr_pages)
 {
 	atomic_long_sub(nr_pages, &user->locked_vm);
+}
+
+void io_vec_free(struct iou_vec *iv);
+int io_vec_realloc(struct iou_vec *iv, unsigned nr_entries);
+
+static inline void io_alloc_cache_vec_kasan(struct iou_vec *iv)
+{
+	if (IS_ENABLED(CONFIG_KASAN))
+		io_vec_free(iv);
 }
 
 #endif

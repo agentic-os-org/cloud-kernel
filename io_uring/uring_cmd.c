@@ -13,6 +13,75 @@
 #include "rsrc.h"
 #include "uring_cmd.h"
 
+static struct uring_cache *io_uring_async_get(struct io_kiocb *req)
+{
+	struct io_ring_ctx *ctx = req->ctx;
+	struct io_cache_entry *entry;
+	struct uring_cache *cache;
+
+	entry = io_alloc_cache_get(&ctx->uring_cache);
+	if (entry) {
+		cache = container_of(entry, struct uring_cache, cache);
+		req->flags |= REQ_F_ASYNC_DATA;
+		/*
+		 * The cached object may still own an iovec. Claim it for this
+		 * req so ->cleanup frees it even if this command never calls
+		 * io_uring_cmd_import_fixed_vec(): io_clean_op() gates
+		 * ->cleanup on REQ_F_NEED_CLEANUP, and its kfree() of the
+		 * async data does not reach ->vec.iovec.
+		 */
+		if (cache->vec.iovec)
+			req->flags |= REQ_F_NEED_CLEANUP;
+		req->async_data = cache;
+		return cache;
+	}
+	if (!io_alloc_async_data(req)) {
+		cache = req->async_data;
+		/*
+		 * Upstream has the alloc cache do this, by passing the object
+		 * size as init_bytes to io_alloc_cache_init(). 6.6's
+		 * io_alloc_cache_init() has no such parameter, and the fresh
+		 * allocation happens in io_alloc_async_data(), which every
+		 * opcode shares, so clear it here instead.
+		 */
+		memset(cache, 0, sizeof(*cache));
+		return cache;
+	}
+	return NULL;
+}
+
+static void io_req_uring_cleanup(struct io_kiocb *req, unsigned int issue_flags)
+{
+	struct io_uring_cmd *ioucmd = io_kiocb_to_cmd(req, struct io_uring_cmd);
+	struct uring_cache *cache = req->async_data;
+
+	if (issue_flags & IO_URING_F_UNLOCKED)
+		return;
+
+	io_alloc_cache_vec_kasan(&cache->vec);
+	if (cache->vec.nr > IO_VEC_CACHE_SOFT_CAP)
+		io_vec_free(&cache->vec);
+
+	if (io_alloc_cache_put(&req->ctx->uring_cache, &cache->cache)) {
+		ioucmd->sqe = NULL;
+		req->async_data = NULL;
+		req->flags &= ~(REQ_F_ASYNC_DATA|REQ_F_NEED_CLEANUP);
+	}
+}
+
+void io_uring_cmd_cleanup(struct io_kiocb *req)
+{
+	struct uring_cache *cache = req->async_data;
+
+	/*
+	 * Release only ->vec, never the object itself. io_clean_op() can run
+	 * from __io_req_complete_post() holding just ->completion_lock, while
+	 * ctx->uring_cache is uring_lock protected; the async data is
+	 * reclaimed by io_clean_op()'s own kfree().
+	 */
+	io_vec_free(&cache->vec);
+}
+
 static void io_uring_cmd_work(struct io_kiocb *req, struct io_tw_state *ts)
 {
 	struct io_uring_cmd *ioucmd = io_kiocb_to_cmd(req, struct io_uring_cmd);
@@ -62,6 +131,7 @@ void io_uring_cmd_done(struct io_uring_cmd *ioucmd, ssize_t ret, ssize_t res2,
 	io_req_set_res(req, ret, 0);
 	if (req->ctx->flags & IORING_SETUP_CQE32)
 		io_req_set_cqe32_extra(req, res2, 0);
+	io_req_uring_cleanup(req, issue_flags);
 	if (req->ctx->flags & IORING_SETUP_IOPOLL) {
 		/* order with io_iopoll_req_issued() checking ->iopoll_complete */
 		smp_store_release(&req->iopoll_completed, 1);
@@ -74,13 +144,19 @@ void io_uring_cmd_done(struct io_uring_cmd *ioucmd, ssize_t ret, ssize_t res2,
 }
 EXPORT_SYMBOL_GPL(io_uring_cmd_done);
 
-int io_uring_cmd_prep_async(struct io_kiocb *req)
+static int io_uring_cmd_prep_setup(struct io_kiocb *req,
+				   const struct io_uring_sqe *sqe)
 {
 	struct io_uring_cmd *ioucmd = io_kiocb_to_cmd(req, struct io_uring_cmd);
+	struct uring_cache *cache;
 
-	memcpy(req->async_data, ioucmd->sqe, uring_sqe_size(req->ctx));
-	ioucmd->sqe = req->async_data;
-	return 0;
+	cache = io_uring_async_get(req);
+	if (cache) {
+		memcpy(cache->sqes, sqe, uring_sqe_size(req->ctx));
+		ioucmd->sqe = req->async_data;
+		return 0;
+	}
+	return -ENOMEM;
 }
 
 int io_uring_cmd_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
@@ -105,9 +181,9 @@ int io_uring_cmd_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 		req->imu = ctx->user_bufs[index];
 		io_req_set_rsrc_node(req, ctx, 0);
 	}
-	ioucmd->sqe = sqe;
 	ioucmd->cmd_op = READ_ONCE(sqe->cmd_op);
-	return 0;
+
+	return io_uring_cmd_prep_setup(req, sqe);
 }
 
 int io_uring_cmd(struct io_kiocb *req, unsigned int issue_flags)
@@ -137,23 +213,14 @@ int io_uring_cmd(struct io_kiocb *req, unsigned int issue_flags)
 	}
 
 	ret = file->f_op->uring_cmd(ioucmd, issue_flags);
-	if (ret == -EAGAIN) {
-		if (!req_has_async_data(req)) {
-			if (io_alloc_async_data(req))
-				return -ENOMEM;
-			io_uring_cmd_prep_async(req);
-		}
-		return -EAGAIN;
-	}
-
-	if (ret != -EIOCBQUEUED) {
-		if (ret < 0)
-			req_set_fail(req);
-		io_req_set_res(req, ret, 0);
+	if (ret == -EAGAIN || ret == -EIOCBQUEUED)
 		return ret;
-	}
 
-	return IOU_ISSUE_SKIP_COMPLETE;
+	if (ret < 0)
+		req_set_fail(req);
+	io_req_uring_cleanup(req, issue_flags);
+	io_req_set_res(req, ret, 0);
+	return ret;
 }
 
 int io_uring_cmd_import_fixed(u64 ubuf, unsigned long len, int rw,
@@ -165,6 +232,29 @@ int io_uring_cmd_import_fixed(u64 ubuf, unsigned long len, int rw,
 }
 EXPORT_SYMBOL_GPL(io_uring_cmd_import_fixed);
 
+int io_uring_cmd_import_fixed_vec(struct io_uring_cmd *ioucmd,
+				  const struct iovec __user *uvec,
+				  size_t uvec_segs,
+				  int ddir, struct iov_iter *iter,
+				  unsigned issue_flags)
+{
+	struct io_kiocb *req = cmd_to_io_kiocb(ioucmd);
+	struct uring_cache *cache = req->async_data;
+	int ret;
+
+	if (WARN_ON_ONCE(!(ioucmd->flags & IORING_URING_CMD_FIXED)))
+		return -EINVAL;
+
+	ret = io_prep_reg_iovec(req, &cache->vec, uvec, uvec_segs);
+	if (ret)
+		return ret;
+
+	return io_import_reg_vec(ddir, iter, req, &cache->vec, uvec_segs,
+				 issue_flags);
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_import_fixed_vec);
+
+#if defined(CONFIG_NET)
 int io_uring_cmd_sock(struct io_uring_cmd *cmd, unsigned int issue_flags)
 {
 	struct socket *sock = cmd->file->private_data;
@@ -191,3 +281,12 @@ int io_uring_cmd_sock(struct io_uring_cmd *cmd, unsigned int issue_flags)
 	}
 }
 EXPORT_SYMBOL_GPL(io_uring_cmd_sock);
+#endif
+
+void io_uring_cache_free(struct io_cache_entry *entry)
+{
+	struct uring_cache *cache = container_of(entry, struct uring_cache, cache);
+
+	io_vec_free(&cache->vec);
+	kfree(cache);
+}

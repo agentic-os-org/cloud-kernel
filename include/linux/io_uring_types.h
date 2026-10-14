@@ -68,6 +68,14 @@ struct io_uring_task {
 	} ____cacheline_aligned_in_smp;
 };
 
+struct iou_vec {
+	union {
+		struct iovec	*iovec;
+		struct bio_vec	*bvec;
+	};
+	unsigned		nr; /* number of struct iovec it can hold */
+};
+
 struct io_uring {
 	u32 head;
 	u32 tail;
@@ -255,6 +263,7 @@ struct io_ring_ctx {
 		struct io_hash_table	cancel_table_locked;
 		struct io_alloc_cache	apoll_cache;
 		struct io_alloc_cache	netmsg_cache;
+		struct io_alloc_cache	uring_cache;
 
 		/*
 		 * ->iopoll_list is protected by the ctx->uring_lock for
