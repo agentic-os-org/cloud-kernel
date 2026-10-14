@@ -2673,15 +2673,15 @@ static const struct super_operations ntfs_sops = {
 	.free_inode	= ntfs_free_big_inode, /* VFS: Deallocate inode. */
 #ifdef NTFS_RW
 	.write_inode	= ntfs_write_inode,	/* VFS: Write dirty inode to
-						   disk. */
+					   disk. */
 #endif /* NTFS_RW */
 	.put_super	= ntfs_put_super,	/* Syscall: umount. */
 	.statfs		= ntfs_statfs,		/* Syscall: statfs */
 	.remount_fs	= ntfs_remount,		/* Syscall: mount -o remount. */
 	.evict_inode	= ntfs_evict_big_inode,	/* VFS: Called when an inode is
-						   removed from memory. */
+					   removed from memory. */
 	.show_options	= ntfs_show_options,	/* Show mount options in
-						   proc. */
+					   proc. */
 };
 
 /**
