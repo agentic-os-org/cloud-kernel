@@ -98,8 +98,8 @@ static struct shash_alg sm3_cis_alg = {
 static int __init sm3_cis_init(void)
 {
 #ifdef CONFIG_X86_64
-	if (!boot_cpu_has(X86_FEATURE_HYGON_CIS_SM3)) {
-		pr_err("CIS SM3 Not Support");
+	if (!boot_cpu_has(X86_FEATURE_HYGON_SM3)) {
+		pr_err("SM3 Not Support");
 		return -ENODEV;
 	}
 #endif /* CONFIG_X86_64 */
