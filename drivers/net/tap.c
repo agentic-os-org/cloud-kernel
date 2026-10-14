@@ -522,7 +522,7 @@ static int tap_open(struct inode *inode, struct file *file)
 
 	err = -ENOMEM;
 	q = (struct tap_queue *)sk_alloc(net, AF_UNSPEC, GFP_KERNEL,
-					     &tap_proto, 0);
+				     &tap_proto, 0);
 	if (!q)
 		goto err;
 	if (ptr_ring_init(&q->ring, tap->dev->tx_queue_len, GFP_KERNEL)) {
@@ -607,7 +607,7 @@ out:
 
 static inline struct sk_buff *tap_alloc_skb(struct sock *sk, size_t prepad,
 					    size_t len, size_t linear,
-						int noblock, int *err)
+					    int noblock, int *err)
 {
 	struct sk_buff *skb;
 
@@ -668,8 +668,8 @@ static ssize_t tap_get_user(struct tap_queue *q, void *msg_control,
 		     tap16_to_cpu(q, vnet_hdr.csum_offset) + 2 >
 			     tap16_to_cpu(q, vnet_hdr.hdr_len))
 			vnet_hdr.hdr_len = cpu_to_tap16(q,
-				 tap16_to_cpu(q, vnet_hdr.csum_start) +
-				 tap16_to_cpu(q, vnet_hdr.csum_offset) + 2);
+			 tap16_to_cpu(q, vnet_hdr.csum_start) +
+			 tap16_to_cpu(q, vnet_hdr.csum_offset) + 2);
 		err = -EINVAL;
 		if (tap16_to_cpu(q, vnet_hdr.hdr_len) > len)
 			goto err;
@@ -840,7 +840,6 @@ static ssize_t tap_put_user(struct tap_queue *q,
 
 	ret = skb_copy_datagram_iter(skb, vlan_offset, iter,
 				     skb->len - vlan_offset);
-
 done:
 	return ret ? ret : total;
 }
@@ -1200,10 +1199,21 @@ static int tap_get_user_xdp(struct tap_queue *q, struct xdp_buff *xdp)
 	skb_reset_mac_header(skb);
 	skb->protocol = eth_hdr(skb)->h_proto;
 
+	rcu_read_lock();
+	tap = rcu_dereference(q->tap);
+	if (!tap) {
+		kfree_skb(skb);
+		rcu_read_unlock();
+		return 0;
+	}
+	skb->dev = tap->dev;
+
 	if (vnet_hdr_len) {
 		err = virtio_net_hdr_to_skb(skb, gso, tap_is_little_endian(q));
-		if (err)
+		if (err) {
+			rcu_read_unlock();
 			goto err_kfree;
+		}
 	}
 
 	/* Move network header to the right position for VLAN tagged packets */
@@ -1211,15 +1221,8 @@ static int tap_get_user_xdp(struct tap_queue *q, struct xdp_buff *xdp)
 	    vlan_get_protocol_and_depth(skb, skb->protocol, &depth) != 0)
 		skb_set_network_header(skb, depth);
 
-	rcu_read_lock();
-	tap = rcu_dereference(q->tap);
-	if (tap) {
-		skb->dev = tap->dev;
-		skb_probe_transport_header(skb);
-		dev_queue_xmit(skb);
-	} else {
-		kfree_skb(skb);
-	}
+	skb_probe_transport_header(skb);
+	dev_queue_xmit(skb);
 	rcu_read_unlock();
 
 	return 0;
