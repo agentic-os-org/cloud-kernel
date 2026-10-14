@@ -204,14 +204,6 @@ out:
 	return lruvec;
 }
 
-static inline struct lruvec *my_folio_lruvec(struct folio *folio)
-{
-	struct mem_cgroup *memcg = folio_memcg(folio);
-
-	VM_WARN_ON_ONCE_FOLIO(!memcg && !mem_cgroup_disabled(), folio);
-	return my_mem_cgroup_lruvec(memcg, folio_pgdat(folio));
-}
-
 static inline void my_mem_cgroup_uncharge(struct folio *folio)
 {
 	if (mem_cgroup_disabled())
@@ -387,8 +379,12 @@ static inline bool folio_is_reclaimable(struct mem_cgroup *memcg,
 			bool validate_age)
 {
 	struct address_space *mapping;
-	struct mem_cgroup *m = folio_memcg(folio);
+	struct mem_cgroup *m;
 	int age;
+
+	rcu_read_lock();
+	m = folio_memcg(folio);
+	rcu_read_unlock();
 
 	if (m != memcg)
 		return false;
