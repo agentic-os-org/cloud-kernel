@@ -58,6 +58,7 @@
 #include <linux/random.h>
 #include <linux/mmu_notifier.h>
 #include <linux/parser.h>
+#include <linux/pagecache_limit.h>
 
 #include <asm/tlbflush.h>
 #include <asm/div64.h>
@@ -120,6 +121,11 @@ struct scan_control {
 
 	/* Proactive reclaim invoked by userspace */
 	unsigned int proactive:1;
+
+#ifdef CONFIG_PAGECACHE_LIMIT
+	/* Reclaim triggered by the per-memcg pagecache limit */
+	unsigned int pgcache_limit:1;
+#endif
 
 	/*
 	 * Cgroup memory below memory.low is protected as long as we
@@ -5071,6 +5077,15 @@ static bool should_abort_scan(struct lruvec *lruvec, struct scan_control *sc)
 	if (!current_is_kswapd() || sc->order)
 		return false;
 
+#ifdef CONFIG_PAGECACHE_LIMIT
+	/*
+	 * Pagecache limit reclaim is bounded by the memcg's own overflow;
+	 * global watermarks below are irrelevant to it.
+	 */
+	if (sc->pgcache_limit)
+		return !memcg_get_pgcache_overflow_size(sc->target_mem_cgroup);
+#endif
+
 	mark = sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING ?
 	       WMARK_PROMO : WMARK_HIGH;
 
@@ -5250,9 +5265,6 @@ restart:
 static void lru_gen_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 {
 	struct blk_plug plug;
-
-	VM_WARN_ON_ONCE(root_reclaim(sc));
-	VM_WARN_ON_ONCE(!sc->may_writepage || !sc->may_unmap);
 
 	lru_add_drain();
 
@@ -6041,6 +6053,8 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 	struct blk_plug plug;
 
 	if (lru_gen_enabled() && !root_reclaim(sc)) {
+		VM_WARN_ON_ONCE(!sc->may_writepage || !sc->may_unmap);
+
 		lru_gen_shrink_lruvec(lruvec, sc);
 		return;
 	}
@@ -8197,5 +8211,129 @@ int reclaim_register_node(struct node *node)
 void reclaim_unregister_node(struct node *node)
 {
 	return device_remove_file(&node->dev, &dev_attr_reclaim);
+}
+#endif
+
+#ifdef CONFIG_PAGECACHE_LIMIT
+static int __pagecache_shrink(struct mem_cgroup *memcg,
+			      struct scan_control *sc)
+{
+	unsigned long has_reclaimed = sc->nr_reclaimed;
+	struct mem_cgroup *new = memcg, *tmp;
+	struct lruvec *lruvec;
+	pg_data_t *pgdat;
+	int ret = 0, nid, reserved_nid = -1, current_nid = numa_node_id();
+
+	for_each_online_node(nid) {
+		/* there we fisrt select local numa node */
+		if (reserved_nid < 0) {
+			reserved_nid = nid;
+			pgdat = NODE_DATA(current_nid);
+		} else if (nid == current_nid) {
+			pgdat = NODE_DATA(reserved_nid);
+		} else {
+			pgdat = NODE_DATA(nid);
+		}
+
+		/* handle sc->may_deactivate etc. */
+		prepare_scan_control(pgdat, sc);
+
+		tmp = mem_cgroup_iter(new, NULL, NULL);
+		do {
+
+			/*
+			 * This loop can become CPU-bound when target memcgs
+			 * aren't eligible for reclaim - either because they
+			 * don't have any reclaimable pages, or because their
+			 * memory is explicitly protected. Avoid soft lockups.
+			 */
+			cond_resched();
+
+			/*
+			 * In case pagecahe limit is suddenly disabled, but
+			 * the reclaim operation is still being performed.
+			 */
+			if (!is_memcg_pgcache_limit_enabled(memcg)) {
+				mem_cgroup_iter_break(new, tmp);
+				ret = -1;
+				goto out;
+			}
+
+			lruvec = mem_cgroup_lruvec(tmp, pgdat);
+			if (lru_gen_enabled())
+				lru_gen_shrink_lruvec(lruvec, sc);
+			else
+				shrink_lruvec(lruvec, sc);
+			if (sc->nr_reclaimed >= sc->nr_to_reclaim) {
+				mem_cgroup_iter_break(new, tmp);
+				goto out;
+			}
+		} while ((tmp = mem_cgroup_iter(new, tmp, NULL)));
+	}
+
+out:
+	memcg_add_pgcache_limit_reclaimed(memcg,
+					  sc->nr_reclaimed - has_reclaimed);
+	return ret;
+}
+
+void __memcg_pagecache_shrink(struct mem_cgroup *memcg,
+			      bool may_unmap, gfp_t gfp_mask)
+{
+	unsigned long nr_should_reclaim;
+	struct scan_control sc = {
+		.gfp_mask = (current_gfp_context(gfp_mask) & GFP_RECLAIM_MASK) |
+			    (GFP_HIGHUSER_MOVABLE & ~GFP_RECLAIM_MASK),
+		.reclaim_idx = ZONE_MOVABLE,
+		.may_swap = 0,
+		.may_unmap = may_unmap,
+		.may_writepage = 0,
+		.priority = DEF_PRIORITY,
+		.target_mem_cgroup  = memcg,
+		.pgcache_limit = 1,
+	};
+
+	/*
+	 * We recheck here mainly in case the pagecache is already satisfied,
+	 * especially in asynchronous scenarios.
+	 */
+	nr_should_reclaim = memcg_get_pgcache_overflow_size(memcg);
+	if (!nr_should_reclaim)
+		return;
+	if (memcg->pgcache_limit_reclaim_bytes &&
+	    (memcg->pgcache_limit_reclaim_bytes >> PAGE_SHIFT) < nr_should_reclaim)
+		nr_should_reclaim = memcg->pgcache_limit_reclaim_bytes >> PAGE_SHIFT;
+
+	sc.nr_to_reclaim = max(nr_should_reclaim, SWAP_CLUSTER_MAX);
+	set_task_reclaim_state(current, &sc.reclaim_state);
+	do {
+		if (!is_memcg_pgcache_limit_enabled(memcg))
+			break;
+
+		if (sc.nr_reclaimed >= sc.nr_to_reclaim)
+			break;
+		/*
+		 * In case there no enough pagecache to be reclaimed during
+		 * driect reclaim, we only enable mapped pages to be reclaimed
+		 * when priority value is smaller than DEF_PRIORITY - 4.
+		 */
+		if (memcg->pgcache_limit_sync &&
+		    (sc.priority < DEF_PRIORITY - 4))
+			sc.may_unmap = 1;
+
+		/*
+		 * We only enable dirty pages to be reclaimed when priority
+		 * value is smaller than DEF_PRIORITY - 2, and the reclaim
+		 * must be in asynchronous scenario, in order to minimize the
+		 * performance jitter when dirty pages to be reclaimed.
+		 */
+		if (current_is_kswapd() && !memcg->pgcache_limit_sync &&
+		    (sc.priority < DEF_PRIORITY - 2))
+			sc.may_writepage = 1;
+
+		if (__pagecache_shrink(memcg, &sc) < 0)
+			break;
+	} while (--sc.priority >= 0);
+	set_task_reclaim_state(current, NULL);
 }
 #endif

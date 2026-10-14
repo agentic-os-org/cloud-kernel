@@ -145,4 +145,31 @@ int memcg_pgtable_misplaced_write(struct cgroup_subsys_state *css,
 				 struct cftype *cft, u64 val);
 #endif
 
+#ifdef CONFIG_PAGECACHE_LIMIT
+u64 mem_cgroup_allow_pgcache_limit_read(struct cgroup_subsys_state *css,
+					struct cftype *cft);
+int mem_cgroup_allow_pgcache_limit_write(struct cgroup_subsys_state *css,
+					 struct cftype *cft, u64 val);
+u64 mem_cgroup_pgcache_limit_size_read(struct cgroup_subsys_state *css, struct cftype *cft);
+ssize_t mem_cgroup_pgcache_limit_size_write(struct kernfs_open_file *of, char *buf,
+					    size_t nbytes, loff_t off);
+#endif
+
+#ifdef CONFIG_PAGECACHE_LIMIT
+u64 mem_cgroup_allow_pgcache_sync_read(struct cgroup_subsys_state *css, struct cftype *cft);
+int mem_cgroup_allow_pgcache_sync_write(struct cgroup_subsys_state *css,
+					struct cftype *cft, u64 val);
+#endif
+
+#ifdef CONFIG_PAGECACHE_LIMIT
+u64 mem_cgroup_pgcache_reclaim_interval_read(struct cgroup_subsys_state *css,
+					     struct cftype *cft);
+ssize_t mem_cgroup_pgcache_reclaim_interval_write(struct kernfs_open_file *of, char *buf,
+						  size_t nbytes, loff_t off);
+u64 mem_cgroup_pgcache_reclaim_bytes_read(struct cgroup_subsys_state *css,
+					  struct cftype *cft);
+ssize_t mem_cgroup_pgcache_reclaim_bytes_write(struct kernfs_open_file *of, char *buf,
+					       size_t nbytes, loff_t off);
+#endif
+
 #endif	/* __MM_MEMCONTROL_V1_H */

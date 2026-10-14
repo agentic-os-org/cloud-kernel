@@ -51,6 +51,7 @@
 #include <linux/pgalloc.h>
 
 #include <asm/tlbflush.h>
+#include <linux/pagecache_limit.h>
 #include "internal.h"
 
 #define CREATE_TRACE_POINTS
@@ -962,6 +963,8 @@ int filemap_add_folio(struct address_space *mapping, struct folio *folio,
 		set_active_memcg(tmp);
 	if (ret)
 		return ret;
+
+	memcg_pagecache_shrink(folio_memcg(folio), gfp);
 
 	__folio_set_locked(folio);
 	ret = __filemap_add_folio(mapping, folio, index, gfp, &shadow);

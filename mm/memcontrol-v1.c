@@ -2142,6 +2142,33 @@ static int mem_cgroup_slab_show(struct seq_file *m, void *p)
 #endif
 
 struct cftype mem_cgroup_legacy_files[] = {
+#ifdef CONFIG_PAGECACHE_LIMIT
+	{
+		.name = "pagecache_limit.enable",
+		.read_u64 = mem_cgroup_allow_pgcache_limit_read,
+		.write_u64 = mem_cgroup_allow_pgcache_limit_write,
+	},
+	{
+		.name = "pagecache_limit.size",
+		.read_u64 = mem_cgroup_pgcache_limit_size_read,
+		.write = mem_cgroup_pgcache_limit_size_write,
+	},
+	{
+		.name = "pagecache_limit.sync",
+		.read_u64 = mem_cgroup_allow_pgcache_sync_read,
+		.write_u64 = mem_cgroup_allow_pgcache_sync_write,
+	},
+	{
+		.name = "pagecache_limit.reclaim_interval_ms",
+		.read_u64 = mem_cgroup_pgcache_reclaim_interval_read,
+		.write = mem_cgroup_pgcache_reclaim_interval_write,
+	},
+	{
+		.name = "pagecache_limit.reclaim_bytes",
+		.read_u64 = mem_cgroup_pgcache_reclaim_bytes_read,
+		.write = mem_cgroup_pgcache_reclaim_bytes_write,
+	},
+#endif
 	{
 		.name = "usage_in_bytes",
 		.private = MEMFILE_PRIVATE(_MEM, RES_USAGE),

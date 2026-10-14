@@ -23,6 +23,8 @@
 #include <linux/writeback.h>
 #include <linux/page-flags.h>
 #include <linux/shrinker.h>
+#include <linux/timer.h>
+#include <linux/workqueue.h>
 #include <linux/ck_kabi.h>
 
 struct mem_cgroup;
@@ -48,6 +50,9 @@ enum memcg_stat_item {
 
 enum memcg_exstat_item {
 	MEMCG_WMARK_RECLAIM,
+#ifdef CONFIG_PAGECACHE_LIMIT
+	MEMCG_PGCACHE_RECLAIM,
+#endif
 	MEMCG_NR_EXSTAT,
 };
 
@@ -397,6 +402,16 @@ struct mem_cgroup {
 #ifdef CONFIG_PRE_OOM
 	bool pre_oom;
 #endif
+
+#ifdef CONFIG_PAGECACHE_LIMIT
+	bool allow_pgcache_limit;
+	unsigned long pgcache_limit_size;
+	bool pgcache_limit_sync;
+	struct delayed_work pgcache_limit_work;
+	unsigned long pgcache_limit_reclaim_interval; /* jiffies of millisecond */
+	size_t pgcache_limit_reclaim_bytes;
+#endif
+
 	CK_KABI_RESERVE(1)
 	CK_KABI_RESERVE(2)
 	CK_KABI_RESERVE(3)
