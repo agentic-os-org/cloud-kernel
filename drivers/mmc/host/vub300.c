@@ -2347,7 +2347,10 @@ static int vub300_probe(struct usb_interface *interface,
 
 	return 0;
 error6:
-	del_timer_sync(&vub300->inactivity_timer);
+	vub300->interface = NULL;
+	kref_put(&vub300->kref, vub300_delete);
+
+	return retval;
 error5:
 	mmc_free_host(mmc);
 	/*
