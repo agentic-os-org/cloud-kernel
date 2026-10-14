@@ -43,6 +43,15 @@ int sdei_api_event_status(u32 event_num, u64 *result);
 int sdei_api_clear_eoi(int hwirq);
 int sdei_api_set_secure_timer_period(int sec);
 
+/*
+ * Signal the software-signalled event (event 0) to another PE, NMI-like.
+ * @mpidr is the target's MPIDR affinity.
+ */
+int sdei_event_signal(u32 event_num, u64 mpidr);
+
+/* Was SDEI firmware probed and usable? */
+bool sdei_is_present(void);
+
 /* GHES register/unregister helpers */
 int sdei_register_ghes(struct ghes *ghes, sdei_event_callback *normal_cb,
 		       sdei_event_callback *critical_cb);
