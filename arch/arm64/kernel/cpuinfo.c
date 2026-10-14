@@ -212,15 +212,22 @@ static int c_show(struct seq_file *m, void *v)
 		index = cpu = i;
 
 		/* Get cpu mask and check it */
-		info = kzalloc(sizeof(*info), GFP_KERNEL);
-		if (info) {
-			if (!BPF_CGROUP_RUN_PROG_RICH_CONTAINER_CPU(info, 1) &&
-						!cpumask_test_cpu(cpu, &info->cpus_mask)) {
+#ifdef CONFIG_CGROUP_BPF
+		if (cgroup_bpf_enabled(CGROUP_RICH_CONTAINER_CPU)) {
+			info = kzalloc(sizeof(*info), GFP_KERNEL);
+			if (info) {
+				int ret;
+
+				ret = __cgroup_bpf_run_filter_rich_container(
+					info, CGROUP_RICH_CONTAINER_CPU);
+				if (!ret && !cpumask_test_cpu(cpu, &info->cpus_mask)) {
+					kfree(info);
+					continue;
+				}
 				kfree(info);
-				continue;
 			}
-			kfree(info);
 		}
+#endif
 
 		if (check_rich_container(cpu, &index, &rich_container, &total))
 			continue;
