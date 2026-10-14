@@ -5496,7 +5496,7 @@ static void memcg_update_wmark_min_adj(struct mem_cgroup *memcg, int val)
 	struct mem_cgroup *p;
 	struct mem_cgroup *iter;
 
-	mutex_lock(&cgroup_mutex);
+	lockdep_assert_held(&cgroup_mutex);
 	memcg->wmark_min_adj = val;
 	/* update hierarchical wmark_min_eadj, pre-order iteration */
 	for_each_mem_cgroup_tree(iter, memcg) {
@@ -5508,7 +5508,6 @@ static void memcg_update_wmark_min_adj(struct mem_cgroup *memcg, int val)
 			val = p->wmark_min_eadj;
 		iter->wmark_min_eadj = val;
 	}
-	mutex_unlock(&cgroup_mutex);
 }
 
 static int memory_wmark_min_adj_show(struct seq_file *m, void *v)
@@ -5535,7 +5534,17 @@ static ssize_t memory_wmark_min_adj_write(struct kernfs_open_file *of,
 	if (wmark_min_adj < -25 || wmark_min_adj > 50)
 		return -EINVAL;
 
+	/* Pin the CSS before dropping the protection provided by kernfs. */
+	if (!css_tryget_online(&memcg->css))
+		return -ENODEV;
+	kernfs_break_active_protection(of->kn);
+	mutex_lock(&cgroup_mutex);
+
 	memcg_update_wmark_min_adj(memcg, wmark_min_adj);
+
+	mutex_unlock(&cgroup_mutex);
+	kernfs_unbreak_active_protection(of->kn);
+	css_put(&memcg->css);
 
 	return nbytes;
 }
