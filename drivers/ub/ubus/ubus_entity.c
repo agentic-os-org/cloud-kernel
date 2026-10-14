@@ -78,6 +78,8 @@ static int ub_entity_num_alloc(void)
 
 static int ub_get_guid(struct ub_entity *uent)
 {
+	char buf[SZ_64] = {};
+	struct ub_guid guid;
 	u16 code;
 	int ret;
 
@@ -86,9 +88,22 @@ static int ub_get_guid(struct ub_entity *uent)
 
 	if (!uent->pool || uent_type(uent->pue) == UB_TYPE_ICONTROLLER) {
 		uent_type(uent) = uent_type(uent->pue);
-		ret = ub_cfg_read_guid(uent);
+		ret = ub_cfg_read_guid(uent, uent->guid.dw);
 		if (ret)
 			return ret;
+	}
+
+	if (uent->pool && uent_type(uent) == UB_TYPE_CONTROLLER) {
+		ret = ub_cfg_read_guid(uent, guid.dw);
+		if (ret)
+			return ret;
+
+		if (!guid_equal(&uent->guid.id, &guid.id)) {
+			(void)ub_show_guid(&guid, buf);
+			ub_err(uent, "pool pld guid is not equal entity guid %s\n",
+			       buf);
+			return -EINVAL;
+		}
 	}
 
 	ret = ub_cfg_read_word(uent, UB_CLASS_CODE, &code);
@@ -203,22 +218,6 @@ static int ub_setup_ent_normal(struct ub_entity *uent)
 	return 0;
 }
 
-static int ub_fad_cfg_access_check(struct ub_entity *uent)
-{
-	u32 feature;
-	int ret = 0;
-
-	if (is_p_device(uent)) {
-		ret = ub_cfg_read_dword(uent, UB_CFG1_SUPPORT_FEATURE_L,
-					&feature);
-		if (ret)
-			ub_err(uent, "fad cfg access failed, eid=%#x, ret=%d\n",
-			       uent->eid, ret);
-	}
-
-	return ret;
-}
-
 static int ub_uent_cfg(struct ub_entity *uent, u32 uent_num)
 {
 	struct ub_guid *guid = &uent->guid;
@@ -301,9 +300,6 @@ int ub_setup_ent(struct ub_entity *uent)
 	}
 
 	ub_config_upi(uent);
-	ret = ub_fad_cfg_access_check(uent);
-	if (ret)
-		goto err_alloc;
 
 	/* common setup */
 	ret = ub_eid_alloc(uent);
@@ -315,6 +311,7 @@ int ub_setup_ent(struct ub_entity *uent)
 	uent_num = ub_entity_num_alloc();
 	if (uent_num < 0) {
 		ub_err(uent, "alloc dev uent_num failed, ret=%d\n", uent_num);
+		ret = -ENOSPC;
 		goto free_eid;
 	}
 
@@ -438,7 +435,10 @@ void ub_start_ent(struct ub_entity *uent)
 		return;
 
 	ret = ub_default_bus_instance_init(uent);
-	WARN_ON(ret);
+	if (ret) {
+		ub_err(uent, "default bi init failed, ret=%d\n", ret);
+		return;
+	}
 
 	ub_create_sysfs_dev_files(uent);
 	ub_mem_decoder_init(uent);
@@ -812,28 +812,6 @@ static void ub_disable_mues(struct ub_entity *pue)
 		ub_disable_ent(mue);
 }
 
-void ub_disable_ues(struct ub_entity *mue);
-static int ub_enable_ues(struct ub_entity *mue, int nums)
-{
-	int ret;
-	int i;
-
-	if (nums > mue->total_ues)
-		return -EINVAL;
-
-	for (i = 0; i < nums; i++) {
-		ret = ub_enable_ent(mue, mue->uem.start_entity_idx + i, 0,
-				     NULL);
-		if (ret)
-			goto failed;
-	}
-	mue->num_ues = nums;
-	return 0;
-failed:
-	ub_disable_ues(mue);
-	return ret;
-}
-
 void ub_disable_ues(struct ub_entity *mue)
 {
 	struct ub_entity *ue, *tmp;
@@ -920,26 +898,6 @@ int ub_disable_ue(struct ub_entity *pue, int entity_idx)
 	return -ENODEV;
 }
 EXPORT_SYMBOL_GPL(ub_disable_ue);
-
-bool ub_get_entity_flex_en(void)
-{
-	return entity_flex_en;
-}
-EXPORT_SYMBOL_GPL(ub_get_entity_flex_en);
-
-int ub_enable_entities(struct ub_entity *uent, int nums)
-{
-	if (!uent)
-		return -EINVAL;
-
-	if (!uent->is_mue) {
-		ub_err(uent, "It's not mue.\n");
-		return -EINVAL;
-	}
-
-	return ub_enable_ues(uent, nums);
-}
-EXPORT_SYMBOL_GPL(ub_enable_entities);
 
 void ub_disable_entities(struct ub_entity *uent)
 {

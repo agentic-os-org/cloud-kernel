@@ -31,6 +31,11 @@ bool entity_flex_en;
 module_param(entity_flex_en, bool, 0444);
 MODULE_PARM_DESC(entity_flex_en, "Entity Flexible enable: default: 0");
 
+bool msg_retry;
+EXPORT_SYMBOL_GPL(msg_retry);
+module_param(msg_retry, bool, 0444);
+MODULE_PARM_DESC(msg_retry, "support msg retry: 0(disable)");
+
 DECLARE_RWSEM(ub_bus_sem);
 
 #define UBC_GUID_VENDOR_SHIFT 48
@@ -179,28 +184,6 @@ ub_get_dev_by_id_inner(struct ub_entity *from, const void *data,
 	ub_entity_put(from);
 	return fdev;
 }
-
-static int ub_entity_match_by_id(struct device *dev, const void *data)
-{
-	const struct ub_device_id *id = (const struct ub_device_id *)data;
-	struct ub_entity *pue = to_ub_entity(dev);
-
-	if (ub_match_one_device(id, pue))
-		return 1;
-	return 0;
-}
-
-struct ub_entity *ub_get_entity(unsigned int vendor, unsigned int device,
-			     struct ub_entity *from)
-{
-	struct ub_device_id id = {
-		.vendor = vendor,
-		.device = device,
-	};
-
-	return ub_get_dev_by_id_inner(from, &id, ub_entity_match_by_id);
-}
-EXPORT_SYMBOL_GPL(ub_get_entity);
 
 static int ub_entity_match_by_guid(struct device *dev, const void *data)
 {
@@ -672,8 +655,10 @@ static int ub_host_probe(void)
 	if (ret)
 		goto cdev_fail;
 
-	if (!manage_subsystem_ops || !manage_subsystem_ops->ras_handler_probe)
+	if (!manage_subsystem_ops || !manage_subsystem_ops->ras_handler_probe) {
+		ret = -EFAULT;
 		goto error_register_fail;
+	}
 
 	ret = manage_subsystem_ops->ras_handler_probe();
 	if (ret)

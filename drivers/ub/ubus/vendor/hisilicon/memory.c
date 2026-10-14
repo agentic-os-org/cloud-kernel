@@ -29,6 +29,9 @@
 
 #define hpa_gen(addr_h, addr_l) (((u64)(addr_h) << 32) | (addr_l))
 
+#define UB_MEM_PORT_WARNING 18
+#define UB_MEM_PORT_RECOVERY 19
+
 static u8 ub_mem_num;
 
 struct ub_mem_decoder {
@@ -108,11 +111,12 @@ static const struct ub_mem_device_ops device_ops = {
 };
 
 static int save_ras_err_info(struct ub_mem_device *mem_device,
-			     enum ras_err_type type, u64 hpa)
+			     enum ras_err_type type, u64 val0, u64 val1)
 {
 	struct ub_mem_ras_err_info err_info = {
 		.type = type,
-		.hpa = hpa,
+		.val0 = val0,
+		.val1 = val1,
 	};
 
 	if (!kfifo_put(&mem_device->ras_ctx.ras_fifo, err_info)) {
@@ -129,15 +133,28 @@ static irqreturn_t hi_mem_ras_isr(int irq, void *context)
 	struct ub_mem_ras_ctx *ras_ctx = &ubc->mem_device->ras_ctx;
 	struct ub_mem_ras_err_info err_info;
 	ubmem_ras_handler handler;
+	u64 ctl_no = ubc->ctl_no;
+	u64 vals[3];
 	int ret;
 
 	handler = ub_mem_ras_handler_get();
 	while (kfifo_get(&ras_ctx->ras_fifo, &err_info)) {
 		trace_mem_ras_event(ubc->mem_device, &err_info);
 		pr_info("ras: type=%u\n", err_info.type);
-		if (handler) {
-			ret = handler(err_info.hpa, err_info.type);
-			WARN_ON(ret);
+		if (err_info.type == UB_MEM_PORT_WARNING ||
+		    err_info.type == UB_MEM_PORT_RECOVERY) {
+			vals[0] = err_info.val0;
+			vals[1] = err_info.val1;
+			vals[2] = ctl_no;
+			if (handler) {
+				ret = handler((u64)vals, err_info.type);
+				WARN_ON(ret);
+			}
+		} else {
+			if (handler) {
+				ret = handler(err_info.val0, err_info.type);
+				WARN_ON(ret);
+			}
 		}
 	}
 
@@ -166,7 +183,45 @@ static int err_type_bitmap[] = {
 	[MAR_TIMEOUT_ERR] = 23,
 	[MAR_ILLEGAL_ACCESS_ERR] = 9,
 	[REMOTE_READ_DATA_ERR_OR_WRITE_RESPONSE_ERR] = 11,
+	/* DEVICE_RAS_STATUS_4 need save transaction id and port bitmap */
+	[UB_MEM_PORT_WARNING] = 31,
+	/* DEVICE_RAS_STATUS_4 need save transaction id */
+	[UB_MEM_PORT_RECOVERY] = 30,
 };
+
+static int save_injected_route_info(struct ub_bus_controller *ubc,
+				    struct hi_ubmem_event *info,
+				    unsigned long status4_bitmap)
+{
+	u32 addr_h, addr_l;
+	u64 val0, val1;
+	int ret, i;
+
+	if (test_bit(err_type_bitmap[UB_MEM_PORT_WARNING], &status4_bitmap)) {
+		i = UB_MEM_PORT_WARNING;
+		addr_h = info->err_addr[1];
+		addr_l = info->err_addr[0];
+		val0 = hpa_gen(addr_h, addr_l);
+		addr_h = info->err_addr[3];
+		addr_l = info->err_addr[2];
+		val1 = hpa_gen(addr_h, addr_l);
+		ret = save_ras_err_info(ubc->mem_device, (enum ras_err_type)i, val0, val1);
+		if (ret)
+			return ret;
+	}
+
+	if (test_bit(err_type_bitmap[UB_MEM_PORT_RECOVERY], &status4_bitmap)) {
+		i = UB_MEM_PORT_RECOVERY;
+		addr_h = info->err_addr[5];
+		addr_l = info->err_addr[4];
+		val0 = hpa_gen(addr_h, addr_l);
+		ret = save_ras_err_info(ubc->mem_device, (enum ras_err_type)i, val0, 0);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
 
 static int save_ras_err_info_all(struct ub_bus_controller *ubc, struct hi_ubmem_event *info)
 {
@@ -174,13 +229,17 @@ static int save_ras_err_info_all(struct ub_bus_controller *ubc, struct hi_ubmem_
 	unsigned long status4_bitmap = (unsigned long)info->device_ras_status4;
 	u32 addr_h, addr_l;
 	int ret = -EINVAL;
-	u64 hpa = 0;
-	int index;
-	int i;
+	int index, i;
+	u64 val0 = 0;
+
+	/* receives and processes one injected route event at a time */
+	if (test_bit(err_type_bitmap[UB_MEM_PORT_WARNING], &status4_bitmap) ||
+	    test_bit(err_type_bitmap[UB_MEM_PORT_RECOVERY], &status4_bitmap))
+		return save_injected_route_info(ubc, info, status4_bitmap);
 
 	for (i = UB_MEM_ATOMIC_DATA_ERR; i <= UB_MEM_READ_DATA_RESPERR; i++) {
 		if (test_bit(err_type_bitmap[i], &status3_bitmap)) {
-			ret = save_ras_err_info(ubc->mem_device, (enum ras_err_type)i, hpa);
+			ret = save_ras_err_info(ubc->mem_device, (enum ras_err_type)i, val0, 0);
 			if (ret)
 				return ret;
 		}
@@ -188,7 +247,7 @@ static int save_ras_err_info_all(struct ub_bus_controller *ubc, struct hi_ubmem_
 
 	for (i = MAR_FLUX_INT_ERR; i <= RSP_BKPRE_OVER_TIMEOUT_ERR; i++) {
 		if (test_bit(err_type_bitmap[i], &status4_bitmap)) {
-			ret = save_ras_err_info(ubc->mem_device, (enum ras_err_type)i, hpa);
+			ret = save_ras_err_info(ubc->mem_device, (enum ras_err_type)i, val0, 0);
 			if (ret)
 				return ret;
 		}
@@ -199,8 +258,8 @@ static int save_ras_err_info_all(struct ub_bus_controller *ubc, struct hi_ubmem_
 			index = MAR_ERR_ADDR_SIZE * (i - MAR_NEAR_AUTH_FAIL_ERR);
 			addr_h = info->err_addr[index + 1];
 			addr_l = info->err_addr[index];
-			hpa = hpa_gen(addr_h, addr_l);
-			ret = save_ras_err_info(ubc->mem_device, (enum ras_err_type)i, hpa);
+			val0 = hpa_gen(addr_h, addr_l);
+			ret = save_ras_err_info(ubc->mem_device, (enum ras_err_type)i, val0, 0);
 			if (ret)
 				return ret;
 		}
@@ -210,7 +269,7 @@ static int save_ras_err_info_all(struct ub_bus_controller *ubc, struct hi_ubmem_
 	if (test_bit(err_type_bitmap[MAR_NOPORT_VLD_INT_ERR], &status4_bitmap) &&
 	    !test_bit(err_type_bitmap[MAR_NEAR_AUTH_FAIL_ERR], &status4_bitmap)) {
 		i = MAR_NOPORT_VLD_INT_ERR;
-		ret = save_ras_err_info(ubc->mem_device, (enum ras_err_type)i, hpa);
+		ret = save_ras_err_info(ubc->mem_device, (enum ras_err_type)i, val0, 0);
 	}
 
 	return ret;
@@ -236,7 +295,7 @@ static irqreturn_t hi_mem_ras_irq(int irq, void *context)
 
 	event_cnt = pld.rsp.event_num;
 	if (event_cnt == 0 || event_cnt > MEM_EVENT_MAX_NUM) {
-		dev_err(&ubc->dev, "event_cnt [%u] is invalid\n", event_cnt);
+		dev_warn(&ubc->dev, "event_cnt [%u] is invalid\n", event_cnt);
 		return IRQ_HANDLED;
 	}
 
@@ -471,6 +530,5 @@ static bool hi_mem_validate_pa(struct ub_bus_controller *ubc,
 			return true;
 	}
 
-	dev_err(&ubc->dev, "pa_start-pa_end is invalid.\n");
 	return false;
 }

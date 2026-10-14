@@ -546,7 +546,6 @@ static void ub_port_init(struct ub_entity *uent, struct ub_port *port)
 	bitmap_zero(port->cna_maps, UB_MAX_CNA_NUM);
 	bitmap_zero(port->cap_map, UB_PORT_CAP_NUM);
 	kobject_init(&port->kobj, &ub_port_ktype);
-	INIT_WORK(&port->link_work, ub_link_change_handler);
 }
 
 int ub_ports_setup(struct ub_entity *uent)
@@ -622,6 +621,12 @@ int ub_register_share_port(struct ub_entity *entity, u16 port_id,
 			       uent_type(parent));
 			return -EINVAL;
 		}
+	}
+
+	if (port_id >= parent->port_nums) {
+		ub_err(parent, "port id %u exceeds port num %u\n", port_id,
+		       parent->port_nums);
+		return -EINVAL;
 	}
 
 	port = parent->ports + port_id;
