@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Driver for OHCI 1394 controllers
+ * Driver for OHCI 1394 controllers TEST
  *
  * Copyright (C) 2003-2006 Kristian Hoegsberg <krh@bitplanet.net>
  */
@@ -719,11 +719,13 @@ static void ar_context_link_page(struct ar_context *ctx, unsigned int index)
 
 static void ar_context_release(struct ar_context *ctx)
 {
-	struct device *dev = ctx->ohci->card.device;
+	struct device *dev;
 	unsigned int i;
 
 	if (!ctx->buffer)
 		return;
+
+	dev = ctx->ohci->card.device;
 
 	vunmap(ctx->buffer);
 
