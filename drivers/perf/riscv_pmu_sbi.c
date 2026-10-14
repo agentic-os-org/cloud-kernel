@@ -59,6 +59,9 @@ asm volatile(ALTERNATIVE(						\
 #define PERF_EVENT_FLAG_USER_ACCESS	BIT(SYSCTL_USER_ACCESS)
 #define PERF_EVENT_FLAG_LEGACY		BIT(SYSCTL_LEGACY)
 
+/* Counter indices of the fixed counters: cycle, time and instret */
+#define SBI_PMU_FIXED_CTRS_MASK		(BIT(0) | BIT(1) | BIT(2))
+
 PMU_FORMAT_ATTR(event, "config:0-55");
 PMU_FORMAT_ATTR(firmware, "config:62-63");
 
@@ -86,6 +89,9 @@ static const struct attribute_group *riscv_pmu_attr_groups[] = {
 
 /* Allow user mode access by default */
 static int sysctl_perf_user_access __read_mostly = SYSCTL_USER_ACCESS;
+
+/* Keep the fixed counters (cycle, time, instret) running */
+static bool keep_fixed_ctrs __read_mostly;
 
 /*
  * RISC-V doesn't have heterogeneous harts yet. This need to be part of
@@ -899,12 +905,17 @@ static int pmu_sbi_get_ctrinfo(int nctr, unsigned long *mask)
 
 static inline void pmu_sbi_stop_all(struct riscv_pmu *pmu)
 {
+	unsigned long ctr_mask = pmu->cmask;
+
+	if (keep_fixed_ctrs)
+		ctr_mask &= ~SBI_PMU_FIXED_CTRS_MASK;
+
 	/*
 	 * No need to check the error because we are disabling all the counters
 	 * which may include counters that are not enabled yet.
 	 */
 	sbi_ecall(SBI_EXT_PMU, SBI_EXT_PMU_COUNTER_STOP,
-		  0, pmu->cmask, SBI_PMU_STOP_FLAG_RESET, 0, 0, 0);
+		  0, ctr_mask, SBI_PMU_STOP_FLAG_RESET, 0, 0, 0);
 }
 
 static inline void pmu_sbi_stop_hw_ctrs(struct riscv_pmu *pmu)
@@ -1405,6 +1416,12 @@ static int riscv_pmu_proc_user_access_handler(struct ctl_table *table,
 
 	return 0;
 }
+
+static int __init keep_fixed_ctrs_setup(char *str)
+{
+	return kstrtobool(str, &keep_fixed_ctrs);
+}
+early_param("perf_keep_fixed_ctrs", keep_fixed_ctrs_setup);
 
 static struct ctl_table sbi_pmu_sysctl_table[] = {
 	{
