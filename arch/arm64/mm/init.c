@@ -46,6 +46,8 @@
 #include <asm/alternative.h>
 #include <asm/xen/swiotlb-xen.h>
 
+#include "internal.h"
+
 /*
  * We need to be able to catch inadvertent references to memstart_addr
  * that occur (potentially in generic code) before arm64_memblock_init()
@@ -497,6 +499,11 @@ void __init mem_init(void)
 		swiotlb = true;
 
 	swiotlb_init(swiotlb, SWIOTLB_VERBOSE);
+
+	/* Must be placed before buddy is initialized, to avoid reserved
+	 * memory is reserved by memblock.
+	 */
+	pmd_mapping_reserve_and_remap();
 
 	/* this will put all unused low memory onto the freelists */
 	memblock_free_all();
