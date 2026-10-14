@@ -432,11 +432,21 @@ ffa_setup_and_transmit(u32 func_id, void *buffer, u32 max_fragsize,
 	struct ffa_mem_region *mem_region = buffer;
 	u32 idx, frag_len, length, buf_sz = 0, num_entries = sg_nents(args->sg);
 
+	if (!args->use_txbuf) {
+		addr = virt_to_phys(buffer);
+		buf_sz = max_fragsize / FFA_PAGE_SIZE;
+	}
+
 	mem_region->tag = args->tag;
 	mem_region->flags = args->flags;
 	mem_region->sender_id = drv_info->vm_id;
 	mem_region->attributes = ffa_memory_attributes_get(func_id);
 	ep_mem_access = &mem_region->ep_mem_access[0];
+
+	length = COMPOSITE_CONSTITUENTS_OFFSET(args->nattrs, num_entries);
+	frag_len = COMPOSITE_CONSTITUENTS_OFFSET(args->nattrs, 0);
+	if (frag_len > max_fragsize)
+		return -ENXIO;
 
 	for (idx = 0; idx < args->nattrs; idx++, ep_mem_access++) {
 		ep_mem_access->receiver = args->attrs[idx].receiver;
@@ -455,16 +465,6 @@ ffa_setup_and_transmit(u32 func_id, void *buffer, u32 max_fragsize,
 	composite->addr_range_cnt = num_entries;
 	composite->reserved = 0;
 
-	length = COMPOSITE_CONSTITUENTS_OFFSET(args->nattrs, num_entries);
-	frag_len = COMPOSITE_CONSTITUENTS_OFFSET(args->nattrs, 0);
-	if (frag_len > max_fragsize)
-		return -ENXIO;
-
-	if (!args->use_txbuf) {
-		addr = virt_to_phys(buffer);
-		buf_sz = max_fragsize / FFA_PAGE_SIZE;
-	}
-
 	constituents = buffer + frag_len;
 	idx = 0;
 	do {
@@ -481,7 +481,7 @@ ffa_setup_and_transmit(u32 func_id, void *buffer, u32 max_fragsize,
 			constituents = buffer;
 		}
 
-		if ((void *)constituents - buffer > max_fragsize) {
+		if ((void *)constituents + sizeof(*constituents) - buffer > max_fragsize) {
 			pr_err("Memory Region Fragment > Tx Buffer size\n");
 			return -EFAULT;
 		}
@@ -490,7 +490,7 @@ ffa_setup_and_transmit(u32 func_id, void *buffer, u32 max_fragsize,
 		constituents->pg_cnt = args->sg->length / FFA_PAGE_SIZE;
 		constituents->reserved = 0;
 		constituents++;
-		frag_len += sizeof(struct ffa_mem_region_addr_range);
+		frag_len += sizeof(*constituents);
 	} while ((args->sg = sg_next(args->sg)));
 
 	return ffa_transmit_fragment(func_id, addr, buf_sz, frag_len,
