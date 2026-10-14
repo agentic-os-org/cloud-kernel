@@ -33,8 +33,8 @@ union codetag_ref {
 struct codetag_type_desc {
 	const char *section;
 	size_t tag_size;
-	void (*module_load)(struct codetag_type *cttype,
-			    struct codetag_module *cmod);
+	int (*module_load)(struct codetag_type *cttype,
+			   struct codetag_module *cmod);
 	bool (*module_unload)(struct codetag_type *cttype,
 			      struct codetag_module *cmod);
 };
@@ -71,10 +71,10 @@ struct codetag_type *
 codetag_register_type(const struct codetag_type_desc *desc);
 
 #if defined(CONFIG_CODE_TAGGING) && defined(CONFIG_MODULES)
-void codetag_load_module(struct module *mod);
+int codetag_load_module(struct module *mod);
 bool codetag_unload_module(struct module *mod);
 #else
-static inline void codetag_load_module(struct module *mod) {}
+static inline int codetag_load_module(struct module *mod) { return 0; }
 static inline bool codetag_unload_module(struct module *mod) { return true; }
 #endif
 
