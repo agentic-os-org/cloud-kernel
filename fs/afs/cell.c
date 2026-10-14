@@ -300,7 +300,7 @@ wait_for_cell:
 		       afs_cell_trace_wait);
 	_debug("wait_for_cell");
 	wait_var_event(&cell->state,
-		       ({
+	       ({
 			       state = smp_load_acquire(&cell->state); /* vs error */
 			       state == AFS_CELL_ACTIVE || state == AFS_CELL_REMOVED;
 		       }));
@@ -813,7 +813,6 @@ reverse_deactivation:
 	wake_up_var(&cell->state);
 	_leave(" [deact->act]");
 	return;
-
 done:
 	_leave(" [done %u]", cell->state);
 	return;
