@@ -3274,6 +3274,10 @@ int __cold open_ctree(struct super_block *sb, struct btrfs_fs_devices *fs_device
 	if (btrfs_super_flags(disk_super) & BTRFS_SUPER_FLAG_ERROR)
 		WRITE_ONCE(fs_info->fs_error, -EUCLEAN);
 
+	/* If the fs has any rescue options, no transaction is allowed. */
+	if (btrfs_is_full_ro(fs_info))
+		WRITE_ONCE(fs_info->fs_error, -EROFS);
+
 	/*
 	 * In the long term, we'll store the compression type in the super
 	 * block, and it'll be used for per file compression control.

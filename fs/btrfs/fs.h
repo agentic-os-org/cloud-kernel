@@ -935,6 +935,15 @@ do {									\
 	btrfs_set_opt(fs_info->mount_opt, opt);				\
 } while (0)
 
+static inline bool btrfs_is_full_ro(const struct btrfs_fs_info *fs_info)
+{
+	if (!sb_rdonly(fs_info->sb))
+		return false;
+	if (unlikely(fs_info->mount_opt & BTRFS_MOUNT_FULL_RO_MASK))
+		return true;
+	return false;
+}
+
 #define btrfs_clear_and_info(fs_info, opt, fmt, args...)		\
 do {									\
 	if (btrfs_test_opt(fs_info, opt))				\
