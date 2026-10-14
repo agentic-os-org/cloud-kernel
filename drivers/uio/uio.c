@@ -960,6 +960,7 @@ static void uio_info_free(struct percpu_ref *ref)
 	complete(&idev->free_done);
 }
 
+static void uio_confirm_info(struct percpu_ref *ref);
 
 /**
  * __uio_register_device - register a new userspace IO device
@@ -1053,6 +1054,12 @@ int __uio_register_device(struct module *owner,
 err_request_irq:
 	uio_dev_del_attributes(idev);
 err_uio_dev_add_attributes:
+	percpu_ref_kill_and_confirm(&idev->info_ref, uio_confirm_info);
+	wait_for_completion(&idev->confirm_done);
+	wait_for_completion(&idev->free_done);
+	idev->info = NULL;
+	wake_up_interruptible(&idev->wait);
+	kill_fasync(&idev->async_queue, SIGIO, POLL_HUP);
 	device_del(&idev->dev);
 err_device_create:
 	uio_free_minor(idev->minor);
