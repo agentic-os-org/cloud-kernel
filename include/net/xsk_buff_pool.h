@@ -78,6 +78,11 @@ struct xsk_buff_pool {
 	u32 chunk_size;
 	u32 chunk_shift;
 	u32 frame_len;
+	u32 tx_descs_nentries;
+	u32 reclaim_descs;
+	u32 tx_zc_pending_descs;
+	u32 xdp_zc_max_segs;
+	u8 tx_metadata_len; /* inherited from umem */
 	u8 cached_need_wakeup;
 	bool uses_need_wakeup;
 	bool dma_need_sync;
@@ -162,7 +167,7 @@ static inline void xp_dma_sync_for_cpu(struct xdp_buff_xsk *xskb)
 }
 
 void xp_dma_sync_for_device_slow(struct xsk_buff_pool *pool, dma_addr_t dma,
-				 size_t size);
+			 size_t size);
 static inline void xp_dma_sync_for_device(struct xsk_buff_pool *pool,
 					  dma_addr_t dma, size_t size)
 {
