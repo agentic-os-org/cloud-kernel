@@ -274,6 +274,9 @@ struct mem_cgroup *vmpressure_to_memcg(struct vmpressure *vmpr)
 	return container_of(vmpr, struct mem_cgroup, vmpressure);
 }
 
+#define CURRENT_OBJCG_UPDATE_BIT 0
+#define CURRENT_OBJCG_UPDATE_FLAG (1UL << CURRENT_OBJCG_UPDATE_BIT)
+
 #ifdef CONFIG_MEMCG_KMEM
 static DEFINE_SPINLOCK(objcg_lock);
 
@@ -346,26 +349,154 @@ static struct obj_cgroup *obj_cgroup_alloc(void)
 	return objcg;
 }
 
-static void memcg_reparent_objcgs(struct mem_cgroup *memcg,
-				  struct mem_cgroup *parent)
+static inline struct obj_cgroup *__memcg_reparent_objcgs(struct mem_cgroup *memcg,
+							 struct mem_cgroup *parent,
+							 int nid)
 {
 	struct obj_cgroup *objcg, *iter;
+	struct mem_cgroup_per_node *pn = memcg->nodeinfo[nid];
+	struct mem_cgroup_per_node *parent_pn = parent->nodeinfo[nid];
 
-	objcg = rcu_replace_pointer(memcg->objcg, NULL, true);
-
-	spin_lock_irq(&objcg_lock);
-
+	objcg = rcu_replace_pointer(pn->objcg, NULL, true);
 	/* 1) Ready to reparent active objcg. */
-	list_add(&objcg->list, &memcg->objcg_list);
+	list_add(&objcg->list, &pn->objcg_list);
 	/* 2) Reparent active objcg and already reparented objcgs to parent. */
-	list_for_each_entry(iter, &memcg->objcg_list, list)
+	list_for_each_entry(iter, &pn->objcg_list, list)
 		WRITE_ONCE(iter->memcg, parent);
 	/* 3) Move already reparented objcgs to the parent's list */
-	list_splice(&memcg->objcg_list, &parent->objcg_list);
+	list_splice(&pn->objcg_list, &parent_pn->objcg_list);
 
+	return objcg;
+}
+
+static void reparent_memcg_state_local(struct mem_cgroup *memcg,
+				       struct mem_cgroup *parent, int idx);
+static void reparent_memcg_lruvec_state_local(struct mem_cgroup *memcg,
+					      struct mem_cgroup *parent, int idx);
+
+static void reparent_memcg1_state_local(struct mem_cgroup *memcg, struct mem_cgroup *parent);
+
+static void reparent_memcg1_lruvec_state_local(struct mem_cgroup *memcg, struct mem_cgroup *parent)
+{
+	int i;
+
+	for (i = 0; i < NR_LRU_LISTS; i++)
+		reparent_memcg_lruvec_state_local(memcg, parent, i);
+}
+
+static void do_flush_stats(struct mem_cgroup *memcg);
+
+/*
+ * Reparent the non-hierarchical lruvec stats that count_shadow_nodes() reads
+ * to approximate the shadow node budget.  They are not exposed to userspace
+ * on cgroup v2, but they must follow the reparented folios; otherwise the
+ * ancestor would only receive the negative deltas when the folios are freed
+ * without ever having received the positive base, and its local stats would
+ * permanently underflow.
+ */
+static void reparent_v2_lruvec_state_local(struct mem_cgroup *memcg, struct mem_cgroup *parent)
+{
+	int i;
+
+	for (i = 0; i < NR_LRU_LISTS; i++)
+		reparent_memcg_lruvec_state_local(memcg, parent, NR_LRU_BASE + i);
+
+	reparent_memcg_lruvec_state_local(memcg, parent, NR_SLAB_RECLAIMABLE_B);
+	reparent_memcg_lruvec_state_local(memcg, parent, NR_SLAB_UNRECLAIMABLE_B);
+}
+ 
+static inline void reparent_state_local(struct mem_cgroup *memcg, struct mem_cgroup *parent)
+{
+	unsigned long flags;
+
+	/*
+	 * Reparent stats exposed non-hierarchically. Flush @memcg's stats first
+	 * to read its stats accurately , and conservatively flush @parent's
+	 * stats after reparenting to avoid hiding a potentially large stat
+	 * update (e.g. from callers of mem_cgroup_flush_stats_ratelimited()).
+	 *
+	 * Use do_flush_stats() rather than mem_cgroup_flush_stats() to force a
+	 * flush regardless of the pending-update threshold, matching upstream's
+	 * __mem_cgroup_flush_stats(memcg, true). Otherwise a below-threshold
+	 * delta on a dying memcg would be reparented stale.
+	 */
+	do_flush_stats(memcg);
+
+	/*
+	 * The following counts are all non-hierarchical and need to be reparented.
+	 *
+	 * reparent_memcg1_{,lruvec_}state_local() fold per-cpu stats via the
+	 * lockless __mod_memcg_{,lruvec_}state() variants, which require the
+	 * caller to have IRQs (and hence preemption) disabled -- normal update
+	 * paths (rmap, charge, fault) always are.  We are called from
+	 * css_killed_work_fn with IRQs enabled, so disable them across the fold,
+	 * otherwise __this_cpu_add() can race an interrupt and corrupt the per-cpu
+	 * counter (and CONFIG_DEBUG_VM trips memcg_stats_lock()'s assertions).
+	 *
+	 * Upstream commit c7163535cdaf ("memcg: move preempt disable to callers
+	 * of memcg_rstat_updated", v6.16) made these updaters irq-safe and dropped
+	 * the requirement; this base predates it, so honor the old invariant here.
+	 * Keep do_flush_stats() outside the region -- it may sleep.
+	 */
+	local_irq_save(flags);
+	if (cgroup_subsys_on_dfl(memory_cgrp_subsys)) {
+		reparent_v2_lruvec_state_local(memcg, parent);
+	} else {
+		/* The following counts are all non-hierarchical and need to be reparented. */
+		reparent_memcg1_state_local(memcg, parent);
+		reparent_memcg1_lruvec_state_local(memcg, parent);
+	}
+	local_irq_restore(flags);
+
+	do_flush_stats(parent);
+}
+
+static inline void reparent_locks(struct mem_cgroup *memcg, struct mem_cgroup *parent, int nid)
+{
+	spin_lock_irq(&objcg_lock);
+	spin_lock_nested(&mem_cgroup_lruvec(memcg, NODE_DATA(nid))->lru_lock, 1);
+	spin_lock_nested(&mem_cgroup_lruvec(parent, NODE_DATA(nid))->lru_lock, 2);
+}
+
+static inline void reparent_unlocks(struct mem_cgroup *memcg, struct mem_cgroup *parent, int nid)
+{
+	spin_unlock(&mem_cgroup_lruvec(parent, NODE_DATA(nid))->lru_lock);
+	spin_unlock(&mem_cgroup_lruvec(memcg, NODE_DATA(nid))->lru_lock);
 	spin_unlock_irq(&objcg_lock);
+}
 
-	percpu_ref_kill(&objcg->refcnt);
+static void memcg_reparent_objcgs(struct mem_cgroup *memcg)
+{
+	struct obj_cgroup *objcg;
+	struct mem_cgroup *parent = parent_mem_cgroup(memcg);
+	int nid;
+
+	for_each_node(nid) {
+retry:
+		if (lru_gen_enabled())
+			max_lru_gen_memcg(parent, nid);
+
+		reparent_locks(memcg, parent, nid);
+
+		if (lru_gen_enabled()) {
+			if (!recheck_lru_gen_max_memcg(parent, nid)) {
+				reparent_unlocks(memcg, parent, nid);
+				cond_resched();
+				goto retry;
+			}
+			lru_gen_reparent_memcg(memcg, parent, nid);
+		} else {
+			lru_reparent_memcg(memcg, parent, nid);
+		}
+
+		objcg = __memcg_reparent_objcgs(memcg, parent, nid);
+
+		reparent_unlocks(memcg, parent, nid);
+
+		percpu_ref_kill(&objcg->refcnt);
+	}
+
+	reparent_state_local(memcg, parent);
 }
 
 /*
@@ -382,7 +513,7 @@ EXPORT_SYMBOL(memcg_bpf_enabled_key);
 #endif
 
 /**
- * mem_cgroup_css_from_folio - css of the memcg associated with a folio
+ * get_mem_cgroup_css_from_folio - acquire a css of the memcg associated with a folio
  * @folio: folio of interest
  *
  * If memcg is bound to the default hierarchy, css of the memcg associated
@@ -392,19 +523,20 @@ EXPORT_SYMBOL(memcg_bpf_enabled_key);
  * If memcg is bound to a traditional hierarchy, the css of root_mem_cgroup
  * is returned.
  */
-struct cgroup_subsys_state *mem_cgroup_css_from_folio(struct folio *folio)
+struct cgroup_subsys_state *get_mem_cgroup_css_from_folio(struct folio *folio)
 {
-	struct mem_cgroup *memcg = folio_memcg(folio);
+	struct mem_cgroup *memcg;
 
 #ifdef CONFIG_CGROUP_WRITEBACK
-	if (!memcg ||
-	    (!cgroup_subsys_on_dfl(memory_cgrp_subsys) && !cgwb_v1))
+	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys) && !cgwb_v1)
 #else
-	if (!memcg || !cgroup_subsys_on_dfl(memory_cgrp_subsys))
+	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys))
 #endif
-		memcg = root_mem_cgroup;
+		return &root_mem_cgroup->css;
 
-	return &memcg->css;
+	memcg = get_mem_cgroup_from_folio(folio);
+
+	return memcg ? &memcg->css : &root_mem_cgroup->css;
 }
 
 /**
@@ -598,6 +730,28 @@ mem_cgroup_largest_soft_limit_node(struct mem_cgroup_tree_per_node *mctz)
 	mz = __mem_cgroup_largest_soft_limit_node(mctz);
 	spin_unlock_irq(&mctz->lock);
 	return mz;
+}
+
+void __mod_memcg_lruvec_state(struct mem_cgroup_per_node *pn,
+			      enum node_stat_item idx, int val);
+
+static void reparent_memcg_lruvec_state_local(struct mem_cgroup *memcg,
+					      struct mem_cgroup *parent, int idx)
+{
+	int nid;
+
+	for_each_node(nid) {
+		struct lruvec *child_lruvec = mem_cgroup_lruvec(memcg, NODE_DATA(nid));
+		struct lruvec *parent_lruvec = mem_cgroup_lruvec(parent, NODE_DATA(nid));
+		unsigned long value = lruvec_page_state_local(child_lruvec, idx);
+		struct mem_cgroup_per_node *child_pn, *parent_pn;
+
+		child_pn = container_of(child_lruvec, struct mem_cgroup_per_node, lruvec);
+		parent_pn = container_of(parent_lruvec, struct mem_cgroup_per_node, lruvec);
+
+		__mod_memcg_lruvec_state(child_pn, idx, -value);
+		__mod_memcg_lruvec_state(parent_pn, idx, value);
+	}
 }
 
 /* Subset of vm_event_item to report for memcg event stats */
@@ -844,12 +998,13 @@ static int memcg_state_val_in_pages(int idx, int val)
  * @memcg: the memory cgroup
  * @idx: the stat item - can be enum memcg_stat_item or enum node_stat_item
  * @val: delta to add to the counter, can be negative
+ *
+ * Raw counter update against @memcg. Callers that want to redirect away from
+ * a dying memcg go through mod_memcg_state(); the reparenting path relies on
+ * this raw form to move stats between an explicit (child, parent) pair.
  */
 void __mod_memcg_state(struct mem_cgroup *memcg, int idx, int val)
 {
-	if (mem_cgroup_disabled())
-		return;
-
 	__this_cpu_add(memcg->vmstats_percpu->state[idx], val);
 	memcg_rstat_updated(memcg, memcg_state_val_in_pages(idx, val));
 }
@@ -866,14 +1021,19 @@ static unsigned long memcg_page_state_local(struct mem_cgroup *memcg, int idx)
 	return x;
 }
 
-void __mod_memcg_lruvec_state(struct lruvec *lruvec, enum node_stat_item idx,
+static void reparent_memcg_state_local(struct mem_cgroup *memcg,
+				       struct mem_cgroup *parent, int idx)
+{
+	unsigned long value = memcg_page_state_local(memcg, idx);
+
+	__mod_memcg_state(memcg, idx, -value);
+	__mod_memcg_state(parent, idx, value);
+}
+
+void __mod_memcg_lruvec_state(struct mem_cgroup_per_node *pn, enum node_stat_item idx,
 			      int val)
 {
-	struct mem_cgroup_per_node *pn;
-	struct mem_cgroup *memcg;
-
-	pn = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
-	memcg = pn->memcg;
+	struct mem_cgroup *memcg = pn->memcg;
 
 	/*
 	 * The caller from rmap relay on disabled preemption becase they never
@@ -924,7 +1084,7 @@ void __mod_lruvec_state(struct lruvec *lruvec, enum node_stat_item idx,
 
 	/* Update memcg and lruvec */
 	if (!mem_cgroup_disabled())
-		__mod_memcg_lruvec_state(lruvec, idx, val);
+		mod_memcg_lruvec_state(lruvec, idx, val);
 }
 
 void __mod_lruvec_page_state(struct page *page, enum node_stat_item idx,
@@ -1146,33 +1306,26 @@ struct mem_cgroup *get_mem_cgroup_from_mm(struct mm_struct *mm)
 }
 EXPORT_SYMBOL(get_mem_cgroup_from_mm);
 
-static __always_inline bool memcg_kmem_bypass(void)
-{
-	/* Allow remote memcg charging from any context. */
-	if (unlikely(active_memcg()))
-		return false;
-
-	/* Memcg to charge can't be determined. */
-	if (!in_task() || !current->mm || (current->flags & PF_KTHREAD))
-		return true;
-
-	return false;
-}
-
 /**
  * get_mem_cgroup_from_folio - Obtain a reference on a given folio's memcg.
  * @folio: folio from which memcg should be extracted.
+ *
+ * See folio_memcg() for folio->objcg/memcg binding rules.
  */
 struct mem_cgroup *get_mem_cgroup_from_folio(struct folio *folio)
 {
-	struct mem_cgroup *memcg = folio_memcg(folio);
+	struct mem_cgroup *memcg;
 
 	if (mem_cgroup_disabled())
 		return NULL;
 
+	if (!folio_memcg_charged(folio))
+		return root_mem_cgroup;
+
 	rcu_read_lock();
-	if (!memcg || WARN_ON_ONCE(!css_tryget(&memcg->css)))
-		memcg = root_mem_cgroup;
+	do {
+		memcg = folio_memcg(folio);
+	} while (unlikely(!css_tryget(&memcg->css)));
 	rcu_read_unlock();
 	return memcg;
 }
@@ -1550,23 +1703,6 @@ out:
 	}
 }
 
-#ifdef CONFIG_DEBUG_VM
-void lruvec_memcg_debug(struct lruvec *lruvec, struct folio *folio)
-{
-	struct mem_cgroup *memcg;
-
-	if (mem_cgroup_disabled())
-		return;
-
-	memcg = folio_memcg(folio);
-
-	if (!memcg)
-		VM_BUG_ON_FOLIO(!mem_cgroup_is_root(lruvec_memcg(lruvec)), folio);
-	else
-		VM_BUG_ON_FOLIO(lruvec_memcg(lruvec) != memcg, folio);
-}
-#endif
-
 /**
  * folio_lruvec_lock - Lock the lruvec for a folio.
  * @folio: Pointer to the folio.
@@ -1577,14 +1713,20 @@ void lruvec_memcg_debug(struct lruvec *lruvec, struct folio *folio)
  * - folio_memcg_lock()
  * - folio frozen (refcount of 0)
  *
- * Return: The lruvec this folio is on with its lock held.
+ * Return: The lruvec this folio is on with its lock held and rcu read lock held.
  */
 struct lruvec *folio_lruvec_lock(struct folio *folio)
 {
-	struct lruvec *lruvec = folio_lruvec(folio);
+	struct lruvec *lruvec;
 
+	rcu_read_lock();
+retry:
+	lruvec = folio_lruvec(folio);
 	spin_lock(&lruvec->lru_lock);
-	lruvec_memcg_debug(lruvec, folio);
+	if (unlikely(lruvec_memcg(lruvec) != folio_memcg(folio))) {
+		spin_unlock(&lruvec->lru_lock);
+		goto retry;
+	}
 
 	return lruvec;
 }
@@ -1600,14 +1742,20 @@ struct lruvec *folio_lruvec_lock(struct folio *folio)
  * - folio frozen (refcount of 0)
  *
  * Return: The lruvec this folio is on with its lock held and interrupts
- * disabled.
+ * disabled and rcu read lock held.
  */
 struct lruvec *folio_lruvec_lock_irq(struct folio *folio)
 {
-	struct lruvec *lruvec = folio_lruvec(folio);
+	struct lruvec *lruvec;
 
+	rcu_read_lock();
+retry:
+	lruvec = folio_lruvec(folio);
 	spin_lock_irq(&lruvec->lru_lock);
-	lruvec_memcg_debug(lruvec, folio);
+	if (unlikely(lruvec_memcg(lruvec) != folio_memcg(folio))) {
+		spin_unlock_irq(&lruvec->lru_lock);
+		goto retry;
+	}
 
 	return lruvec;
 }
@@ -1624,15 +1772,21 @@ struct lruvec *folio_lruvec_lock_irq(struct folio *folio)
  * - folio frozen (refcount of 0)
  *
  * Return: The lruvec this folio is on with its lock held and interrupts
- * disabled.
+ * disabled and rcu read lock held.
  */
 struct lruvec *folio_lruvec_lock_irqsave(struct folio *folio,
 		unsigned long *flags)
 {
-	struct lruvec *lruvec = folio_lruvec(folio);
+	struct lruvec *lruvec;
 
+	rcu_read_lock();
+retry:
+	lruvec = folio_lruvec(folio);
 	spin_lock_irqsave(&lruvec->lru_lock, *flags);
-	lruvec_memcg_debug(lruvec, folio);
+	if (unlikely(lruvec_memcg(lruvec) != folio_memcg(folio))) {
+		spin_unlock_irqrestore(&lruvec->lru_lock, *flags);
+		goto retry;
+	}
 
 	return lruvec;
 }
@@ -3212,11 +3366,11 @@ static inline void cancel_charge(struct mem_cgroup *memcg, unsigned int nr_pages
 		page_counter_uncharge(&memcg->memsw, nr_pages);
 }
 
-static void commit_charge(struct folio *folio, struct mem_cgroup *memcg)
+static void commit_charge(struct folio *folio, struct obj_cgroup *objcg)
 {
-	VM_BUG_ON_FOLIO(folio_memcg(folio), folio);
+	VM_BUG_ON_FOLIO(folio_memcg_charged(folio), folio);
 	/*
-	 * Any of the following ensures page's memcg stability:
+	 * Any of the following ensures folio's objcg stability:
 	 *
 	 * - the page lock
 	 * - LRU isolation
@@ -3224,7 +3378,7 @@ static void commit_charge(struct folio *folio, struct mem_cgroup *memcg)
 	 * - exclusive reference
 	 * - mem_cgroup_trylock_pages()
 	 */
-	folio->memcg_data = (unsigned long)memcg;
+	folio->memcg_data = (unsigned long)objcg;
 }
 
 #ifdef CONFIG_MEMCG_KMEM
@@ -3333,58 +3487,134 @@ struct mem_cgroup *mem_cgroup_from_slab_obj(void *p)
 	return mem_cgroup_from_obj_folio(virt_to_folio(p), p);
 }
 
-static struct obj_cgroup *__get_obj_cgroup_from_memcg(struct mem_cgroup *memcg)
+static struct obj_cgroup *__get_obj_cgroup_from_memcg(struct mem_cgroup *memcg,
+						      int nid)
 {
-	struct obj_cgroup *objcg = NULL;
+	for (; memcg; memcg = parent_mem_cgroup(memcg)) {
+		struct obj_cgroup *objcg = rcu_dereference(memcg->nodeinfo[nid]->objcg);
 
-	for (; !mem_cgroup_is_root(memcg); memcg = parent_mem_cgroup(memcg)) {
-		objcg = rcu_dereference(memcg->objcg);
-		if (objcg && obj_cgroup_tryget(objcg))
-			break;
-		objcg = NULL;
+		if (likely(objcg && obj_cgroup_tryget(objcg)))
+			return objcg;
 	}
+
+	return NULL;
+}
+
+static inline struct obj_cgroup *get_obj_cgroup_from_memcg(struct mem_cgroup *memcg,
+							   int nid)
+{
+	struct obj_cgroup *objcg;
+
+	rcu_read_lock();
+	objcg = __get_obj_cgroup_from_memcg(memcg, nid);
+	rcu_read_unlock();
+
 	return objcg;
 }
 
-__always_inline struct obj_cgroup *get_obj_cgroup_from_current(void)
+static struct obj_cgroup *current_objcg_update(void)
 {
-	struct obj_cgroup *objcg = NULL;
 	struct mem_cgroup *memcg;
+	struct obj_cgroup *old, *objcg = NULL;
 
-	if (memcg_kmem_bypass())
-		return NULL;
+	do {
+		/* Atomically drop the update bit. */
+		old = xchg(&current->objcg, NULL);
+		if (old) {
+			old = (struct obj_cgroup *)
+				((unsigned long)old & ~CURRENT_OBJCG_UPDATE_FLAG);
+			if (old)
+				obj_cgroup_put(old);
 
-	rcu_read_lock();
-	if (unlikely(active_memcg()))
-		memcg = active_memcg();
-	else
+			old = NULL;
+		}
+
+		/* If new objcg is NULL, no reason for the second atomic update. */
+		if (!current->mm || (current->flags & PF_KTHREAD))
+			return NULL;
+
+		/*
+		 * Release the objcg pointer from the previous iteration,
+		 * if try_cmpxcg() below fails.
+		 */
+		if (unlikely(objcg)) {
+			obj_cgroup_put(objcg);
+			objcg = NULL;
+		}
+
+		/*
+		 * Obtain the new objcg pointer. The current task can be
+		 * asynchronously moved to another memcg and the previous
+		 * memcg can be offlined. So let's get the memcg pointer
+		 * and try get a reference to objcg under a rcu read lock.
+		 */
+
+		rcu_read_lock();
 		memcg = mem_cgroup_from_task(current);
-	objcg = __get_obj_cgroup_from_memcg(memcg);
-	rcu_read_unlock();
+		objcg = __get_obj_cgroup_from_memcg(memcg, numa_node_id());
+		rcu_read_unlock();
+
+		/*
+		 * Try set up a new objcg pointer atomically. If it
+		 * fails, it means the update flag was set concurrently, so
+		 * the whole procedure should be repeated.
+		 */
+	} while (!try_cmpxchg(&current->objcg, &old, objcg));
+
 	return objcg;
+}
+
+__always_inline struct obj_cgroup *current_obj_cgroup(void)
+{
+	struct mem_cgroup *memcg;
+	struct obj_cgroup *objcg;
+	int nid = numa_node_id();
+
+	if (in_task()) {
+		memcg = current->active_memcg;
+		if (unlikely(memcg))
+			goto from_memcg;
+
+		objcg = READ_ONCE(current->objcg);
+		if (unlikely((unsigned long)objcg & CURRENT_OBJCG_UPDATE_FLAG))
+			objcg = current_objcg_update();
+		/*
+		 * Objcg reference is kept by the task, so it's safe
+		 * to use the objcg by the current task.
+		 */
+		return objcg ? : rcu_dereference_check(root_mem_cgroup->nodeinfo[nid]->objcg, 1);
+	}
+
+	memcg = this_cpu_read(int_active_memcg);
+	if (unlikely(memcg))
+		goto from_memcg;
+
+	return rcu_dereference_check(root_mem_cgroup->nodeinfo[nid]->objcg, 1);
+
+from_memcg:
+	for (; memcg; memcg = parent_mem_cgroup(memcg)) {
+		/*
+		 * Memcg pointer is protected by scope (see set_active_memcg())
+		 * and is pinning the corresponding objcg, so objcg can't go
+		 * away and can be used within the scope without any additional
+		 * protection.
+		 */
+		objcg = rcu_dereference_check(memcg->nodeinfo[nid]->objcg, 1);
+		if (likely(objcg))
+			return objcg;
+	}
+
+	return rcu_dereference_check(root_mem_cgroup->nodeinfo[nid]->objcg, 1);
 }
 
 struct obj_cgroup *get_obj_cgroup_from_folio(struct folio *folio)
 {
 	struct obj_cgroup *objcg;
 
-	if (!memcg_kmem_online())
-		return NULL;
-
-	if (folio_memcg_kmem(folio)) {
-		objcg = __folio_objcg(folio);
+	objcg = folio_objcg(folio);
+	if (objcg)
 		obj_cgroup_get(objcg);
-	} else {
-		struct mem_cgroup *memcg;
 
-		rcu_read_lock();
-		memcg = __folio_memcg(folio);
-		if (memcg)
-			objcg = __get_obj_cgroup_from_memcg(memcg);
-		else
-			objcg = NULL;
-		rcu_read_unlock();
-	}
 	return objcg;
 }
 
@@ -3458,15 +3688,15 @@ int __memcg_kmem_charge_page(struct page *page, gfp_t gfp, int order)
 	struct obj_cgroup *objcg;
 	int ret = 0;
 
-	objcg = get_obj_cgroup_from_current();
-	if (objcg) {
+	objcg = current_obj_cgroup();
+	if (objcg && !obj_cgroup_is_root(objcg)) {
 		ret = obj_cgroup_charge_pages(objcg, gfp, 1 << order);
 		if (!ret) {
+			obj_cgroup_get(objcg);
 			page->memcg_data = (unsigned long)objcg |
 				MEMCG_DATA_KMEM;
 			return 0;
 		}
-		obj_cgroup_put(objcg);
 	}
 	return ret;
 }
@@ -3485,7 +3715,7 @@ void __memcg_kmem_uncharge_page(struct page *page, int order)
 	if (!folio_memcg_kmem(folio))
 		return;
 
-	objcg = __folio_objcg(folio);
+	objcg = folio_objcg(folio);
 	obj_cgroup_uncharge_pages(objcg, nr_pages);
 	folio->memcg_data = 0;
 	obj_cgroup_put(objcg);
@@ -3745,19 +3975,18 @@ void obj_cgroup_uncharge(struct obj_cgroup *objcg, size_t size)
 void split_page_memcg(struct page *head, unsigned int nr)
 {
 	struct folio *folio = page_folio(head);
-	struct mem_cgroup *memcg = folio_memcg(folio);
 	int i;
 
-	if (mem_cgroup_disabled() || !memcg)
+	if (mem_cgroup_disabled() || !folio_memcg_charged(folio))
 		return;
 
 	for (i = 1; i < nr; i++)
 		folio_page(folio, i)->memcg_data = folio->memcg_data;
 
 	if (folio_memcg_kmem(folio))
-		obj_cgroup_get_many(__folio_objcg(folio), nr - 1);
+		obj_cgroup_get_many(folio_objcg(folio), nr - 1);
 	else
-		css_get_many(&memcg->css, nr - 1);
+		obj_cgroup_get_many(folio_objcg(folio), nr - 1);
 }
 
 #ifdef CONFIG_SWAP
@@ -4139,28 +4368,17 @@ static int mem_cgroup_dummy_seq_show(__always_unused struct seq_file *m,
 }
 
 #ifdef CONFIG_MEMCG_KMEM
-static int memcg_online_kmem(struct mem_cgroup *memcg)
+static void memcg_online_kmem(struct mem_cgroup *memcg)
 {
-	struct obj_cgroup *objcg;
-
 	if (mem_cgroup_kmem_disabled())
-		return 0;
+		return;
 
 	if (unlikely(mem_cgroup_is_root(memcg)))
-		return 0;
-
-	objcg = obj_cgroup_alloc();
-	if (!objcg)
-		return -ENOMEM;
-
-	objcg->memcg = memcg;
-	rcu_assign_pointer(memcg->objcg, objcg);
+		return;
 
 	static_branch_enable(&memcg_kmem_online_key);
 
 	memcg->kmemcg_id = memcg->id.id;
-
-	return 0;
 }
 
 static void memcg_offline_kmem(struct mem_cgroup *memcg)
@@ -4174,21 +4392,11 @@ static void memcg_offline_kmem(struct mem_cgroup *memcg)
 		return;
 
 	parent = parent_mem_cgroup(memcg);
-	if (!parent)
-		parent = root_mem_cgroup;
-
 	memcg_reparent_list_lrus(memcg, parent);
-
-	/*
-	 * Objcg's reparenting must be after list_lru's, make sure list_lru
-	 * helpers won't use parent's list_lru until child is drained.
-	 */
-	memcg_reparent_objcgs(memcg, parent);
 }
 #else
-static int memcg_online_kmem(struct mem_cgroup *memcg)
+static void memcg_online_kmem(struct mem_cgroup *memcg)
 {
-	return 0;
 }
 static void memcg_offline_kmem(struct mem_cgroup *memcg)
 {
@@ -4775,6 +4983,14 @@ static const unsigned int memcg1_events[] = {
 	PGFAULT,
 	PGMAJFAULT,
 };
+
+static void reparent_memcg1_state_local(struct mem_cgroup *memcg, struct mem_cgroup *parent)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(memcg1_stats); i++)
+		reparent_memcg_state_local(memcg, parent, memcg1_stats[i]);
+}
 
 static void memcg1_stat_format(struct mem_cgroup *memcg, struct seq_buf *s)
 {
@@ -7031,8 +7247,6 @@ static void mem_cgroup_id_remove(struct mem_cgroup *memcg)
 		spin_unlock(&memcg_idr_lock);
 
 		memcg->id.id = 0;
-		/* Indicates the memcg is dying for list_lru. */
-		memcg->kmemcg_id = 0;
 	}
 }
 
@@ -7107,6 +7321,8 @@ static int alloc_mem_cgroup_per_node_info(struct mem_cgroup *memcg, int node)
 		return 1;
 	}
 
+	INIT_LIST_HEAD(&pn->objcg_list);
+
 	lruvec_init(&pn->lruvec);
 	pn->memcg = memcg;
 
@@ -7129,8 +7345,15 @@ static void __mem_cgroup_free(struct mem_cgroup *memcg)
 {
 	int node;
 
-	for_each_node(node)
+	for_each_node(node) {
+		struct mem_cgroup_per_node *pn = memcg->nodeinfo[node];
+		if (!pn)
+			continue;
+
+		obj_cgroup_put(pn->orig_objcg);
 		free_mem_cgroup_per_node_info(memcg, node);
+	}
+
 	kfree(memcg->vmstats);
 #ifdef CONFIG_RECLAIM_COLDPGS
 	free_percpu(memcg->coldpgs_stats);
@@ -7227,7 +7450,6 @@ static struct mem_cgroup *mem_cgroup_alloc(struct mem_cgroup *parent)
 	memcg->socket_pressure = jiffies;
 #ifdef CONFIG_MEMCG_KMEM
 	memcg->kmemcg_id = -1;
-	INIT_LIST_HEAD(&memcg->objcg_list);
 #endif
 #ifdef CONFIG_CGROUP_WRITEBACK
 	INIT_LIST_HEAD(&memcg->cgwb_list);
@@ -7332,9 +7554,10 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 static int mem_cgroup_css_online(struct cgroup_subsys_state *css)
 {
 	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+	struct obj_cgroup *objcg;
+	int nid;
 
-	if (memcg_online_kmem(memcg))
-		goto remove_id;
+	memcg_online_kmem(memcg);
 
 	/*
 	 * A memcg must be visible for expand_shrinker_info()
@@ -7343,6 +7566,20 @@ static int mem_cgroup_css_online(struct cgroup_subsys_state *css)
 	 */
 	if (alloc_shrinker_info(memcg))
 		goto offline_kmem;
+
+	for_each_node(nid) {
+		objcg = obj_cgroup_alloc();
+		if (!objcg)
+			goto free_objcg;
+
+		if (unlikely(mem_cgroup_is_root(memcg)))
+			objcg->is_root = true;
+
+		objcg->memcg = memcg;
+		rcu_assign_pointer(memcg->nodeinfo[nid]->objcg, objcg);
+		obj_cgroup_get(objcg);
+		memcg->nodeinfo[nid]->orig_objcg = objcg;
+	}
 
 	if (unlikely(mem_cgroup_is_root(memcg)))
 		queue_delayed_work(system_unbound_wq, &stats_flush_dwork,
@@ -7368,9 +7605,27 @@ static int mem_cgroup_css_online(struct cgroup_subsys_state *css)
 	spin_unlock(&memcg_idr_lock);
 
 	return 0;
+free_objcg:
+	for_each_node(nid) {
+		struct mem_cgroup_per_node *pn = memcg->nodeinfo[nid];
+
+		objcg = rcu_replace_pointer(pn->objcg, NULL, true);
+		if (objcg)
+			percpu_ref_kill(&objcg->refcnt);
+
+		if (pn->orig_objcg) {
+			obj_cgroup_put(pn->orig_objcg);
+			/*
+			 * Reset pn->orig_objcg to NULL to prevent
+			 * obj_cgroup_put() from being called again in
+			 * __mem_cgroup_free().
+			 */
+			pn->orig_objcg = NULL;
+		}
+	}
+	free_shrinker_info(memcg);
 offline_kmem:
 	memcg_offline_kmem(memcg);
-remove_id:
 	mem_cgroup_id_remove(memcg);
 	return -ENOMEM;
 }
@@ -7401,6 +7656,12 @@ static void mem_cgroup_css_offline(struct cgroup_subsys_state *css)
 	page_counter_set_wmark_high(&memcg->memory, PAGE_COUNTER_MAX);
 
 	memcg_offline_kmem(memcg);
+	/*
+	 * The reparenting of objcg must be after the reparenting of the
+	 * list_lru above (which is done in memcg_offline_kmem), which
+	 * ensures that they will not mistakenly get the parent list_lru.
+	 */
+	memcg_reparent_objcgs(memcg);
 	reparent_shrinker_deferred(memcg);
 	wb_memcg_offline(memcg);
 	lru_gen_offline_memcg(memcg);
@@ -7716,6 +7977,7 @@ static int mem_cgroup_move_account(struct page *page,
 				   struct mem_cgroup *to)
 {
 	struct folio *folio = page_folio(page);
+	struct obj_cgroup *objcg, *old_objcg;
 	struct lruvec *from_vec, *to_vec;
 	struct pglist_data *pgdat;
 	unsigned int nr_pages = compound ? folio_nr_pages(folio) : 1;
@@ -7727,7 +7989,21 @@ static int mem_cgroup_move_account(struct page *page,
 	VM_BUG_ON(compound && !folio_test_large(folio));
 
 	ret = -EINVAL;
-	if (folio_memcg(folio) != from)
+	rcu_read_lock();
+	if (folio_memcg(folio) != from) {
+		rcu_read_unlock();
+		goto out;
+	}
+	rcu_read_unlock();
+
+	/*
+	 * In the LRU-reparent model a folio pins its memory cgroup through an
+	 * obj_cgroup reference, not a css reference.  Grab an objcg for the
+	 * destination memcg so the switch below can transfer the folio's objcg
+	 * reference instead of (incorrectly) moving css references.
+	 */
+	objcg = get_obj_cgroup_from_memcg(to, folio_nid(folio));
+	if (!objcg)
 		goto out;
 
 	pgdat = folio_pgdat(folio);
@@ -7799,12 +8075,18 @@ static int mem_cgroup_move_account(struct page *page,
 	 */
 	smp_mb();
 
-	css_get(&to->css);
-	css_put(&from->css);
-
 	/* Warning should never happen, so don't worry about refcount non-0 */
 	WARN_ON_ONCE(folio_unqueue_deferred_split(folio));
-	folio->memcg_data = (unsigned long)to;
+
+	/*
+	 * Transfer the folio's obj_cgroup reference: point memcg_data at the
+	 * destination memcg's objcg and drop the reference on the old one.
+	 * The folio stores an obj_cgroup pointer with the low flag bits clear,
+	 * preserving the encoding relied on by folio_objcg()/folio_memcg().
+	 */
+	old_objcg = folio_objcg(folio);
+	folio->memcg_data = (unsigned long)objcg;
+	obj_cgroup_put(old_objcg);
 
 	__folio_memcg_unlock(from);
 
@@ -8344,6 +8626,7 @@ static void mem_cgroup_move_task(void)
 		mem_cgroup_clear_mc();
 	}
 }
+
 #else	/* !CONFIG_MMU */
 static int mem_cgroup_can_attach(struct cgroup_taskset *tset)
 {
@@ -8357,8 +8640,42 @@ static void mem_cgroup_move_task(void)
 }
 #endif
 
+static void mem_cgroup_fork(struct task_struct *task)
+{
+#ifdef CONFIG_MEMCG_KMEM
+	/*
+	 * Set the update flag to cause task->objcg to be initialized lazily
+	 * on the first allocation. It can be done without any synchronization
+	 * because it's always performed on the current task, so does
+	 * current_objcg_update().
+	 */
+	task->objcg = (struct obj_cgroup *)CURRENT_OBJCG_UPDATE_FLAG;
+#endif
+	unevict_task_fork(task);
+}
+
+#ifdef CONFIG_MEMCG_KMEM
+static void mem_cgroup_exit(struct task_struct *task)
+{
+	struct obj_cgroup *objcg = task->objcg;
+
+	objcg = (struct obj_cgroup *)
+		((unsigned long)objcg & ~CURRENT_OBJCG_UPDATE_FLAG);
+	if (objcg)
+		obj_cgroup_put(objcg);
+
+	/*
+	 * Some kernel allocations can happen after this point,
+	 * but let's ignore them. It can be done without any synchronization
+	 * because it's always performed on the current task, so does
+	 * current_objcg_update().
+	 */
+	task->objcg = NULL;
+}
+#endif
+
 #ifdef CONFIG_LRU_GEN
-static void mem_cgroup_attach(struct cgroup_taskset *tset)
+static void mem_cgroup_lru_gen_attach(struct cgroup_taskset *tset)
 {
 	struct task_struct *task;
 	struct cgroup_subsys_state *css;
@@ -8374,20 +8691,34 @@ static void mem_cgroup_attach(struct cgroup_taskset *tset)
 	if (task->mm && READ_ONCE(task->mm->owner) == task)
 		lru_gen_migrate_mm(task->mm);
 	task_unlock(task);
-
-	mem_cgroup_attach_unevictable(tset);
 }
 #else
-static void mem_cgroup_attach(struct cgroup_taskset *tset)
-{
-	mem_cgroup_attach_unevictable(tset);
-}
+static void mem_cgroup_lru_gen_attach(struct cgroup_taskset *tset) {}
 #endif /* CONFIG_LRU_GEN */
 
-static void mem_cgroup_fork(struct task_struct *task)
+#ifdef CONFIG_MEMCG_KMEM
+static void mem_cgroup_kmem_attach(struct cgroup_taskset *tset)
 {
-	unevict_task_fork(task);
+	struct task_struct *task;
+	struct cgroup_subsys_state *css;
+
+	cgroup_taskset_for_each(task, css, tset) {
+		/* atomically set the update bit */
+		set_bit(CURRENT_OBJCG_UPDATE_BIT, (unsigned long *)&task->objcg);
+	}
 }
+#else
+static void mem_cgroup_kmem_attach(struct cgroup_taskset *tset) {}
+#endif /* CONFIG_MEMCG_KMEM */
+
+#if defined(CONFIG_LRU_GEN) || defined(CONFIG_MEMCG_KMEM) || defined(CONFIG_TEXT_UNEVICTABLE)
+static void mem_cgroup_attach(struct cgroup_taskset *tset)
+{
+	mem_cgroup_lru_gen_attach(tset);
+	mem_cgroup_kmem_attach(tset);
+	mem_cgroup_attach_unevictable(tset);
+}
+#endif
 
 static int seq_puts_memcg_tunable(struct seq_file *m, unsigned long value)
 {
@@ -9047,9 +9378,14 @@ struct cgroup_subsys memory_cgrp_subsys = {
 	.css_reset = mem_cgroup_css_reset,
 	.css_rstat_flush = mem_cgroup_css_rstat_flush,
 	.can_attach = mem_cgroup_can_attach,
+#if defined(CONFIG_LRU_GEN) || defined(CONFIG_MEMCG_KMEM)
 	.attach = mem_cgroup_attach,
+#endif
 	.cancel_attach = mem_cgroup_cancel_attach,
 	.fork = mem_cgroup_fork,
+#ifdef CONFIG_MEMCG_KMEM
+	.exit = mem_cgroup_exit,
+#endif
 	.post_attach = mem_cgroup_move_task,
 	.dfl_cftypes = memory_files,
 	.legacy_cftypes = mem_cgroup_legacy_files,
@@ -9231,20 +9567,24 @@ static int charge_memcg(struct folio *folio, struct mem_cgroup *memcg,
 			gfp_t gfp)
 {
 	long nr_pages = folio_nr_pages(folio);
-	int ret;
+	int ret = 0;
+	struct obj_cgroup *objcg;
 
-	ret = try_charge(memcg, gfp, nr_pages);
-	if (ret)
-		goto out;
-
-	css_get(&memcg->css);
-	commit_charge(folio, memcg);
+	objcg = get_obj_cgroup_from_memcg(memcg, folio_nid(folio));
+	/* Do not account at the root objcg level. */
+	if (!obj_cgroup_is_root(objcg))
+		ret = try_charge_memcg(memcg, gfp, folio_nr_pages(folio));
+	if (ret) {
+		obj_cgroup_put(objcg);
+		return ret;
+	}
+	commit_charge(folio, objcg);
 
 	local_irq_disable();
 	mem_cgroup_charge_statistics(memcg, nr_pages);
 	memcg_check_events(memcg, folio_nid(folio));
 	local_irq_enable();
-out:
+
 	return ret;
 }
 
@@ -9330,7 +9670,7 @@ void mem_cgroup_swapin_uncharge_swap(swp_entry_t entry, unsigned int nr_pages)
 }
 
 struct uncharge_gather {
-	struct mem_cgroup *memcg;
+	struct obj_cgroup *objcg;
 	unsigned long nr_memory;
 	unsigned long pgpgout;
 	unsigned long nr_kmem;
@@ -9345,63 +9685,56 @@ static inline void uncharge_gather_clear(struct uncharge_gather *ug)
 static void uncharge_batch(const struct uncharge_gather *ug)
 {
 	unsigned long flags;
+	struct mem_cgroup *memcg;
 
+	rcu_read_lock();
+	memcg = obj_cgroup_memcg(ug->objcg);
 	if (ug->nr_memory) {
-		page_counter_uncharge(&ug->memcg->memory, ug->nr_memory);
+		page_counter_uncharge(&memcg->memory, ug->nr_memory);
 		if (do_memsw_account())
-			page_counter_uncharge(&ug->memcg->memsw, ug->nr_memory);
+			page_counter_uncharge(&memcg->memsw, ug->nr_memory);
 		if (ug->nr_kmem)
-			memcg_account_kmem(ug->memcg, -ug->nr_kmem);
-		memcg_oom_recover(ug->memcg);
+			memcg_account_kmem(memcg, -ug->nr_kmem);
+		memcg_oom_recover(memcg);
 	}
 
 	local_irq_save(flags);
-	__count_memcg_events(ug->memcg, PGPGOUT, ug->pgpgout);
-	__this_cpu_add(ug->memcg->vmstats_percpu->nr_page_events, ug->nr_memory);
-	memcg_check_events(ug->memcg, ug->nid);
+	__count_memcg_events(memcg, PGPGOUT, ug->pgpgout);
+	__this_cpu_add(memcg->vmstats_percpu->nr_page_events, ug->nr_memory);
+	memcg_check_events(memcg, ug->nid);
 	local_irq_restore(flags);
+	rcu_read_unlock();
 
 	/* drop reference from uncharge_folio */
-	css_put(&ug->memcg->css);
+	obj_cgroup_put(ug->objcg);
 }
 
 static void uncharge_folio(struct folio *folio, struct uncharge_gather *ug)
 {
 	long nr_pages;
-	struct mem_cgroup *memcg;
 	struct obj_cgroup *objcg;
 
 	VM_BUG_ON_FOLIO(folio_test_lru(folio), folio);
 
 	/*
 	 * Nobody should be changing or seriously looking at
-	 * folio memcg or objcg at this point, we have fully
-	 * exclusive access to the folio.
+	 * folio objcg at this point, we have fully exclusive
+	 * access to the folio.
 	 */
-	if (folio_memcg_kmem(folio)) {
-		objcg = __folio_objcg(folio);
-		/*
-		 * This get matches the put at the end of the function and
-		 * kmem pages do not hold memcg references anymore.
-		 */
-		memcg = get_mem_cgroup_from_objcg(objcg);
-	} else {
-		memcg = __folio_memcg(folio);
-	}
-
-	if (!memcg)
+	objcg = folio_objcg(folio);
+	if (!objcg)
 		return;
 
-	if (ug->memcg != memcg) {
-		if (ug->memcg) {
+	if (ug->objcg != objcg) {
+		if (ug->objcg) {
 			uncharge_batch(ug);
 			uncharge_gather_clear(ug);
 		}
-		ug->memcg = memcg;
+		ug->objcg = objcg;
 		ug->nid = folio_nid(folio);
 
-		/* pairs with css_put in uncharge_batch */
-		css_get(&memcg->css);
+		/* pairs with obj_cgroup_put in uncharge_batch */
+		obj_cgroup_get(objcg);
 	}
 
 	nr_pages = folio_nr_pages(folio);
@@ -9409,20 +9742,17 @@ static void uncharge_folio(struct folio *folio, struct uncharge_gather *ug)
 	if (folio_memcg_kmem(folio)) {
 		ug->nr_memory += nr_pages;
 		ug->nr_kmem += nr_pages;
-
-		folio->memcg_data = 0;
-		obj_cgroup_put(objcg);
 	} else {
 		/* LRU pages aren't accounted at the root level */
-		if (!mem_cgroup_is_root(memcg))
+		if (!obj_cgroup_is_root(objcg))
 			ug->nr_memory += nr_pages;
 		ug->pgpgout++;
 
 		WARN_ON_ONCE(folio_unqueue_deferred_split(folio));
-		folio->memcg_data = 0;
 	}
 
-	css_put(&memcg->css);
+	folio->memcg_data = 0;
+	obj_cgroup_put(objcg);
 }
 
 void __mem_cgroup_uncharge(struct folio *folio)
@@ -9430,7 +9760,7 @@ void __mem_cgroup_uncharge(struct folio *folio)
 	struct uncharge_gather ug;
 
 	/* Don't touch folio->lru of any random page, pre-check: */
-	if (!folio_memcg(folio))
+	if (!folio_memcg_charged(folio))
 		return;
 
 	uncharge_gather_clear(&ug);
@@ -9453,7 +9783,7 @@ void __mem_cgroup_uncharge_list(struct list_head *page_list)
 	uncharge_gather_clear(&ug);
 	list_for_each_entry(folio, page_list, lru)
 		uncharge_folio(folio, &ug);
-	if (ug.memcg)
+	if (ug.objcg)
 		uncharge_batch(&ug);
 }
 
@@ -9465,8 +9795,48 @@ void __mem_cgroup_uncharge_folios(struct folio_batch *folios)
 	uncharge_gather_clear(&ug);
 	for (i = 0; i < folios->nr; i++)
 		uncharge_folio(folios->folios[i], &ug);
-	if (ug.memcg)
+	if (ug.objcg)
 		uncharge_batch(&ug);
+}
+
+/*
+ * An LRU folio must hold the objcg belonging to its own node.
+ *
+ * memcg_reparent_objcgs() reparents a dying cgroup one node at a time: the
+ * folios on that node's LRU lists move to the parent and that node's objcg is
+ * redirected to the parent, atomically under the node's lru_lock.
+ * folio_lruvec_lock() relies on this to provide a stable folio<->lruvec
+ * binding. If a folio holds another node's objcg, its list membership and its
+ * lruvec resolution change in separate lock sections, and an LRU operation in
+ * between can re-add the folio to, and strand it on, the LRU list of a dead
+ * memcg.
+ *
+ * So when migration transfers the memcg state to a folio on another node,
+ * re-derive the objcg for the destination node. If the memcg is dying and the
+ * destination node has already been reparented, the lookup walks up to the
+ * nearest live ancestor - which is also where that node's LRU lists went.
+ *
+ * Returns the objcg to commit to @new, with a reference for the caller.
+ */
+static struct obj_cgroup *get_migration_objcg(struct folio *old,
+					      struct folio *new)
+{
+	struct obj_cgroup *old_objcg, *new_objcg;
+	int new_nid = folio_nid(new);
+
+	old_objcg = get_obj_cgroup_from_folio(old);
+
+	if (folio_nid(old) == new_nid)
+		return old_objcg;
+
+	rcu_read_lock();
+	new_objcg = __get_obj_cgroup_from_memcg(obj_cgroup_memcg(old_objcg),
+						new_nid);
+	rcu_read_unlock();
+
+	obj_cgroup_put(old_objcg);
+
+	return new_objcg;
 }
 
 /**
@@ -9482,6 +9852,7 @@ void __mem_cgroup_uncharge_folios(struct folio_batch *folios)
 void mem_cgroup_migrate(struct folio *old, struct folio *new)
 {
 	struct mem_cgroup *memcg;
+	struct obj_cgroup *objcg, *new_objcg;
 	long nr_pages = folio_nr_pages(new);
 	unsigned long flags;
 
@@ -9494,28 +9865,47 @@ void mem_cgroup_migrate(struct folio *old, struct folio *new)
 		return;
 
 	/* Page cache replacement: new folio already charged? */
-	if (folio_memcg(new))
+	if (folio_memcg_charged(new))
 		return;
 
-	memcg = folio_memcg(old);
-	VM_WARN_ON_ONCE_FOLIO(!memcg, old);
-	if (!memcg)
+	objcg = folio_objcg(old);
+	VM_WARN_ON_ONCE_FOLIO(!objcg, old);
+	if (!objcg)
 		return;
 
+	new_objcg = get_migration_objcg(old, new);
+
+	rcu_read_lock();
+	memcg = obj_cgroup_memcg(new_objcg);
 	/* Force-charge the new page. The old one will be freed soon */
-	if (!mem_cgroup_is_root(memcg)) {
+	if (!obj_cgroup_is_root(new_objcg)) {
 		page_counter_charge(&memcg->memory, nr_pages);
 		if (do_memsw_account())
 			page_counter_charge(&memcg->memsw, nr_pages);
 	}
 
-	css_get(&memcg->css);
-	commit_charge(new, memcg);
+	/*
+	 * @old was charged through a non-root objcg, so its charge is in the
+	 * page counters. If the re-derivation walked up to the root objcg -
+	 * @old's entire ancestry is dying and already reparented - the final
+	 * uncharge of @new will skip the page counters (see uncharge_folio()).
+	 * Settle them now: this is @old's eventual uncharge, moved up to the
+	 * point where its charge record ends.
+	 */
+	if (obj_cgroup_is_root(new_objcg) && !obj_cgroup_is_root(objcg)) {
+		page_counter_uncharge(&obj_cgroup_memcg(objcg)->memory,
+				      folio_nr_pages(old));
+		if (do_memsw_account())
+			page_counter_uncharge(&obj_cgroup_memcg(objcg)->memsw,
+					      folio_nr_pages(old));
+	}
 
+	commit_charge(new, new_objcg);
 	local_irq_save(flags);
 	mem_cgroup_charge_statistics(memcg, nr_pages);
 	memcg_check_events(memcg, folio_nid(new));
 	local_irq_restore(flags);
+	rcu_read_unlock();
 }
 
 DEFINE_STATIC_KEY_FALSE(memcg_sockets_enabled_key);
@@ -9759,8 +10149,6 @@ static struct mem_cgroup *mem_cgroup_id_get_online(struct mem_cgroup *memcg)
 			break;
 		}
 		memcg = parent_mem_cgroup(memcg);
-		if (!memcg)
-			memcg = root_mem_cgroup;
 	}
 	return memcg;
 }
@@ -9775,6 +10163,7 @@ static struct mem_cgroup *mem_cgroup_id_get_online(struct mem_cgroup *memcg)
 void mem_cgroup_swapout(struct folio *folio, swp_entry_t entry)
 {
 	struct mem_cgroup *memcg, *swap_memcg;
+	struct obj_cgroup *objcg;
 	unsigned int nr_entries;
 	unsigned short oldid;
 
@@ -9787,11 +10176,13 @@ void mem_cgroup_swapout(struct folio *folio, swp_entry_t entry)
 	if (!do_memsw_account())
 		return;
 
-	memcg = folio_memcg(folio);
-
-	VM_WARN_ON_ONCE_FOLIO(!memcg, folio);
-	if (!memcg)
+	objcg = folio_objcg(folio);
+	VM_WARN_ON_ONCE_FOLIO(!objcg, folio);
+	if (!objcg)
 		return;
+
+	rcu_read_lock();
+	memcg = obj_cgroup_memcg(objcg);
 
 	/*
 	 * In case the memcg owning these pages has been offlined and doesn't
@@ -9811,7 +10202,7 @@ void mem_cgroup_swapout(struct folio *folio, swp_entry_t entry)
 	folio_unqueue_deferred_split(folio);
 	folio->memcg_data = 0;
 
-	if (!mem_cgroup_is_root(memcg))
+	if (!obj_cgroup_is_root(objcg))
 		page_counter_uncharge(&memcg->memory, nr_entries);
 
 	if (memcg != swap_memcg) {
@@ -9831,7 +10222,9 @@ void mem_cgroup_swapout(struct folio *folio, swp_entry_t entry)
 	memcg_stats_unlock();
 	memcg_check_events(memcg, folio_nid(folio));
 
-	css_put(&memcg->css);
+	rcu_read_unlock();
+	/* Release the folio's obj_cgroup charge reference. */
+	obj_cgroup_put(objcg);
 }
 
 /**
@@ -9848,23 +10241,28 @@ int __mem_cgroup_try_charge_swap(struct folio *folio, swp_entry_t entry)
 	unsigned int nr_pages = folio_nr_pages(folio);
 	struct page_counter *counter;
 	struct mem_cgroup *memcg;
+	struct obj_cgroup *objcg;
 	unsigned short oldid;
 
 	if (do_memsw_account())
 		return 0;
 
-	memcg = folio_memcg(folio);
-
-	VM_WARN_ON_ONCE_FOLIO(!memcg, folio);
-	if (!memcg)
+	objcg = folio_objcg(folio);
+	VM_WARN_ON_ONCE_FOLIO(!objcg, folio);
+	if (!objcg)
 		return 0;
 
+	rcu_read_lock();
+	memcg = obj_cgroup_memcg(objcg);
 	if (!entry.val) {
 		memcg_memory_event(memcg, MEMCG_SWAP_FAIL);
+		rcu_read_unlock();
 		return 0;
 	}
 
 	memcg = mem_cgroup_id_get_online(memcg);
+	/* memcg is pined by memcg ID. */
+	rcu_read_unlock();
 
 	if (!mem_cgroup_is_root(memcg) &&
 	    !page_counter_try_charge(&memcg->swap, nr_pages, &counter)) {
@@ -9926,27 +10324,29 @@ long mem_cgroup_get_nr_swap_pages(struct mem_cgroup *memcg)
 bool mem_cgroup_swap_full(struct folio *folio)
 {
 	struct mem_cgroup *memcg;
+	bool ret = false;
 
 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
 
 	if (vm_swap_full())
 		return true;
-	if (do_memsw_account())
-		return false;
+	if (do_memsw_account() || !folio_memcg_charged(folio))
+		return ret;
 
+	rcu_read_lock();
 	memcg = folio_memcg(folio);
-	if (!memcg)
-		return false;
-
 	for (; !mem_cgroup_is_root(memcg); memcg = parent_mem_cgroup(memcg)) {
 		unsigned long usage = page_counter_read(&memcg->swap);
 
 		if (usage * 2 >= READ_ONCE(memcg->swap.high) ||
-		    usage * 2 >= READ_ONCE(memcg->swap.max))
-			return true;
+		    usage * 2 >= READ_ONCE(memcg->swap.max)) {
+			ret = true;
+			break;
+		}
 	}
+	rcu_read_unlock();
 
-	return false;
+	return ret;
 }
 
 static int __init setup_swap_account(char *s)
@@ -10176,6 +10576,9 @@ void obj_cgroup_charge_zswap(struct obj_cgroup *objcg, size_t size)
 {
 	struct mem_cgroup *memcg;
 
+	if (obj_cgroup_is_root(objcg))
+		return;
+
 	VM_WARN_ON_ONCE(!(current->flags & PF_MEMALLOC));
 
 	/* PF_MEMALLOC context, charging must succeed */
@@ -10199,6 +10602,9 @@ void obj_cgroup_charge_zswap(struct obj_cgroup *objcg, size_t size)
 void obj_cgroup_uncharge_zswap(struct obj_cgroup *objcg, size_t size)
 {
 	struct mem_cgroup *memcg;
+
+	if (obj_cgroup_is_root(objcg))
+		return;
 
 	obj_cgroup_uncharge(objcg, size);
 
