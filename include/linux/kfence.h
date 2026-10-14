@@ -76,17 +76,11 @@ static __always_inline bool is_kfence_address_area(const void *addr,
  */
 static __always_inline bool is_kfence_address(const void *addr)
 {
-#if defined(CONFIG_KASAN) || defined(CONFIG_DEBUG_KMEMLEAK)
 	/*
-	 * KASAN functions such as kasan_record_aux_stack(),
-	 * kasan_poison_shadow(), or kasan_unpoison_shadow()
-	 * may give an invalid kaddr (direct mapping kernel address).
-	 * We must add a check here.
+	 * virt_to_page() is only valid for linear-mapping addresses, but
+	 * callers may pass any kernel pointer (e.g. vmalloc addresses).
 	 */
 	return virt_addr_valid(addr) && PageKfence(virt_to_page(addr));
-#else
-	return PageKfence(virt_to_page(addr));
-#endif
 }
 
 /**
