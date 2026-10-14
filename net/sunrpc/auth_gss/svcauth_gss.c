@@ -959,6 +959,8 @@ svcauth_gss_unwrap_priv(struct svc_rqst *rqstp, u32 seq, struct gss_ctx *ctx)
 	}
 	if (len > xdr_stream_remaining(xdr))
 		goto unwrap_failed;
+	if (len <= GSS_KRB5_TOK_HDR_LEN)
+		goto unwrap_failed;
 	offset = xdr_stream_pos(xdr);
 
 	saved_len = buf->len;
@@ -1582,6 +1584,9 @@ svcauth_gss_decode_credbody(struct xdr_stream *xdr,
 	ssize_t handle_len;
 	u32 body_len;
 	__be32 *p;
+
+	/* Early-return paths leave deterministic state, not stale residue. */
+	memset(gc, 0, sizeof(*gc));
 
 	p = xdr_inline_decode(xdr, XDR_UNIT);
 	if (!p)
