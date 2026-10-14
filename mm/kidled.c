@@ -174,6 +174,7 @@ void kidled_mem_cgroup_account(struct folio *folio,
 	struct idle_page_stats *stats;
 	int type, bucket;
 	bool locked = false;
+	bool rcu_locked = false;
 
 	if (mem_cgroup_disabled())
 		return;
@@ -183,9 +184,13 @@ void kidled_mem_cgroup_account(struct folio *folio,
 		if (!memcg_kmem_online())
 			memcg = root_mem_cgroup;
 		else {
+			rcu_read_lock();
+			rcu_locked = true;
 			memcg = mem_cgroup_from_obj(ptr);
-			if (!memcg)
+			if (!memcg) {
+				rcu_read_unlock();
 				return;
+			}
 		}
 	} else {
 		folio_memcg_lock(folio);
@@ -204,6 +209,8 @@ void kidled_mem_cgroup_account(struct folio *folio,
 
 	if (locked)
 		folio_memcg_unlock(folio);
+	if (rcu_locked)
+		rcu_read_unlock();
 }
 
 void kidled_mem_cgroup_move_stats(struct mem_cgroup *from,
