@@ -348,6 +348,15 @@ static inline pte_t pte_mkinvalid(pte_t pte)
 	return pte;
 }
 
+static inline pte_t pte_clrhuge(pte_t pte)
+{
+	pteval_t mask = PTE_TYPE_MASK & ~PTE_VALID;
+	pteval_t val = PTE_TYPE_PAGE & ~PTE_VALID;
+
+	return __pte((pte_val(pte) & ~mask) | val);
+}
+#define pte_clrhuge pte_clrhuge
+
 static inline pmd_t pmd_mkcont(pmd_t pmd)
 {
 	return __pmd(pmd_val(pmd) | PMD_SECT_CONT);
@@ -655,6 +664,11 @@ static inline pmd_t pmd_mkspecial(pmd_t pmd)
 {
 	return set_pmd_bit(pmd, __pgprot(PTE_SPECIAL));
 }
+
+extern bool nohugepfnmap;
+#define arch_needs_pgtable_deposit(vma) \
+	(nohugepfnmap ? false : (!vma_is_dax(vma) && vma_is_special_huge(vma)))
+
 #endif
 
 #define __pmd_to_phys(pmd)	__pte_to_phys(pmd_pte(pmd))
