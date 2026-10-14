@@ -233,6 +233,7 @@ static int at91_wdt_init(struct platform_device *pdev, struct at91wdt *wdt)
 	if (watchdog_init_timeout(&wdt->wdd, 0, dev))
 		watchdog_init_timeout(&wdt->wdd, heartbeat, dev);
 	watchdog_set_nowayout(&wdt->wdd, wdt->nowayout);
+
 	err = watchdog_register_device(&wdt->wdd);
 	if (err)
 		goto out_stop_timer;
@@ -242,7 +243,7 @@ static int at91_wdt_init(struct platform_device *pdev, struct at91wdt *wdt)
 	return 0;
 
 out_stop_timer:
-	del_timer(&wdt->timer);
+	timer_shutdown_sync(&wdt->timer);
 	return err;
 }
 
@@ -387,7 +388,7 @@ static int __exit at91wdt_remove(struct platform_device *pdev)
 	watchdog_unregister_device(&wdt->wdd);
 
 	pr_warn("I quit now, hardware will probably reboot!\n");
-	del_timer(&wdt->timer);
+	timer_shutdown_sync(&wdt->timer);
 	clk_disable_unprepare(wdt->sclk);
 
 	return 0;
