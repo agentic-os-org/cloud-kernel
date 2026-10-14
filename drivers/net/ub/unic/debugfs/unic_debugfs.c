@@ -101,11 +101,14 @@ static const struct unic_dbg_cap_bit_info {
 	{"\tsupport_ubl: %u\n", &unic_dev_ubl_supported},
 	{"\tsupport_ets: %u\n", &unic_dev_ets_supported},
 	{"\tsupport_fec: %u\n", &unic_dev_fec_supported},
-	{"\tsupport_rss: %u\n", &unic_dev_rss_supported},
 	{"\tsupport_tc_speed_limit: %u\n", &unic_dev_tc_speed_limit_supported},
 	{"\tsupport_tx_csum_offload: %u\n", &unic_dev_tx_csum_offload_supported},
 	{"\tsupport_rx_csum_offload: %u\n", &unic_dev_rx_csum_offload_supported},
+	{"\tsupport_app_lb: %u\n", &unic_dev_app_lb_supported},
+	{"\tsupport_serial_serdes_lb: %u\n", &unic_dev_serial_serdes_lb_supported},
+	{"\tsupport_parallel_serdes_lb: %u\n", unic_dev_parallel_serdes_lb_supported},
 	{"\tsupport_fec_stats: %u\n", &unic_dev_fec_stats_supported},
+	{"\tsupport_cfg_mac: %u\n", &unic_dev_cfg_mac_supported},
 };
 
 static void unic_dbg_dump_caps_bits(struct unic_dev *unic_dev,
@@ -126,6 +129,7 @@ static void unic_dbg_dump_caps(struct unic_dev *unic_dev, struct seq_file *s)
 		u32 caps_info;
 	} unic_caps_info[] = {
 		{"\ttotal_ip_tbl_size: %hu\n", unic_caps->total_ip_tbl_size},
+		{"\tvlan_tbl_size: %u\n", unic_caps->vlan_tbl_size},
 		{"\tmax_trans_unit: %hu\n", unic_caps->max_trans_unit},
 		{"\tmin_trans_unit: %hu\n", unic_caps->min_trans_unit},
 		{"\tvport_buf_size: %u\n", unic_caps->vport_buf_size},
@@ -278,7 +282,7 @@ static int unic_dbg_query_link_record(struct seq_file *s, void *data)
 		total--;
 		idx = total % LINK_STAT_MAX_IDX;
 		seq_printf(s, "\t%-2d\t", cnt);
-		ubase_dbg_format_time(ktime_get_real_seconds(), s);
+		ubase_dbg_format_time(record->stats[idx].link_tv_sec, s);
 		seq_printf(s, "\t%s\n",
 			   record->stats[idx].link_status ? "LINK UP" : "LINK DOWN");
 		cnt++;
@@ -328,6 +332,14 @@ static struct ubase_dbg_dentry_info unic_dbg_dentry[] = {
 	}, {
 		.name = "qos",
 		.property = UBASE_SUP_UNIC | UBASE_SUP_UBL,
+		.support = unic_dbg_dentry_support,
+	}, {
+		.name = "vlan_tbl",
+		.property = UBASE_SUP_UNIC | UBASE_SUP_ETH,
+		.support = unic_dbg_dentry_support,
+	}, {
+		.name = "mac_tbl",
+		.property = UBASE_SUP_UNIC | UBASE_SUP_ETH,
 		.support = unic_dbg_dentry_support,
 	},
 	/* keep unic at the bottom and add new directory above */
@@ -409,6 +421,20 @@ static struct ubase_dbg_cmd_info unic_dbg_cmd[] = {
 		.support = unic_dbg_dentry_support,
 		.init = ubase_dbg_seq_file_init,
 		.read_func = unic_dbg_dump_caps_info,
+	}, {
+		.name = "mac_tbl_list_hw",
+		.dentry_index = UNIC_DBG_DENTRY_MAC,
+		.property = UBASE_SUP_UNIC | UBASE_SUP_ETH,
+		.support = unic_dbg_dentry_support,
+		.init = ubase_dbg_seq_file_init,
+		.read_func = unic_dbg_dump_mac_tbl_list_hw,
+	}, {
+		.name = "vlan_tbl_list_hw",
+		.dentry_index = UNIC_DBG_DENTRY_VLAN,
+		.property = UBASE_SUP_UNIC | UBASE_SUP_ETH,
+		.support = unic_dbg_dentry_support,
+		.init = ubase_dbg_seq_file_init,
+		.read_func = unic_dbg_dump_vlan_tbl_list_hw,
 	}, {
 		.name = "page_pool_info",
 		.dentry_index = UNIC_DBG_DENTRY_ROOT,

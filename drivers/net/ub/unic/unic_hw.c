@@ -31,6 +31,21 @@ static const struct unic_speed_bit_map speed_bit_map[] = {
 	{UNIC_MAC_SPEED_10G, UNIC_LANES_1, UNIC_SUPPORT_10G_X1_BIT},
 };
 
+int unic_get_speed_bit(u32 speed, u32 lanes, u32 *speed_bit)
+{
+	u32 i;
+
+	for (i = 0; i < ARRAY_SIZE(speed_bit_map); i++) {
+		if (speed == speed_bit_map[i].speed &&
+		    lanes == speed_bit_map[i].lanes) {
+			*speed_bit = speed_bit_map[i].speed_bit;
+			return 0;
+		}
+	}
+
+	return -EINVAL;
+}
+
 static int unic_get_port_info(struct unic_dev *unic_dev)
 {
 	struct unic_query_port_info_resp resp = {0};
@@ -76,7 +91,7 @@ int unic_set_mac_autoneg(struct unic_dev *unic_dev, u8 autoneg)
 			     sizeof(req), &req);
 
 	ret = ubase_cmd_send_in(unic_dev->comdev.adev, &in);
-	if (ret && ret != -EPERM)
+	if (ret)
 		dev_err(unic_dev->comdev.adev->dev.parent,
 			"failed to send cmd in config autoneg(%u), ret = %d.\n",
 			autoneg, ret);
@@ -105,12 +120,42 @@ int unic_set_mac_speed_duplex(struct unic_dev *unic_dev, u32 speed, u8 duplex,
 			     sizeof(req), &req);
 
 	ret = ubase_cmd_send_in(unic_dev->comdev.adev, &in);
-	if (ret && ret != -EPERM)
+	if (ret)
 		dev_err(unic_dev->comdev.adev->dev.parent,
 			"failed to send cmd in config speed(%u), ret = %d.\n",
 			speed, ret);
 
 	return ret;
+}
+
+int unic_set_mac_link_ksettings(struct unic_dev *unic_dev,
+				const struct ethtool_link_ksettings *cmd)
+{
+	/* if user not specify lanes, use current lanes */
+	u32 lanes = cmd->lanes ? cmd->lanes : unic_dev->hw.mac.lanes;
+	int ret;
+
+	ret = unic_set_mac_autoneg(unic_dev, cmd->base.autoneg);
+	if (ret)
+		return ret;
+
+	/* when autoneg is on, hw not support specified speed params. */
+	if (cmd->base.autoneg) {
+		unic_info(unic_dev,
+			  "autoneg is on, ignore other speed params.\n");
+		return 0;
+	}
+
+	ret = unic_set_mac_speed_duplex(unic_dev, cmd->base.speed,
+					cmd->base.duplex, lanes);
+	if (ret)
+		return ret;
+
+	unic_dev->hw.mac.speed = cmd->base.speed;
+	unic_dev->hw.mac.duplex = cmd->base.duplex;
+	unic_dev->hw.mac.lanes = lanes;
+
+	return 0;
 }
 
 static void unic_set_fec_ability(struct unic_mac *mac)
@@ -334,9 +379,7 @@ int unic_set_promisc_mode(struct unic_dev *unic_dev,
 
 	time_out = unic_cmd_timeout(unic_dev);
 	ret = ubase_cmd_send_in_ex(adev, &in, time_out);
-	if (ret == -EPERM)
-		return 0;
-	else if (ret)
+	if (ret)
 		unic_err(unic_dev,
 			 "failed to set promisc mode, ret = %d.\n", ret);
 
@@ -482,6 +525,9 @@ static void unic_parse_dev_caps(struct unic_dev *unic_dev,
 
 	caps->rx_buff_len = le16_to_cpu(resp->rx_buff_len);
 	caps->total_ip_tbl_size = le16_to_cpu(resp->total_ip_tbl_size);
+	caps->uc_mac_tbl_size = le32_to_cpu(resp->uc_mac_tbl_size);
+	caps->mc_mac_tbl_size = le32_to_cpu(resp->mc_mac_tbl_size);
+	caps->vlan_tbl_size = le32_to_cpu(resp->vlan_tbl_size);
 	caps->max_trans_unit = le16_to_cpu(resp->max_trans_unit);
 	caps->min_trans_unit = le16_to_cpu(resp->min_trans_unit);
 	caps->vport_buf_size = le16_to_cpu(resp->vport_buf_size) * KB;
@@ -561,15 +607,15 @@ static int unic_query_flush_status(struct unic_dev *unic_dev, u8 *status)
 	struct ubase_cmd_buf in;
 	int ret;
 
+	if (unic_dev_ubl_supported(unic_dev))
+		return -EOPNOTSUPP;
+
 	ubase_fill_inout_buf(&in, UBASE_OPC_QUERY_FLUSH_STATUS, true, 0, NULL);
 	ubase_fill_inout_buf(&out, UBASE_OPC_QUERY_FLUSH_STATUS, false,
 			     sizeof(resp), &resp);
 
 	ret = ubase_cmd_send_inout(unic_dev->comdev.adev, &in, &out);
 	if (ret) {
-		if (ret == -EPERM)
-			return -EOPNOTSUPP;
-
 		unic_err(unic_dev,
 			 "failed to send cmd when query flush status, ret = %d.\n",
 			 ret);
@@ -779,6 +825,51 @@ int unic_update_fec_stats(struct unic_dev *unic_dev)
 
 err_send_cmd:
 	clear_bit(UNIC_STATE_FEC_STATS_UPDATING, &unic_dev->state);
+	return ret;
+}
+
+int unic_set_vlan_filter_hw(struct unic_dev *unic_dev, bool filter_en)
+{
+	struct auxiliary_device *adev = unic_dev->comdev.adev;
+	struct unic_vlan_filter_ctrl_cmd req = {0};
+	struct ubase_cmd_buf in;
+	u32 time_out;
+	int ret;
+
+	req.filter_en = filter_en ? 1 : 0;
+
+	ubase_fill_inout_buf(&in, UBASE_OPC_VLAN_FILTER_CTRL, false,
+			     sizeof(req), &req);
+
+	time_out = unic_cmd_timeout(unic_dev);
+	ret = ubase_cmd_send_in_ex(unic_dev->comdev.adev, &in, time_out);
+	if (ret)
+		dev_err(adev->dev.parent,
+			"failed to set vlan filter, ret = %d.\n", ret);
+
+	return ret;
+}
+
+int unic_set_port_vlan_hw(struct unic_dev *unic_dev, u16 vlan_id, bool is_add)
+{
+	struct auxiliary_device *adev = unic_dev->comdev.adev;
+	struct unic_vlan_filter_cfg_cmd req = {0};
+	struct ubase_cmd_buf in;
+	u32 time_out;
+	int ret;
+
+	req.vlan_id = cpu_to_le16(vlan_id);
+	req.is_add = is_add ? 1 : 0;
+
+	ubase_fill_inout_buf(&in, UBASE_OPC_VLAN_FILTER_CFG, false, sizeof(req),
+			     &req);
+
+	time_out = unic_cmd_timeout(unic_dev);
+	ret = ubase_cmd_send_in_ex(unic_dev->comdev.adev, &in, time_out);
+	if (ret)
+		dev_err(adev->dev.parent,
+			"failed to send port vlan command, ret = %d.\n", ret);
+
 	return ret;
 }
 

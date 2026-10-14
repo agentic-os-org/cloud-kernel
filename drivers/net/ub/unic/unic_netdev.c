@@ -27,6 +27,7 @@
 #include "unic_rx.h"
 #include "unic_tx.h"
 #include "unic_txrx.h"
+#include "unic_vlan.h"
 #include "unic_netdev.h"
 #include "unic_rack_ip.h"
 
@@ -403,7 +404,6 @@ static void unic_fetch_stats_tx(struct rtnl_link_stats64 *stats,
 		stats->tx_bytes += channel->sq->stats.bytes;
 		stats->tx_packets += channel->sq->stats.packets;
 		stats->tx_errors += channel->sq->stats.pad_err;
-		stats->tx_errors += channel->sq->stats.map_err;
 		stats->tx_errors += channel->sq->stats.over_max_sge_num;
 		stats->tx_errors += channel->sq->stats.csum_err;
 		stats->tx_errors += channel->sq->stats.vlan_err;
@@ -412,7 +412,6 @@ static void unic_fetch_stats_tx(struct rtnl_link_stats64 *stats,
 		stats->tx_errors += channel->sq->stats.cfg5_drop_cnt;
 
 		stats->tx_dropped += channel->sq->stats.pad_err;
-		stats->tx_dropped += channel->sq->stats.map_err;
 		stats->tx_dropped += channel->sq->stats.over_max_sge_num;
 		stats->tx_dropped += channel->sq->stats.csum_err;
 		stats->tx_dropped += channel->sq->stats.vlan_err;
@@ -606,6 +605,44 @@ out:
 	return netdev_pick_tx(netdev, skb, sb_dev);
 }
 
+static int unic_vlan_rx_add_vid(struct net_device *netdev, __be16 proto,
+				u16 vlan_id)
+{
+	struct unic_dev *unic_dev = netdev_priv(netdev);
+
+	return unic_set_vlan_table(unic_dev, proto, vlan_id, true);
+}
+
+static int unic_vlan_rx_kill_vid(struct net_device *netdev, __be16 proto,
+				 u16 vlan_id)
+{
+	struct unic_dev *unic_dev = netdev_priv(netdev);
+
+	return unic_set_vlan_table(unic_dev, proto, vlan_id, false);
+}
+
+static int unic_set_features(struct net_device *netdev,
+			     netdev_features_t features)
+{
+	netdev_features_t changed = netdev->features ^ features;
+	struct unic_dev *unic_dev = netdev_priv(netdev);
+	bool enable;
+	int ret;
+
+	if (unic_dev_ubl_supported(unic_dev) ||
+	    !unic_dev_cfg_vlan_filter_supported(unic_dev))
+		return 0;
+
+	if (changed & NETIF_F_HW_VLAN_CTAG_FILTER) {
+		enable = !!(features & NETIF_F_HW_VLAN_CTAG_FILTER);
+		ret = unic_set_vlan_filter(unic_dev, enable);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
 static const struct net_device_ops unic_netdev_ops = {
 	.ndo_get_stats64 = unic_get_stats64,
 	.ndo_start_xmit = unic_start_xmit,
@@ -615,6 +652,9 @@ static const struct net_device_ops unic_netdev_ops = {
 	.ndo_stop = unic_net_stop,
 	.ndo_set_rx_mode = unic_set_rx_mode,
 	.ndo_select_queue = unic_select_queue,
+	.ndo_vlan_rx_add_vid = unic_vlan_rx_add_vid,
+	.ndo_vlan_rx_kill_vid = unic_vlan_rx_kill_vid,
+	.ndo_set_features = unic_set_features,
 };
 
 void unic_set_netdev_ops(struct net_device *netdev)

@@ -11,19 +11,102 @@
 #include "ubase_cmd.h"
 #include "ubase_ctrlq.h"
 
-static inline void ubase_ctrlq_crq_table_init(struct ubase_dev *udev)
+/* UNIC ctrlq msg white list */
+static const struct ubase_ctrlq_event_nb ubase_ctrlq_wlist_unic[] = {
+	{UBASE_CTRLQ_SER_TYPE_IP_ACL, UBASE_CTRLQ_OPC_NOTIFY_IP, NULL, NULL},
+};
+
+/* UDMA ctrlq msg white list */
+static const struct ubase_ctrlq_event_nb ubase_ctrlq_wlist_udma[] = {
+	{UBASE_CTRLQ_SER_TYPE_TP_ACL, UBASE_CTRLQ_OPC_CHECK_TP_ACTIVE, NULL, NULL},
+	{UBASE_CTRLQ_SER_TYPE_DEV_REGISTER, UBASE_CTRLQ_OPC_UPDATE_SEID, NULL, NULL},
+	{UBASE_CTRLQ_SER_TYPE_DEV_REGISTER, UBASE_CTRLQ_OPC_NOTIFY_RES_RATIO, NULL, NULL},
+};
+
+/* CDMA ctrlq msg white list */
+static const struct ubase_ctrlq_event_nb ubase_ctrlq_wlist_cdma[] = {
+	{UBASE_CTRLQ_SER_TYPE_DEV_REGISTER, UBASE_CTRLQ_OPC_UPDATE_SEID, NULL, NULL},
+};
+
+static int ubase_ctrlq_alloc_crq_tbl_mem(struct ubase_dev *udev)
+{
+	struct ubase_ctrlq_crq_table *crq_tab = &udev->ctrlq.crq_table;
+	u16 cnt = 0;
+
+	if (ubase_dev_cdma_supported(udev)) {
+		cnt = ARRAY_SIZE(ubase_ctrlq_wlist_cdma);
+	} else if (ubase_dev_urma_supported(udev)) {
+		if (ubase_dev_unic_supported(udev))
+			cnt += ARRAY_SIZE(ubase_ctrlq_wlist_unic);
+		if (ubase_dev_udma_supported(udev))
+			cnt += ARRAY_SIZE(ubase_ctrlq_wlist_udma);
+	}
+
+	if (!cnt)
+		return -EINVAL;
+
+	crq_tab->crq_nbs = kcalloc(cnt, sizeof(struct ubase_ctrlq_event_nb), GFP_KERNEL);
+	if (!crq_tab->crq_nbs)
+		return -ENOMEM;
+
+	crq_tab->crq_nb_cnt = cnt;
+
+	return 0;
+}
+
+static void ubase_ctrlq_free_crq_tbl_mem(struct ubase_dev *udev)
 {
 	struct ubase_ctrlq_crq_table *crq_tab = &udev->ctrlq.crq_table;
 
-	mutex_init(&crq_tab->lock);
-	INIT_LIST_HEAD(&crq_tab->crq_nbs.list);
+	kfree(crq_tab->crq_nbs);
+	crq_tab->crq_nbs = NULL;
+	crq_tab->crq_nb_cnt = 0;
 }
 
-static inline void ubase_ctrlq_crq_table_uninit(struct ubase_dev *udev)
+static void ubase_ctrlq_init_crq_wlist(struct ubase_dev *udev)
+{
+	struct ubase_ctrlq_crq_table *crq_tab = &udev->ctrlq.crq_table;
+	u32 offset = 0;
+
+	if (ubase_dev_cdma_supported(udev)) {
+		memcpy(crq_tab->crq_nbs, ubase_ctrlq_wlist_cdma,
+		       sizeof(ubase_ctrlq_wlist_cdma));
+	} else if (ubase_dev_urma_supported(udev)) {
+		if (ubase_dev_unic_supported(udev)) {
+			memcpy(crq_tab->crq_nbs, ubase_ctrlq_wlist_unic,
+			       sizeof(ubase_ctrlq_wlist_unic));
+			offset = ARRAY_SIZE(ubase_ctrlq_wlist_unic);
+		}
+		if (ubase_dev_udma_supported(udev)) {
+			memcpy(&crq_tab->crq_nbs[offset], ubase_ctrlq_wlist_udma,
+			       sizeof(ubase_ctrlq_wlist_udma));
+		}
+	}
+}
+
+static int ubase_ctrlq_crq_table_init(struct ubase_dev *udev)
+{
+	struct ubase_ctrlq_crq_table *crq_tab = &udev->ctrlq.crq_table;
+	int ret;
+
+	ret = ubase_ctrlq_alloc_crq_tbl_mem(udev);
+	if (ret)
+		return ret;
+
+	ubase_ctrlq_init_crq_wlist(udev);
+
+	mutex_init(&crq_tab->lock);
+
+	return 0;
+}
+
+static void ubase_ctrlq_crq_table_uninit(struct ubase_dev *udev)
 {
 	struct ubase_ctrlq_crq_table *crq_tab = &udev->ctrlq.crq_table;
 
 	mutex_destroy(&crq_tab->lock);
+
+	ubase_ctrlq_free_crq_tbl_mem(udev);
 }
 
 static inline u16 ubase_ctrlq_msg_queue_depth(struct ubase_dev *udev)
@@ -233,14 +316,19 @@ int ubase_ctrlq_init(struct ubase_dev *udev)
 	if (ret)
 		goto err_msg_queue_init;
 
+	ret = ubase_ctrlq_crq_table_init(udev);
+	if (ret)
+		goto err_crq_table_init;
+
 	udev->ctrlq.csq_next_seq = 1;
 	atomic_set(&udev->ctrlq.req_cnt, 0);
-	ubase_ctrlq_crq_table_init(udev);
 
 success:
 	set_bit(UBASE_CTRLQ_STATE_ENABLE, &udev->ctrlq.state);
 	return 0;
 
+err_crq_table_init:
+	ubase_ctrlq_msg_queue_uninit(udev);
 err_msg_queue_init:
 	ubase_ctrlq_queue_uninit(udev);
 	return ret;
@@ -369,11 +457,13 @@ static void ubase_ctrlq_fill_first_bb(struct ubase_dev *udev,
 	head->service_type = msg->service_type;
 	head->opcode = msg->opcode;
 	head->mbx_ue_id = ue_info ? ue_info->mbx_ue_id : 0;
-	head->ret = msg->is_resp ? msg->resp_ret : 0;
+	head->ret = ubase_ctrlq_msg_is_resp(msg) ? msg->resp_ret : 0;
 	head->bus_ue_id = cpu_to_le16(ue_info ?
 				      ue_info->bus_ue_id :
 				      ue->entity_idx);
-	memcpy(head->data, msg->in, min(msg->in_size, UBASE_CTRLQ_DATA_LEN));
+	if (msg->in)
+		memcpy(head->data, msg->in,
+		       min(msg->in_size, UBASE_CTRLQ_DATA_LEN));
 }
 
 static inline void ubase_ctrlq_csq_report_irq(struct ubase_dev *udev)
@@ -408,10 +498,12 @@ static int ubase_ctrlq_send_to_cmdq(struct ubase_dev *udev,
 	ue2ue_head.out_size = msg->out_size;
 	ue2ue_head.need_resp = msg->need_resp;
 	ue2ue_head.is_resp = msg->is_resp;
+	ue2ue_head.is_async = msg->is_async;
 	memcpy(req, &ue2ue_head, sizeof(ue2ue_head));
 	memcpy((u8 *)req + sizeof(ue2ue_head), head, UBASE_CTRLQ_HDR_LEN);
-	memcpy((u8 *)req + sizeof(ue2ue_head) + UBASE_CTRLQ_HDR_LEN, msg->in,
-	       msg->in_size);
+	if (msg->in)
+		memcpy((u8 *)req + sizeof(ue2ue_head) + UBASE_CTRLQ_HDR_LEN,
+		       msg->in, msg->in_size);
 
 	__ubase_fill_inout_buf(&in, UBASE_OPC_UE2UE_UBASE, false, req_len, req);
 	ret = __ubase_cmd_send_in(udev, &in);
@@ -541,18 +633,17 @@ static void ubase_ctrlq_addto_msg_queue(struct ubase_dev *udev, u16 seq,
 {
 	struct ubase_ctrlq_msg_ctx *ctx;
 
-	if (!msg->need_resp)
+	if (!(ubase_ctrlq_msg_is_sync_req(msg) ||
+	      ubase_ctrlq_msg_is_async_req(msg)))
 		return;
 
 	ctx = &udev->ctrlq.msg_queue[seq];
 	ctx->valid = 1;
-	ctx->is_sync = msg->need_resp && msg->out && msg->out_size ? 1 : 0;
+	ctx->is_sync = ubase_ctrlq_msg_is_sync_req(msg) ? 1 : 0;
 	ctx->result = ETIME;
 	ctx->dead_jiffies = jiffies + msecs_to_jiffies(UBASE_CTRLQ_DEAD_TIME);
-	if (ctx->is_sync) {
-		ctx->out = msg->out;
-		ctx->out_size = msg->out_size;
-	}
+	ctx->out = msg->out;
+	ctx->out_size = msg->out_size;
 
 	if (ue_info) {
 		ctx->ue_seq = ue_info->seq;
@@ -564,25 +655,58 @@ static void ubase_ctrlq_addto_msg_queue(struct ubase_dev *udev, u16 seq,
 static int ubase_ctrlq_msg_check(struct ubase_dev *udev,
 				 struct ubase_ctrlq_msg *msg)
 {
-	if (!msg || !msg->in || !msg->in_size) {
-		ubase_err(udev, "ctrlq input buf is invalid.\n");
+	if ((!msg->in && msg->in_size) || (msg->in && !msg->in_size)) {
+		ubase_err(udev, "ctrlq msg in param error.\n");
 		return -EINVAL;
 	}
 
-	if (msg->is_resp && !(msg->resp_seq & UBASE_CTRLQ_SEQ_MASK)) {
-		ubase_err(udev, "ctrlq input resp_seq(%u) is invalid.\n",
-			  msg->resp_seq);
+	if ((!msg->out && msg->out_size) || (msg->out && !msg->out_size)) {
+		ubase_err(udev, "ctrlq msg out param error.\n");
 		return -EINVAL;
 	}
 
 	if (msg->in_size > UBASE_CTRLQ_MAX_DATA_SIZE) {
 		ubase_err(udev,
-			  "requested ctrlq space(%u) exceeds the maximum(%u).\n",
+			   "ctrlq msg in_size(%u) exceeds the maximum(%u).\n",
 			  msg->in_size, UBASE_CTRLQ_MAX_DATA_SIZE);
 		return -EINVAL;
 	}
 
-	return 0;
+	if (ubase_ctrlq_msg_is_sync_req(msg))
+		return 0;
+
+	if (ubase_ctrlq_msg_is_async_req(msg)) {
+		if (msg->out) {
+			ubase_err(udev, "ctrlq msg out is not NULL in async req.\n");
+			return -EINVAL;
+		}
+		return 0;
+	}
+
+	if (ubase_ctrlq_msg_is_notify_req(msg)) {
+		if (msg->out) {
+			ubase_err(udev, "ctrlq msg out is not NULL in notify req.\n");
+			return -EINVAL;
+		}
+		return 0;
+	}
+
+	if (ubase_ctrlq_msg_is_resp(msg)) {
+		if (msg->out) {
+			ubase_err(udev, "ctrlq msg out is not NULL in resp.\n");
+			return -EINVAL;
+		}
+		if (!(msg->resp_seq & UBASE_CTRLQ_SEQ_MASK)) {
+			ubase_err(udev, "ctrlq msg resp_seq error, resp_seq=%u.\n",
+				  msg->resp_seq);
+			return -EINVAL;
+		}
+		return 0;
+	}
+
+	ubase_err(udev, "ctrlq msg param error, is_resp=%u, is_async=%u, need_resp=%u.\n",
+		  msg->is_resp, msg->is_async, msg->need_resp);
+	return -EINVAL;
 }
 
 static int ubase_ctrlq_check_csq_enough(struct ubase_dev *udev, u16 num)
@@ -607,8 +731,6 @@ static int ubase_ctrlq_send_real(struct ubase_dev *udev,
 				 struct ubase_ctrlq_msg *msg,
 				 struct ubase_ctrlq_ue_info *ue_info)
 {
-	bool sync_req = msg->out && msg->out_size && msg->need_resp;
-	bool no_resp = !msg->is_resp && !msg->need_resp;
 	struct ubase_ctrlq_ring *csq = &udev->ctrlq.csq;
 	struct ubase_ctrlq_base_block head = {0};
 	u16 seq, num;
@@ -622,7 +744,7 @@ static int ubase_ctrlq_send_real(struct ubase_dev *udev,
 	if (ret)
 		goto unlock;
 
-	if (!msg->is_resp) {
+	if (!ubase_ctrlq_msg_is_resp(msg)) {
 		ret = ubase_ctrlq_alloc_seq(udev, msg, &seq);
 		if (ret) {
 			ubase_warn(udev, "no enough seq in ctrlq.\n");
@@ -640,20 +762,22 @@ static int ubase_ctrlq_send_real(struct ubase_dev *udev,
 	ret = ubase_ctrlq_send_msg_to_sq(udev, &head, msg, num);
 	if (ret) {
 		spin_unlock_bh(&csq->lock);
-		goto free_seq;
+		if (!ubase_ctrlq_msg_is_resp(msg))
+			ubase_ctrlq_free_seq(udev, seq);
+		return ret;
 	}
 
 	spin_unlock_bh(&csq->lock);
 
-	if (sync_req)
+	if (ubase_ctrlq_msg_is_sync_req(msg))
 		ret = ubase_ctrlq_wait_completed(udev, seq, msg);
 
-free_seq:
-	/* Only the seqs in synchronous requests and no response requests need to be released. */
-	/* The seqs are released in periodic tasks of asynchronous requests. */
-	if (sync_req || no_resp)
+	if (ubase_ctrlq_msg_is_sync_req(msg) ||
+	    ubase_ctrlq_msg_is_notify_req(msg))
 		ubase_ctrlq_free_seq(udev, seq);
+
 	return ret;
+
 unlock:
 	spin_unlock_bh(&csq->lock);
 	return ret;
@@ -700,6 +824,28 @@ int __ubase_ctrlq_send(struct ubase_dev *udev, struct ubase_ctrlq_msg *msg,
 	return ret;
 }
 
+/**
+ * ubase_ctrlq_send_msg() - ctrlq message send function
+ * @aux_dev: auxiliary device
+ * @msg: the message to be sent
+ *
+ * The driver uses this function to send a ctrlq message to the management software.
+ * The management software determines the module responsible for processing the message
+ * based on 'msg->service_ver', 'msg->service_type', and 'msg->opcode';
+ * it also retrieves the length and content of the data to be sent from
+ * 'msg->in_size' and 'msg->in'.
+ * When 'msg->is_resp' is set to 1, it indicates that the message is a response
+ * to a ctrlq message from the management software. 'msg->resp_seq' and 'msg->resp_ret'
+ * represent the sequence number and processing result of the ctrlq message from
+ * the management software.
+ * When 'msg->need_resp' is set to 1, it indicates that the management software needs
+ * to respond to the driver's ctrlq message. If 'msg->out_size' is not zero and
+ * 'msg->out' is not empty, this function will wait synchronously for the management
+ * software's response, and the response information will be stored in 'msg->out'.
+ *
+ * Context: Process context. Takes and releases <lock>, BH-safe. May sleep.
+ * Return: 0 on success, negative error code otherwise
+ */
 int ubase_ctrlq_send_msg(struct auxiliary_device *aux_dev,
 			 struct ubase_ctrlq_msg *msg)
 {
@@ -742,27 +888,68 @@ static void ubase_ctrlq_read_msg_data(struct ubase_dev *udev, u8 num, u8 *msg)
 	}
 }
 
+static void ubase_ctrlq_send_unsupported_resp(struct ubase_dev *udev,
+					      struct ubase_ctrlq_base_block *head,
+					      u16 resp_seq, u8 resp_ret)
+{
+	struct ubase_ctrlq_msg msg = {0};
+	int ret;
+
+	msg.service_ver = head->service_ver;
+	msg.service_type = head->service_type;
+	msg.opcode = head->opcode;
+	msg.is_resp = 1;
+	msg.resp_seq = resp_seq;
+	msg.resp_ret = resp_ret;
+
+	ret = __ubase_ctrlq_send(udev, &msg, NULL);
+	if (ret)
+		ubase_warn(udev, "failed to send ctrlq unsupport resp, ret=%d.",
+			   ret);
+}
+
 static void ubase_ctrlq_crq_event_callback(struct ubase_dev *udev,
 					   struct ubase_ctrlq_base_block *head,
 					   void *msg_data, u16 msg_data_len,
 					   u16 seq)
 {
+#define EDRVNOEXIST 255
 	struct ubase_ctrlq_crq_table *crq_tab = &udev->ctrlq.crq_table;
-	struct ubase_ctrlq_crq_event_nbs *nbs;
+	int ret = -ENOENT;
+	u32 i;
+
+	ubase_info(udev,
+		   "ctrlq recv notice req: seq=%u, ser_type=%u, ser_ver=%u, opc=0x%x.",
+		   seq, head->service_type, head->service_ver, head->opcode);
 
 	mutex_lock(&crq_tab->lock);
-	list_for_each_entry(nbs, &crq_tab->crq_nbs.list, list) {
-		if (nbs->crq_nb.service_type == head->service_type &&
-		    nbs->crq_nb.opcode == head->opcode) {
-			nbs->crq_nb.crq_handler(nbs->crq_nb.back,
-						head->service_ver,
-						msg_data,
-						msg_data_len,
-						seq);
+	for (i = 0; i < crq_tab->crq_nb_cnt; i++) {
+		if (crq_tab->crq_nbs[i].service_type == head->service_type &&
+		    crq_tab->crq_nbs[i].opcode == head->opcode) {
+			if (!crq_tab->crq_nbs[i].crq_handler) {
+				ret = -EDRVNOEXIST;
+				break;
+			}
+			ret = crq_tab->crq_nbs[i].crq_handler(crq_tab->crq_nbs[i].back,
+							      head->service_ver,
+							      msg_data,
+							      msg_data_len,
+							      seq);
 			break;
 		}
 	}
 	mutex_unlock(&crq_tab->lock);
+
+	if (ret == -ENOENT) {
+		ubase_info(udev, "this notice is not supported.");
+		ubase_ctrlq_send_unsupported_resp(udev, head, seq, EOPNOTSUPP);
+	} else if (ret == -EOPNOTSUPP) {
+		ubase_info(udev, "the notice processor return not support.");
+		ubase_ctrlq_send_unsupported_resp(udev, head, seq, EOPNOTSUPP);
+	} else if (ret == -EDRVNOEXIST) {
+		ubase_info(udev, "the notice processor is unregistered.");
+		ubase_ctrlq_send_unsupported_resp(udev, head, seq, EDRVNOEXIST);
+	}
 }
 
 static void ubase_ctrlq_notify_completed(struct ubase_dev *udev,
@@ -773,12 +960,13 @@ static void ubase_ctrlq_notify_completed(struct ubase_dev *udev,
 
 	ctx = &udev->ctrlq.msg_queue[seq];
 	ctx->result = head->ret;
-	memcpy(ctx->out, msg, min(msg_len, ctx->out_size));
+	if (ctx->out)
+		memcpy(ctx->out, msg, min(msg_len, ctx->out_size));
 
 	complete(&ctx->done);
 }
 
-static bool ubase_ctrlq_check_seq(struct ubase_dev *udev, u16 seq)
+bool ubase_ctrlq_check_seq(struct ubase_dev *udev, u16 seq)
 {
 	bool is_pushed = !!(seq & UBASE_CTRLQ_SEQ_MASK);
 	u16 max_seq = ubase_ctrlq_max_seq(udev);
@@ -993,13 +1181,26 @@ void ubase_ctrlq_clean_service_task(struct ubase_delay_work *ubase_work)
 	spin_unlock_bh(&csq->lock);
 }
 
+
+/**
+ * ubase_ctrlq_register_crq_event() - register ctrlq crq event processing function
+ * @aux_dev: auxiliary device
+ * @nb: the ctrlq crq event notification block
+ *
+ * Register the ctrlq crq handler function. When the management software reports
+ * a ctrlq crq event, if the registered 'nb->opcode' and 'nb->service_type' match
+ * the crq, the 'nb->crq_handler' function will be called to process it.
+ *
+ * Context: Any context.
+ * Return: 0 on success, negative error code otherwise
+ */
 int ubase_ctrlq_register_crq_event(struct auxiliary_device *aux_dev,
 				   struct ubase_ctrlq_event_nb *nb)
 {
-	struct ubase_ctrlq_crq_event_nbs *nbs, *tmp, *new_nbs;
 	struct ubase_ctrlq_crq_table *crq_tab;
 	struct ubase_dev *udev;
-	int ret;
+	int ret = -ENOENT;
+	u32 i;
 
 	if (!aux_dev || !nb || !nb->crq_handler)
 		return -EINVAL;
@@ -1007,42 +1208,43 @@ int ubase_ctrlq_register_crq_event(struct auxiliary_device *aux_dev,
 	udev = __ubase_get_udev_by_adev(aux_dev);
 	crq_tab = &udev->ctrlq.crq_table;
 	mutex_lock(&crq_tab->lock);
-	list_for_each_entry_safe(nbs, tmp, &crq_tab->crq_nbs.list, list) {
-		if (nbs->crq_nb.service_type == nb->service_type &&
-		    nbs->crq_nb.opcode == nb->opcode) {
-			ret = -EEXIST;
-			goto err_crq_register;
+	for (i = 0; i < crq_tab->crq_nb_cnt; i++) {
+		if (crq_tab->crq_nbs[i].service_type == nb->service_type &&
+		    crq_tab->crq_nbs[i].opcode == nb->opcode) {
+			if (crq_tab->crq_nbs[i].crq_handler) {
+				ret = -EEXIST;
+				break;
+			}
+			crq_tab->crq_nbs[i].back = nb->back;
+			crq_tab->crq_nbs[i].crq_handler = nb->crq_handler;
+			ret = 0;
+			break;
 		}
 	}
 
-	new_nbs = kzalloc(sizeof(*new_nbs), GFP_KERNEL);
-	if (!new_nbs) {
-		ret = -ENOMEM;
-		goto err_crq_register;
-	}
-
-	new_nbs->crq_nb = *nb;
-	list_add_tail(&new_nbs->list, &crq_tab->crq_nbs.list);
 	mutex_unlock(&crq_tab->lock);
-
-	return 0;
-
-err_crq_register:
-	mutex_unlock(&crq_tab->lock);
-	ubase_err(udev,
-		  "failed to register ctrlq crq event, opcode = 0x%x, service_type = 0x%x, ret = %d.\n",
-		  nb->opcode, nb->service_type, ret);
 
 	return ret;
 }
 EXPORT_SYMBOL(ubase_ctrlq_register_crq_event);
 
+/**
+ * ubase_ctrlq_unregister_crq_event() - unregister ctrlq crq event processing function
+ * @aux_dev: auxiliary device
+ * @service_type: the ctrlq service type
+ * @opcode: the ctrlq opcode
+ *
+ * Unregisters the ctrlq crq processing function. This function is called when user
+ * no longer wants to handle the 'service_type' and 'opcode' ctrlq crq events.
+ *
+ * Context: Any context.
+ */
 void ubase_ctrlq_unregister_crq_event(struct auxiliary_device *aux_dev,
 				      u8 service_type, u8 opcode)
 {
-	struct ubase_ctrlq_crq_event_nbs *nbs, *tmp;
 	struct ubase_ctrlq_crq_table *crq_tab;
 	struct ubase_dev *udev;
+	u32 i;
 
 	if (!aux_dev)
 		return;
@@ -1050,11 +1252,11 @@ void ubase_ctrlq_unregister_crq_event(struct auxiliary_device *aux_dev,
 	udev = __ubase_get_udev_by_adev(aux_dev);
 	crq_tab = &udev->ctrlq.crq_table;
 	mutex_lock(&crq_tab->lock);
-	list_for_each_entry_safe(nbs, tmp, &crq_tab->crq_nbs.list, list) {
-		if (nbs->crq_nb.service_type == service_type &&
-		    nbs->crq_nb.opcode == opcode) {
-			list_del(&nbs->list);
-			kfree(nbs);
+	for (i = 0; i < crq_tab->crq_nb_cnt; i++) {
+		if (crq_tab->crq_nbs[i].service_type == service_type &&
+		    crq_tab->crq_nbs[i].opcode == opcode) {
+			crq_tab->crq_nbs[i].back = NULL;
+			crq_tab->crq_nbs[i].crq_handler = NULL;
 			break;
 		}
 	}

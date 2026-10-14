@@ -306,10 +306,11 @@ err_unlock:
 	return ret;
 }
 
-static int ubase_cmd_query_version(struct ubase_dev *udev, u32 *fw_version)
+static int ubase_cmd_query_version(struct ubase_dev *udev)
 {
 	struct ubase_query_version_cmd *resp;
 	struct ubase_cmdq_desc desc;
+	u32 fw_ver;
 	int ret;
 
 	ubase_cmd_setup_basic_desc(&desc, UBASE_OPC_QUERY_FW_VER, true, 1);
@@ -321,13 +322,14 @@ static int ubase_cmd_query_version(struct ubase_dev *udev, u32 *fw_version)
 	}
 
 	resp = (struct ubase_query_version_cmd *)desc.data;
-	*fw_version = le32_to_cpu(resp->firmware);
+	udev->caps.dev_caps.fw_version = le32_to_cpu(resp->fw_version);
+	fw_ver = udev->caps.dev_caps.fw_version;
 
 	ubase_info(udev, "The firmware version is %u.%u.%u.%u\n",
-		   u32_get_bits(*fw_version, UBASE_FW_VERSION_BYTE3_MASK),
-		   u32_get_bits(*fw_version, UBASE_FW_VERSION_BYTE2_MASK),
-		   u32_get_bits(*fw_version, UBASE_FW_VERSION_BYTE1_MASK),
-		   u32_get_bits(*fw_version, UBASE_FW_VERSION_BYTE0_MASK));
+		   u32_get_bits(fw_ver, UBASE_FW_VERSION_BYTE3_MASK),
+		   u32_get_bits(fw_ver, UBASE_FW_VERSION_BYTE2_MASK),
+		   u32_get_bits(fw_ver, UBASE_FW_VERSION_BYTE1_MASK),
+		   u32_get_bits(fw_ver, UBASE_FW_VERSION_BYTE0_MASK));
 
 	return 0;
 }
@@ -366,7 +368,7 @@ int ubase_cmd_init(struct ubase_dev *udev)
 
 	clear_bit(UBASE_STATE_CMD_DISABLE, &udev->hw.state);
 
-	ret = ubase_cmd_query_version(udev, &udev->caps.dev_caps.fw_version);
+	ret = ubase_cmd_query_version(udev);
 	if (ret)
 		goto err_query_version;
 
@@ -775,9 +777,21 @@ int __ubase_cmd_send_in(struct ubase_dev *udev, struct ubase_cmd_buf *in)
 }
 
 /**
- * When uninstalling, cmdq needs to be successfully sended as much as possible,
- * but the cmd may be disabled during reset, this interface attempts to send cmd
- * when it is enabled.
+ * ubase_cmd_send_inout_ex() - query(and write) cmd extension function
+ * @aux_dev: auxiliary device
+ * @in: the intput cmd buff
+ * @out: the output cmd buff
+ * @time_out: timeout duration, unit: ms
+ *
+ * When the timeout parameter is set to 0, this function behaves the same as
+ * 'ubase_cmd_send_inout'. When the timeout parameter is not 0, if the cmdq
+ * channel is disabled and it recovers within the timeout period, the cmdq can
+ * still process commands normally.
+ * This function is applicable to scenarios such as concurrent resets, where the
+ * cmdq channel is first set to be disabled and then restored to normal operation.
+ *
+ * Context: Process context. Takes and releases <lock>, BH-safe. May sleep.
+ * Return: 0 on success, negative error code otherwise
  */
 int ubase_cmd_send_inout_ex(struct auxiliary_device *aux_dev,
 			    struct ubase_cmd_buf *in, struct ubase_cmd_buf *out,
@@ -810,6 +824,22 @@ int ubase_cmd_send_inout_ex(struct auxiliary_device *aux_dev,
 }
 EXPORT_SYMBOL(ubase_cmd_send_inout_ex);
 
+/**
+ * ubase_cmd_send_inout() - query(and write) cmd function
+ * @aux_dev: auxiliary device
+ * @in: the intput cmd buff
+ * @out: the output cmd buff
+ *
+ * The firmware determines the processing behavior based on 'in->opcode'.
+ * 'in->data_size' and 'in->data' represent the length of valid data and the
+ * address where the data is stored for interaction with the firmware.
+ * 'in->is_read' determines whether to read the query results.
+ * 'out->data_size' and 'out->data' represent the length of valid data and the
+ * address where the data is stored for the reading the query results.
+ *
+ * Context: Process context. Takes and releases <lock>, BH-safe.
+ * Return: 0 on success, negative error code otherwise
+ */
 int ubase_cmd_send_inout(struct auxiliary_device *aux_dev,
 			 struct ubase_cmd_buf *in,
 			 struct ubase_cmd_buf *out)
@@ -821,6 +851,22 @@ int ubase_cmd_send_inout(struct auxiliary_device *aux_dev,
 }
 EXPORT_SYMBOL(ubase_cmd_send_inout);
 
+/**
+ * ubase_cmd_send_in_ex() - write cmd extension function
+ * @aux_dev: auxiliary device
+ * @in: the intput cmd buff
+ * @time_out: timeout duration, unit: ms
+ *
+ * When the timeout parameter is set to 0, this function behaves the same as
+ * 'ubase_cmd_send_in'. When the timeout parameter is not 0, if the cmdq
+ * channel is disabled and it recovers within the timeout period, the cmdq can
+ * still process commands normally.
+ * This function is applicable to scenarios such as concurrent resets, where the
+ * cmdq channel is first set to disabled and then restored to normal operation.
+ *
+ * Context: Process context. Takes and releases <lock>, BH-safe. May sleep.
+ * Return: 0 on success, negative error code otherwise
+ */
 int ubase_cmd_send_in_ex(struct auxiliary_device *aux_dev,
 			 struct ubase_cmd_buf *in, u32 time_out)
 {
@@ -835,6 +881,19 @@ int ubase_cmd_send_in_ex(struct auxiliary_device *aux_dev,
 }
 EXPORT_SYMBOL(ubase_cmd_send_in_ex);
 
+/**
+ * ubase_cmd_send_in() - write cmd function
+ * @aux_dev: auxiliary device
+ * @in: the intput cmd buff
+ *
+ * This function is only used for writing cmdq opcodes. 'in->is_read' must be
+ * false. The firmware determines the processing behavior based on 'in->opcode'.
+ * 'in->data_size' and 'in->data' represent the length of valid data and the
+ * address where the data is stored for interaction with the firmware.
+ *
+ * Context: Process context. Takes and releases <lock>, BH-safe.
+ * Return: 0 on success, negative error code otherwise
+ */
 int ubase_cmd_send_in(struct auxiliary_device *aux_dev,
 		      struct ubase_cmd_buf *in)
 {
@@ -876,6 +935,19 @@ static int __ubase_cmd_get_data_size(struct ubase_dev *udev, u16 opcode,
 	return 0;
 }
 
+/**
+ * ubase_cmd_get_data_size() - obtain the valid data length from cmdq opcode
+ * @aux_dev: auxiliary device
+ * @opcode: cmdq opcode
+ * @data_size: Save the valid data length of cmdq opcode
+ *
+ * For each opcode, the firmware has a corresponding valid data length.
+ * This function queries the firmware to obtain the valid data length
+ * corresponding to the opcode.
+ *
+ * Context: Process context. Takes and releases <lock>, BH-safe.
+ * Return: 0 on success, negative error code otherwise
+ */
 int ubase_cmd_get_data_size(struct auxiliary_device *aux_dev, u16 opcode,
 			    u16 *data_size)
 {
@@ -923,6 +995,18 @@ err_crq_register:
 	return ret;
 }
 
+/**
+ * ubase_register_crq_event() - register crq event processing function
+ * @aux_dev: auxiliary device
+ * @nb: the crq event notification block
+ *
+ * Register the crq handler function. When the firmware reports a crq event,
+ * if the opcode reported by the firmware matches the registered 'nb->opcode',
+ * the 'nb->crq_handler' function will be called to process it.
+ *
+ * Context: Any context.
+ * Return: 0 on success, negative error code otherwise
+ */
 int ubase_register_crq_event(struct auxiliary_device *aux_dev,
 			     struct ubase_crq_event_nb *nb)
 {
@@ -953,6 +1037,16 @@ void __ubase_unregister_crq_event(struct ubase_dev *udev, u16 opcode)
 	mutex_unlock(&crq_table->lock);
 }
 
+/**
+ * ubase_unregister_crq_event() - unregister crq event processing function
+ * @aux_dev: auxiliary device
+ * @opcode: cmdq crq opcode
+ *
+ * Unregisters the crq processing function. This function is called when user
+ * no longer want to handle the crq opcode events reported by the firmware.
+ *
+ * Context: Any context.
+ */
 void ubase_unregister_crq_event(struct auxiliary_device *aux_dev, u16 opcode)
 {
 	struct ubase_dev *udev;

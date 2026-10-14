@@ -17,6 +17,8 @@ enum unic_dbg_dentry_type {
 	UNIC_DBG_DENTRY_CONTEXT,
 	UNIC_DBG_DENTRY_VPORT,
 	UNIC_DBG_DENTRY_QOS,
+	UNIC_DBG_DENTRY_VLAN,
+	UNIC_DBG_DENTRY_MAC,
 	/* must be the last entry. */
 	UNIC_DBG_DENTRY_ROOT
 };

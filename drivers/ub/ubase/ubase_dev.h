@@ -178,15 +178,11 @@ struct ubase_ctrlq_msg_ctx {
 	struct completion	done;
 };
 
-struct ubase_ctrlq_crq_event_nbs {
-	struct list_head		list;
-	struct ubase_ctrlq_event_nb	crq_nb;
-};
-
 struct ubase_ctrlq_crq_table {
 	struct mutex	lock;
 	unsigned long	last_crq_scheduled;
-	struct ubase_ctrlq_crq_event_nbs	crq_nbs;
+	u16				crq_nb_cnt;
+	struct ubase_ctrlq_event_nb	*crq_nbs;
 };
 
 struct ubase_ctrlq {
@@ -454,5 +450,7 @@ void ubase_virt_handler(struct ubase_dev *udev, u16 bus_ue_id, bool is_en);
 
 int ubase_activate_handler(struct ubase_dev *udev, u32 bus_ue_id);
 int ubase_deactivate_handler(struct ubase_dev *udev, u32 bus_ue_id);
+
+void ubase_flush_workqueue(struct ubase_dev *udev);
 
 #endif

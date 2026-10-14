@@ -52,6 +52,14 @@ struct unic_ld_config_mode_cmd {
 	u8 rsv[20];
 };
 
+enum unic_link_fail_code {
+	UNIC_LF_NORMAL,
+	UNIC_LF_REF_CLOCK_LOST,
+	UNIC_LF_XSFP_TX_DISABLE,
+	UNIC_LF_XSFP_ABSENT,
+	UNIC_LF_REF_MAX
+};
+
 struct unic_link_status_cmd_resp {
 	u8	status;
 	u8	link_fail_code;
@@ -144,6 +152,17 @@ struct unic_query_flush_status_resp {
 	u8 rsv[23];
 };
 
+struct unic_vlan_filter_cfg_cmd {
+	u16 vlan_id;
+	u8 is_add;
+	u8 rsv[21];
+};
+
+struct unic_vlan_filter_ctrl_cmd {
+	u8 filter_en;
+	u8 rsv[23];
+};
+
 enum unic_vl_map_type {
 	UNIC_PRIO_VL_MAP,
 	UNIC_DSCP_VL_MAP,
@@ -158,10 +177,31 @@ struct unic_config_vl_map_cmd {
 };
 
 struct unic_config_vl_speed_cmd {
-	__le16 bus_ue_id;
+	u8 resv0[2];
 	__le16 vl_bitmap;
 	__le32 max_speed[UBASE_MAX_VL_NUM];
 	u8 resv1[20];
+};
+
+enum unic_lb_en_sub_cmd {
+	UNIC_LB_APP = 0,
+	UNIC_LB_SERIAL_SERDES,
+	UNIC_LB_PARALLEL_SERDES,
+	UNIC_LB_EXTERNAL,
+	UNIC_LB_MAX,
+};
+
+struct unic_lb_en_cfg {
+	u8 sub_cmd;
+	u8 lb_en : 1;
+	u8 rsvd : 7;
+	u8 result;
+	u8 rsv[21];
+};
+
+struct unic_query_link_diagnosis_resp {
+	__le32 status_code;
+	u8 rsv[20];
 };
 
 #endif

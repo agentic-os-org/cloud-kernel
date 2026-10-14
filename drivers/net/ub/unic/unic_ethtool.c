@@ -8,11 +8,12 @@
 #include <ub/ubase/ubase_comm_cmd.h>
 
 #include "unic.h"
+#include "unic_channel.h"
 #include "unic_dev.h"
 #include "unic_hw.h"
+#include "unic_lb.h"
 #include "unic_netdev.h"
 #include "unic_stats.h"
-#include "unic_channel.h"
 #include "unic_ethtool.h"
 
 static u32 unic_get_link_status(struct net_device *netdev)
@@ -82,6 +83,85 @@ static int unic_get_link_ksettings(struct net_device *netdev,
 	return 0;
 }
 
+static bool unic_speed_supported(struct unic_dev *unic_dev, u32 speed, u32 lanes)
+{
+	u32 speed_bit = 0;
+
+	if (unic_get_speed_bit(speed, lanes, &speed_bit))
+		return false;
+
+	return !!(speed_bit & unic_dev->hw.mac.speed_ability);
+}
+
+static int unic_check_ksettings_param(struct net_device *netdev,
+				      const struct ethtool_link_ksettings *cmd)
+{
+	struct unic_dev *unic_dev = netdev_priv(netdev);
+	struct unic_mac *mac = &unic_dev->hw.mac;
+	u32 lanes;
+
+	if (cmd->base.autoneg && !mac->support_autoneg) {
+		unic_err(unic_dev, "hw not support autoneg.\n");
+		return -EINVAL;
+	}
+
+	/* when autoneg is on, hw not support specified speed params,
+	 * unnecessary to check them.
+	 */
+	if (cmd->base.autoneg)
+		return 0;
+
+	/* if user not specify lanes, use current lanes */
+	lanes = cmd->lanes ? cmd->lanes : mac->lanes;
+	if (!unic_speed_supported(unic_dev, cmd->base.speed, lanes)) {
+		unic_err(unic_dev, "speed(%u) and lanes(%u) is not supported.\n",
+			 cmd->base.speed, lanes);
+		return -EINVAL;
+	}
+
+	if (cmd->base.duplex != DUPLEX_FULL) {
+		unic_err(unic_dev, "only support full duplex.\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static bool unic_link_ksettings_changed(struct unic_mac *mac,
+					const struct ethtool_link_ksettings *cmd)
+{
+	/* when autoneg is disabled and lanes not specified, lanes is 0. */
+	if (cmd->base.autoneg == mac->autoneg &&
+	    cmd->base.duplex == mac->duplex &&
+	    cmd->base.speed == mac->speed &&
+	    (cmd->lanes == mac->lanes || (!cmd->lanes && !cmd->base.autoneg)))
+		return false;
+
+	return true;
+}
+
+static int unic_set_link_ksettings(struct net_device *netdev,
+				   const struct ethtool_link_ksettings *cmd)
+{
+	struct unic_dev *unic_dev = netdev_priv(netdev);
+	struct unic_mac *mac = &unic_dev->hw.mac;
+	int ret;
+
+	if (!unic_link_ksettings_changed(mac, cmd))
+		return 0;
+
+	ret = unic_check_ksettings_param(netdev, cmd);
+	if (ret)
+		return ret;
+
+	unic_info(unic_dev,
+		  "set link: autoneg = %u, speed = %u, duplex = %u, lanes = %u.\n",
+		  cmd->base.autoneg, cmd->base.speed,
+		  cmd->base.duplex, cmd->lanes);
+
+	return unic_set_mac_link_ksettings(unic_dev, cmd);
+}
+
 static void unic_get_driver_info(struct net_device *netdev,
 				 struct ethtool_drvinfo *drvinfo)
 {
@@ -113,9 +193,6 @@ static int unic_get_fecparam(struct net_device *ndev,
 {
 	struct unic_dev *unic_dev = netdev_priv(ndev);
 	struct unic_mac *mac = &unic_dev->hw.mac;
-
-	if (!unic_dev_fec_supported(unic_dev))
-		return -EOPNOTSUPP;
 
 	fec->fec = mac->fec_ability;
 	fec->active_fec = mac->fec_mode;
@@ -279,6 +356,12 @@ static int unic_set_coalesce(struct net_device *netdev,
 	struct unic_coalesce old_tx_coal, old_rx_coal;
 	int ret, ret1;
 
+	if (netif_running(netdev)) {
+		unic_err(unic_dev,
+			 "failed to set coalesce param, due to network interface is up, please down it first and try again.\n");
+		return -EBUSY;
+	}
+
 	if (unic_resetting(netdev))
 		return -EBUSY;
 
@@ -348,6 +431,70 @@ static int unic_reset(struct net_device *ndev, u32 *flags)
 	return 0;
 }
 
+struct unic_ethtool_link_ext_state_mapping {
+	u32 status_code;
+	enum ethtool_link_ext_state link_ext_state;
+	u8 link_ext_substate;
+};
+
+static const struct unic_ethtool_link_ext_state_mapping
+unic_link_ext_state_map[] = {
+	{516, ETHTOOL_LINK_EXT_STATE_LINK_LOGICAL_MISMATCH,
+		ETHTOOL_LINK_EXT_SUBSTATE_LLM_PCS_DID_NOT_ACQUIRE_AM_LOCK},
+	{768, ETHTOOL_LINK_EXT_STATE_BAD_SIGNAL_INTEGRITY,
+		ETHTOOL_LINK_EXT_SUBSTATE_BSI_LARGE_NUMBER_OF_PHYSICAL_ERRORS},
+	{770, ETHTOOL_LINK_EXT_STATE_BAD_SIGNAL_INTEGRITY,
+		ETHTOOL_LINK_EXT_SUBSTATE_BSI_SERDES_ALOS},
+	{1024, ETHTOOL_LINK_EXT_STATE_NO_CABLE, 0},
+};
+
+static int unic_get_link_ext_state(struct net_device *netdev,
+				   struct ethtool_link_ext_state_info *info)
+{
+	const struct unic_ethtool_link_ext_state_mapping *map;
+	struct unic_query_link_diagnosis_resp resp = {0};
+	struct unic_dev *unic_dev = netdev_priv(netdev);
+	struct ubase_cmd_buf in, out;
+	u32 status_code;
+	int ret;
+	u8 i;
+
+	if (netif_carrier_ok(netdev))
+		return -ENODATA;
+
+	if (unic_dev_ubl_supported(unic_dev))
+		return -EOPNOTSUPP;
+
+	ubase_fill_inout_buf(&in, UBASE_OPC_QUERY_LINK_DIAGNOSIS, true, 0, NULL);
+	ubase_fill_inout_buf(&out, UBASE_OPC_QUERY_LINK_DIAGNOSIS, false,
+			     sizeof(resp), &resp);
+
+	ret = ubase_cmd_send_inout(unic_dev->comdev.adev, &in, &out);
+	if (ret) {
+		unic_err(unic_dev, "failed to query link diagnosis, ret = %d.\n",
+			 ret);
+		return ret;
+	}
+
+	status_code = le32_to_cpu(resp.status_code);
+	if (!status_code)
+		return -ENODATA;
+
+	for (i = 0; i < ARRAY_SIZE(unic_link_ext_state_map); i++) {
+		map = &unic_link_ext_state_map[i];
+		if (map->status_code == status_code) {
+			info->link_ext_state = map->link_ext_state;
+			info->__link_ext_substate = map->link_ext_substate;
+			return 0;
+		}
+	}
+
+	unic_warn(unic_dev, "unknown link failure status_code = %u.\n",
+		  status_code);
+
+	return -ENODATA;
+}
+
 #define UNIC_ETHTOOL_RING	(ETHTOOL_RING_USE_RX_BUF_LEN | \
 				 ETHTOOL_RING_USE_TX_PUSH)
 #define UNIC_ETHTOOL_COALESCE	(ETHTOOL_COALESCE_USECS | \
@@ -360,6 +507,7 @@ static const struct ethtool_ops unic_ethtool_ops = {
 	.supported_coalesce_params = UNIC_ETHTOOL_COALESCE,
 	.get_link = unic_get_link_status,
 	.get_link_ksettings = unic_get_link_ksettings,
+	.set_link_ksettings = unic_set_link_ksettings,
 	.get_drvinfo = unic_get_driver_info,
 	.get_regs_len = unic_get_regs_len,
 	.get_regs = unic_get_regs,
@@ -370,12 +518,14 @@ static const struct ethtool_ops unic_ethtool_ops = {
 	.set_channels = unic_set_channels,
 	.get_ringparam = unic_get_channels_param,
 	.set_ringparam = unic_set_channels_param,
+	.self_test = unic_self_test,
 	.get_fecparam = unic_get_fecparam,
 	.set_fecparam = unic_set_fecparam,
 	.get_fec_stats = unic_get_fec_stats,
 	.get_coalesce = unic_get_coalesce,
 	.set_coalesce = unic_set_coalesce,
 	.reset = unic_reset,
+	.get_link_ext_state = unic_get_link_ext_state,
 };
 
 void unic_set_ethtool_ops(struct net_device *netdev)

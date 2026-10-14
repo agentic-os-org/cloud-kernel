@@ -26,6 +26,7 @@
 #include "unic_qos_hw.h"
 #include "unic_netdev.h"
 #include "unic_rack_ip.h"
+#include "unic_vlan.h"
 #include "unic_dev.h"
 
 #define UNIC_WATCHDOG_TIMEOUT (5 * HZ)
@@ -248,10 +249,12 @@ static int unic_init_vl_info(struct unic_dev *unic_dev)
 		return ret;
 
 	ret = unic_init_vl_maxrate(unic_dev);
-	if (ret)
+	if (ret && ret != -EPERM)
 		return ret;
 
-	return unic_init_vl_sch(unic_dev);
+	ret = unic_init_vl_sch(unic_dev);
+
+	return ret == -EPERM ? 0 : ret;
 }
 
 static int unic_init_channels_attr(struct unic_dev *unic_dev)
@@ -267,7 +270,7 @@ static int unic_init_channels_attr(struct unic_dev *unic_dev)
 
 	channels->vl.vl_num = 1;
 	channels->rss_vl_num = 1;
-	channels->rss_size = unic_channels_max_num(unic_dev->comdev.adev);
+	channels->rss_size = 1;
 	channels->num = channels->rss_size * channels->rss_vl_num;
 	channels->sqebb_depth = unic_caps->jfs.depth;
 	channels->rqe_depth = unic_caps->jfr.depth;
@@ -541,6 +544,14 @@ static void unic_set_netdev_attr(struct net_device *netdev)
 	if (unic_dev_ubl_supported(unic_dev)) {
 		netdev->features |= NETIF_F_VLAN_CHALLENGED;
 		netdev->flags &= ~(IFF_BROADCAST | IFF_MULTICAST);
+	} else {
+		netdev->flags |= IFF_BROADCAST | IFF_MULTICAST;
+		netdev->features |= NETIF_F_HW_VLAN_CTAG_FILTER;
+	}
+
+	if (!unic_dev_cfg_vlan_filter_supported(unic_dev)) {
+		netdev->features |= NETIF_F_VLAN_CHALLENGED;
+		netdev->features &= ~NETIF_F_HW_VLAN_CTAG_FILTER;
 	}
 
 	if (unic_dev_tx_csum_offload_supported(unic_dev))
@@ -559,17 +570,12 @@ static int unic_dev_init_mtu(struct unic_dev *unic_dev)
 {
 	struct net_device *netdev = unic_dev->comdev.netdev;
 	struct unic_caps *caps = &unic_dev->caps;
-	int ret;
 
 	netdev->mtu = UB_DATA_LEN;
 	netdev->max_mtu = caps->max_trans_unit;
 	netdev->min_mtu = caps->min_trans_unit;
 
-	ret = unic_config_mtu(unic_dev, netdev->mtu);
-	if (ret == -EPERM)
-		return 0;
-
-	return ret;
+	return unic_config_mtu(unic_dev, netdev->mtu);
 }
 
 static int unic_init_mac(struct unic_dev *unic_dev)
@@ -583,11 +589,11 @@ static int unic_init_mac(struct unic_dev *unic_dev)
 
 	ret = unic_set_mac_speed_duplex(unic_dev, mac->speed, mac->duplex,
 					mac->lanes);
-	if (ret && ret != -EPERM)
+	if (ret)
 		return ret;
 
 	ret = unic_set_mac_autoneg(unic_dev, mac->autoneg);
-	if (ret && ret != -EPERM)
+	if (ret)
 		return ret;
 
 	ret = unic_dev_fec_supported(unic_dev) && mac->user_fec_mode ?
@@ -621,9 +627,7 @@ int unic_set_mtu(struct unic_dev *unic_dev, int new_mtu)
 	new_mtu = max(new_mtu, UB_DATA_LEN);
 
 	ret = unic_check_validate_dump_mtu(unic_dev, new_mtu, &max_frame_size);
-	if (ret == -EPERM) {
-		return 0;
-	} else if (ret < 0) {
+	if (ret) {
 		unic_err(unic_dev, "invalid MTU(%d), please check, ret = %d.\n",
 			 new_mtu, ret);
 		return -EINVAL;
@@ -661,6 +665,7 @@ static void unic_periodic_service_task(struct unic_dev *unic_dev)
 	unic_update_port_info(unic_dev);
 	unic_sync_rack_ip_table(unic_dev);
 	unic_sync_promisc_mode(unic_dev);
+	unic_sync_vlan_filter(unic_dev);
 
 	if (!(unic_dev->serv_processed_cnt % UNIC_UPDATE_STATS_TIMER_INTERVAL))
 		unic_update_stats_for_all(unic_dev);
@@ -769,12 +774,20 @@ static int unic_init_vport(struct unic_dev *unic_dev)
 
 	unic_init_vport_info(unic_dev);
 
+	ret = unic_init_vlan_config(unic_dev);
+	if (ret)
+		unic_uninit_vport_buf(unic_dev);
+
 	return ret;
 }
 
 static void unic_uninit_vport(struct unic_dev *unic_dev)
 {
 	unic_uninit_rack_ip_table(unic_dev);
+
+	if (unic_dev_eth_mac_supported(unic_dev))
+		unic_uninit_vlan_config(unic_dev);
+
 	unic_uninit_vport_buf(unic_dev);
 }
 
@@ -974,6 +987,11 @@ static struct net_device *unic_alloc_netdev(struct auxiliary_device *adev)
 		dev_warn(adev->dev.parent,
 			 "failed to alloc netdev because of ubl macro is not enabled.\n");
 #endif
+	} else {
+		snprintf(name, IFNAMSIZ, "ethc%ud%ue%u", caps->chip_id,
+			 caps->die_id, caps->ue_id);
+		netdev = alloc_netdev_mq(sizeof(struct unic_dev), name,
+					 NET_NAME_USER, ether_setup, channel_num);
 	}
 
 	return netdev;

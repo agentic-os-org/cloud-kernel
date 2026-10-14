@@ -86,6 +86,15 @@ void __ubase_reset_event(struct ubase_dev *udev,
 	}
 }
 
+/**
+ * ubase_reset_event() - reset event processing
+ * @adev: auxiliary device
+ * @reset_type: reset type
+ *
+ * The function performs corresponding reset processing based on different 'reset_type'.
+ *
+ * Context: Any context.
+ */
 void ubase_reset_event(struct auxiliary_device *adev,
 		       enum ubase_reset_type reset_type)
 {
@@ -229,6 +238,7 @@ void ubase_suspend(struct ubase_dev *udev)
 	ubase_ctrlq_disable_remote(udev);
 	ubase_ctrlq_disable(udev);
 	ubase_irq_table_free(udev);
+	ubase_flush_workqueue(udev);
 }
 
 void ubase_resume(struct ubase_dev *udev)
