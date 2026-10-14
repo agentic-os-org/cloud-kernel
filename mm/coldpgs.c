@@ -204,14 +204,6 @@ out:
 	return lruvec;
 }
 
-static inline struct lruvec *my_folio_lruvec(struct folio *folio)
-{
-	struct mem_cgroup *memcg = folio_memcg(folio);
-
-	VM_WARN_ON_ONCE_FOLIO(!memcg && !mem_cgroup_disabled(), folio);
-	return my_mem_cgroup_lruvec(memcg, folio_pgdat(folio));
-}
-
 static inline void my_mem_cgroup_uncharge(struct folio *folio)
 {
 	if (mem_cgroup_disabled())
@@ -387,8 +379,12 @@ static inline bool folio_is_reclaimable(struct mem_cgroup *memcg,
 			bool validate_age)
 {
 	struct address_space *mapping;
-	struct mem_cgroup *m = folio_memcg(folio);
+	struct mem_cgroup *m;
 	int age;
+
+	rcu_read_lock();
+	m = folio_memcg(folio);
+	rcu_read_unlock();
 
 	if (m != memcg)
 		return false;
@@ -864,7 +860,10 @@ static unsigned long reclaim_coldpgs_from_list(struct mem_cgroup *memcg,
 		if (!folio_trylock(folio))
 			goto keep;
 
-		VM_BUG_ON_FOLIO(folio_test_active(folio), folio);
+		/*
+		 * coldpgs reclaims directly from the active LRU, so unlike
+		 * vmscan the active flag is expected here.
+		 */
 
 		nr_pages = folio_nr_pages(folio);
 		is_pagecache = folio_is_file_lru(folio) ? true : false;
@@ -996,16 +995,20 @@ static unsigned long reclaim_coldpgs_from_list(struct mem_cgroup *memcg,
 		__folio_clear_active(folio);
 
 free_it:
+		/*
+		 * A large folio is freed in place below, so read
+		 * folio-dependent stats (kidled) while @folio is still valid.
+		 */
+		nr_reclaimed += nr_pages;
+		kidled_mem_cgroup_move_stats(memcg, NULL, folio, nr_pages);
+		if (is_pagecache)
+			nr_pagecache_dropped += nr_pages;
+
 		if (unlikely(folio_test_large(folio))) {
 			my_mem_cgroup_uncharge(folio);
 			my_destroy_large_folio(folio);
 		} else
 			list_add(&folio->lru, &free_folios);
-
-		nr_reclaimed += nr_pages;
-		kidled_mem_cgroup_move_stats(memcg, NULL, folio, nr_pages);
-		if (is_pagecache)
-			nr_pagecache_dropped += nr_pages;
 
 		continue;
 
@@ -1180,39 +1183,42 @@ again:
 
 		unit = info->unit[index];
 
-		rcu_read_unlock();
+		/*
+		 * unit->map is RCU-protected and may be freed by a concurrent
+		 * shrinker_info resize, so keep the RCU read lock held across
+		 * the walk; only drop it around the shrinker call that sleeps.
+		 */
 		for_each_set_bit(i, unit->map, SHRINKER_UNIT_BITS) {
 			struct shrinker *shrinker;
 			unsigned long ret;
 			int shrinker_id = index * SHRINKER_UNIT_BITS + i;
 
-			rcu_read_lock();
 			shrinker = idr_find(my_shrinker_idr, shrinker_id);
 			if (unlikely(!shrinker || !shrinker_try_get(shrinker))) {
 				clear_bit(i, unit->map);
-				rcu_read_unlock();
 				continue;
 			}
-			rcu_read_unlock();
 
+			rcu_read_unlock();
 			ret = reclaim_coldslab_from_shrinker(shrinker, sc,
 							     nr_to_reclaim);
 			shrinker_put(shrinker);
+			rcu_read_lock();
 			if (ret == SHRINK_STOP)
 				continue;
 
 			nr_reclaimed += ret;
 			if (nr_reclaimed >= nr_to_reclaim)
-				goto out;
+				goto out_unlock;
 		}
 
+		rcu_read_unlock();
 		index++;
 		goto again;
 	}
 
 out_unlock:
 	rcu_read_unlock();
-out:
 	return nr_reclaimed;
 }
 
@@ -1390,19 +1396,20 @@ static void reclaim_coldpgs_from_memcg(struct mem_cgroup *memcg,
 			unsigned long nr_slab_size, nr_to_reclaim;
 
 			/*
-			 * The user specified "nr_reclaimed" means it is used
-			 * to break the loop rather than the actual numbers
-			 * need to free to the system. Because the reclaimed
-			 * slab objects maybe are not freed to buddy system,
-			 * hence we will reclaim cold slab can be controlled
-			 * separately by idlemd tool.
+			 * reclaim_coldslab_from_lru() returns the number of
+			 * reclaimed slab objects, whereas nr_reclaimed and
+			 * filter->size are counted in bytes of page memory.
+			 * The two are different units and reclaimed slab
+			 * objects are not necessarily freed back to the buddy
+			 * system, so slab reclaim must not be folded into the
+			 * page-byte budget here. Report it separately via the
+			 * SLAB_DROP stat instead, which idlemd controls.
 			 */
 			nr_to_reclaim = filter->size - nr_reclaimed;
 			nr_slab_size = reclaim_coldslab_from_lru(memcg,
 							pgdat->node_id,
 							filter->threshold,
 							nr_to_reclaim);
-			nr_reclaimed += nr_slab_size;
 			reclaim_coldpgs_update_stats(memcg,
 				RECLAIM_COLDPGS_STAT_SLAB_DROP, nr_slab_size);
 		}
