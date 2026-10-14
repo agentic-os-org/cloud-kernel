@@ -553,6 +553,9 @@ static int _mlx5_vdpa_create_dvq_mr(struct mlx5_vdpa_dev *mvdev,
 	struct mlx5_vdpa_mr *mr = &mvdev->mr;
 	int err;
 
+	if (mlx5_vdpa_max_iotlb_entries < 2)
+		return -EINVAL;
+
 	if (mvdev->group2asid[MLX5_VDPA_DATAVQ_GROUP] != asid)
 		return 0;
 
