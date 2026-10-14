@@ -11,17 +11,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/vmalloc.h>
 #include <linux/nvgrace-egm.h>
-
-#ifdef CONFIG_EGM_MEMORY_FAILURE
-#include <linux/bitmap.h>
 #include <linux/memory-failure.h>
-#include <linux/hashtable.h>
-#endif
-
-struct h_node {
-	unsigned long mem_offset;
-	struct hlist_node node;
-};
 
 /*
  * The device memory usable to the workloads running in the VM is cached
@@ -62,10 +52,7 @@ struct mem_region {
 		void *memaddr;
 		void __iomem *ioaddr;
 	};                      /* Base virtual address of the region */
-#ifdef CONFIG_EGM_MEMORY_FAILURE
 	struct pfn_address_space pfn_address_space;
-	DECLARE_HASHTABLE(htbl, 8);
-#endif
 };
 
 struct nvgrace_gpu_pci_core_device {
@@ -83,97 +70,6 @@ struct nvgrace_gpu_pci_core_device {
 };
 
 static bool egm_enabled;
-
-#ifdef CONFIG_EGM_MEMORY_FAILURE
-static void
-nvgrace_gpu_vfio_pci_pfn_memory_failure(struct pfn_address_space *pfn_space,
-					unsigned long pfn)
-{
-	struct mem_region *region = container_of(pfn_space,
-			struct mem_region, pfn_address_space);
-	unsigned long mem_offset = pfn - pfn_space->node.start;
-	struct h_node *ecc;
-
-	if (mem_offset >= region->memlength)
-		return;
-
-	/*
-	 * MM has called to notify a poisoned page. Track that in the hastable.
-	 */
-	ecc = (struct h_node *)(vzalloc(sizeof(struct h_node)));
-	ecc->mem_offset = mem_offset;
-	hash_add(region->htbl, &ecc->node, ecc->mem_offset);
-}
-
-struct pfn_address_space_ops nvgrace_gpu_vfio_pci_pas_ops = {
-	.failure = nvgrace_gpu_vfio_pci_pfn_memory_failure,
-};
-
-static int
-nvgrace_gpu_vfio_pci_register_pfn_range(struct mem_region *region,
-					struct vm_area_struct *vma)
-{
-	unsigned long nr_pages;
-	int ret = 0;
-
-	nr_pages = region->memlength >> PAGE_SHIFT;
-
-	region->pfn_address_space.node.start = vma->vm_pgoff;
-	region->pfn_address_space.node.last = vma->vm_pgoff + nr_pages - 1;
-	region->pfn_address_space.ops = &nvgrace_gpu_vfio_pci_pas_ops;
-	region->pfn_address_space.mapping = vma->vm_file->f_mapping;
-
-	ret = register_pfn_address_space(&region->pfn_address_space);
-
-	return ret;
-}
-
-extern struct vfio_device *vfio_device_from_file(struct file *file);
-
-static vm_fault_t nvgrace_gpu_vfio_pci_fault(struct vm_fault *vmf)
-{
-	unsigned long mem_offset = vmf->pgoff - vmf->vma->vm_pgoff;
-	struct vfio_device *core_vdev;
-	struct nvgrace_gpu_pci_core_device *nvdev;
-	struct h_node *cur;
-
-	if (!(vmf->vma->vm_file))
-		goto error_exit;
-
-	core_vdev = vfio_device_from_file(vmf->vma->vm_file);
-
-	if (!core_vdev)
-		goto error_exit;
-
-	nvdev = container_of(core_vdev,
-			     struct nvgrace_gpu_pci_core_device,
-			     core_device.vdev);
-
-	/*
-	 * Check if the page is poisoned.
-	 */
-	if (mem_offset < (nvdev->resmem.memlength >> PAGE_SHIFT)) {
-		hash_for_each_possible(nvdev->resmem.htbl, cur, node, mem_offset) {
-			if (cur->mem_offset == mem_offset)
-				return VM_FAULT_HWPOISON;
-		}
-	}
-
-	if (mem_offset < (nvdev->usemem.memlength >> PAGE_SHIFT)) {
-		hash_for_each_possible(nvdev->usemem.htbl, cur, node, mem_offset) {
-			if (cur->mem_offset == mem_offset)
-				return VM_FAULT_HWPOISON;
-		}
-	}
-
-error_exit:
-	return VM_FAULT_ERROR;
-}
-
-static const struct vm_operations_struct nvgrace_gpu_vfio_pci_mmap_ops = {
-	.fault = nvgrace_gpu_vfio_pci_fault,
-};
-#endif
 
 static void nvgrace_gpu_init_fake_bar_emu_regs(struct vfio_device *core_vdev)
 {
@@ -197,6 +93,80 @@ nvgrace_gpu_memregion(int index,
 		return &nvdev->resmem;
 
 	return NULL;
+}
+
+static int pfn_memregion_offset(struct nvgrace_gpu_pci_core_device *nvdev,
+				unsigned int index,
+				unsigned long pfn,
+				pgoff_t *pfn_offset_in_region)
+{
+	struct mem_region *region;
+	unsigned long start_pfn, num_pages;
+
+	region = nvgrace_gpu_memregion(index, nvdev);
+	if (!region)
+		return -EINVAL;
+
+	start_pfn = PHYS_PFN(region->memphys);
+	num_pages = region->memlength >> PAGE_SHIFT;
+
+	if (pfn < start_pfn || pfn >= start_pfn + num_pages)
+		return -EFAULT;
+
+	*pfn_offset_in_region = pfn - start_pfn;
+
+	return 0;
+}
+
+static inline
+struct nvgrace_gpu_pci_core_device *vma_to_nvdev(struct vm_area_struct *vma);
+
+static int nvgrace_gpu_pfn_to_vma_pgoff(struct vm_area_struct *vma,
+					unsigned long pfn,
+					pgoff_t *pgoff)
+{
+	struct nvgrace_gpu_pci_core_device *nvdev;
+	unsigned int index =
+		vma->vm_pgoff >> (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT);
+	pgoff_t vma_offset_in_region = vma->vm_pgoff &
+		((1U << (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT)) - 1);
+	pgoff_t pfn_offset_in_region;
+	int ret;
+
+	nvdev = vma_to_nvdev(vma);
+	if (!nvdev)
+		return -ENOENT;
+
+	ret = pfn_memregion_offset(nvdev, index, pfn, &pfn_offset_in_region);
+	if (ret)
+		return ret;
+
+	/* Ensure PFN is not before VMA's start within the region */
+	if (pfn_offset_in_region < vma_offset_in_region)
+		return -EFAULT;
+
+	/* Calculate offset from VMA start */
+	*pgoff = vma->vm_pgoff +
+		 (pfn_offset_in_region - vma_offset_in_region);
+
+	return 0;
+}
+
+static int
+nvgrace_gpu_vfio_pci_register_pfn_range(struct vfio_device *core_vdev,
+					struct mem_region *region)
+{
+	unsigned long pfn, nr_pages;
+
+	pfn = PHYS_PFN(region->memphys);
+	nr_pages = region->memlength >> PAGE_SHIFT;
+
+	region->pfn_address_space.node.start = pfn;
+	region->pfn_address_space.node.last = pfn + nr_pages - 1;
+	region->pfn_address_space.mapping = core_vdev->inode->i_mapping;
+	region->pfn_address_space.pfn_to_vma_pgoff = nvgrace_gpu_pfn_to_vma_pgoff;
+
+	return register_pfn_address_space(&region->pfn_address_space);
 }
 
 static int nvgrace_gpu_open_device(struct vfio_device *core_vdev)
@@ -225,14 +195,28 @@ static int nvgrace_gpu_open_device(struct vfio_device *core_vdev)
 	 * memory mapping.
 	 */
 	ret = vfio_pci_core_setup_barmap(vdev, 0);
-	if (ret) {
-		vfio_pci_core_disable(vdev);
-		return ret;
+	if (ret)
+		goto error_exit;
+
+	if (nvdev->resmem.memlength) {
+		ret = nvgrace_gpu_vfio_pci_register_pfn_range(core_vdev, &nvdev->resmem);
+		if (ret && ret != -EOPNOTSUPP)
+			goto error_exit;
 	}
 
-	vfio_pci_core_finish_enable(vdev);
+	ret = nvgrace_gpu_vfio_pci_register_pfn_range(core_vdev, &nvdev->usemem);
+	if (ret && ret != -EOPNOTSUPP)
+		goto register_mem_failed;
 
+	vfio_pci_core_finish_enable(vdev);
 	return 0;
+
+register_mem_failed:
+	if (nvdev->resmem.memlength)
+		unregister_pfn_address_space(&nvdev->resmem.pfn_address_space);
+error_exit:
+	vfio_pci_core_disable(vdev);
+	return ret;
 }
 
 static void nvgrace_gpu_close_device(struct vfio_device *core_vdev)
@@ -240,6 +224,11 @@ static void nvgrace_gpu_close_device(struct vfio_device *core_vdev)
 	struct nvgrace_gpu_pci_core_device *nvdev =
 		container_of(core_vdev, struct nvgrace_gpu_pci_core_device,
 			     core_device.vdev);
+
+	if (nvdev->resmem.memlength)
+		unregister_pfn_address_space(&nvdev->resmem.pfn_address_space);
+
+	unregister_pfn_address_space(&nvdev->usemem.pfn_address_space);
 
 	/* Unmap the mapping to the device memory cached region */
 	if (nvdev->usemem.memaddr) {
@@ -255,11 +244,6 @@ static void nvgrace_gpu_close_device(struct vfio_device *core_vdev)
 
 	mutex_destroy(&nvdev->remap_lock);
 
-#ifdef CONFIG_EGM_MEMORY_FAILURE
-	if (nvdev->resmem.memlength)
-		unregister_pfn_address_space(&nvdev->resmem.pfn_address_space);
-	unregister_pfn_address_space(&nvdev->usemem.pfn_address_space);
-#endif
 	vfio_pci_core_close_device(core_vdev);
 }
 
@@ -363,6 +347,16 @@ static const struct vm_operations_struct nvgrace_gpu_vfio_pci_mmap_ops = {
 #endif
 };
 
+static inline
+struct nvgrace_gpu_pci_core_device *vma_to_nvdev(struct vm_area_struct *vma)
+{
+	/* Check if this VMA belongs to us */
+	if (vma->vm_ops != &nvgrace_gpu_vfio_pci_mmap_ops)
+		return NULL;
+
+	return vma->vm_private_data;
+}
+
 static int nvgrace_gpu_mmap(struct vfio_device *core_vdev,
 			    struct vm_area_struct *vma)
 {
@@ -372,7 +366,6 @@ static int nvgrace_gpu_mmap(struct vfio_device *core_vdev,
 	struct mem_region *memregion;
 	u64 req_len, pgoff, end;
 	unsigned int index;
-	int ret = 0;
 
 	index = vma->vm_pgoff >> (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT);
 
@@ -420,17 +413,7 @@ static int nvgrace_gpu_mmap(struct vfio_device *core_vdev,
 	vma->vm_ops = &nvgrace_gpu_vfio_pci_mmap_ops;
 	vma->vm_private_data = nvdev;
 
-#ifdef CONFIG_EGM_MEMORY_FAILURE
-	vma->vm_ops = &nvgrace_gpu_vfio_pci_mmap_ops;
-
-	if (index == VFIO_PCI_BAR2_REGION_INDEX) {
-		WARN_ON_ONCE(!nvdev->has_mig_hw_bug);
-		ret = nvgrace_gpu_vfio_pci_register_pfn_range(&nvdev->resmem, vma);
-	} else
-		ret = nvgrace_gpu_vfio_pci_register_pfn_range(&nvdev->usemem, vma);
-#endif
-
-	return ret;
+	return 0;
 }
 
 static long
@@ -1291,14 +1274,6 @@ static int nvgrace_gpu_probe(struct pci_dev *pdev,
 	if (ret)
 		goto out_egm_unreg;
 
-#ifdef CONFIG_EGM_MEMORY_FAILURE
-	/*
-	 * Initialize the hashtable tracking the poisoned pages.
-	 */
-	hash_init(nvdev->resmem.htbl);
-	hash_init(nvdev->usemem.htbl);
-#endif
-
 	return ret;
 
 out_egm_unreg:
@@ -1312,22 +1287,6 @@ out_put_vdev:
 static void nvgrace_gpu_remove(struct pci_dev *pdev)
 {
 	struct vfio_pci_core_device *core_device = dev_get_drvdata(&pdev->dev);
-
-#ifdef CONFIG_EGM_MEMORY_FAILURE
-	struct h_node *cur;
-	unsigned long bkt;
-	struct hlist_node *tmp_node;
-
-	hash_for_each_safe(nvdev->resmem.htbl, bkt, tmp_node, cur, node) {
-		hash_del(&cur->node);
-		vfree(cur);
-	}
-
-	hash_for_each_safe(nvdev->usemem.htbl, bkt, tmp_node, cur, node) {
-		hash_del(&cur->node);
-		vfree(cur);
-	}
-#endif
 
 	if (egm_enabled)
 		unregister_egm_node(pdev);
