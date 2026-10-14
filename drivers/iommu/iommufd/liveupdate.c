@@ -77,6 +77,11 @@ static int check_iopt_pages_preserved(struct liveupdate_session *s,
 	     area = iopt_area_iter_next(area, 0, ULONG_MAX)) {
 		struct iopt_pages *pages = area->pages;
 
+		if (!pages) {
+			ret = -EBUSY;
+			break;
+		}
+
 		/* Only allow file based mapping */
 		if (pages->type != IOPT_ADDRESS_FILE) {
 			ret = -EINVAL;
