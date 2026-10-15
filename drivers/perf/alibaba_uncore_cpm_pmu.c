@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * NGF CPM performance counter support.
+ * Alibaba Damo CPM performance counter support.
  */
 
 #include <linux/platform_device.h>
