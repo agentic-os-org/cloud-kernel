@@ -723,7 +723,7 @@ static void cpm_hw_stop(struct cpm_pmu *cpm)
 		goto out;
 	}
 
-	for (int idx = 0; idx < CPM_MAX_STAT_EVENTS; idx++) {
+	for (idx = 0; idx < CPM_MAX_STAT_EVENTS; idx++) {
 		struct perf_event *event = cpm->events[idx];
 
 		if (!event || cpm_is_realtime_stat(event))
