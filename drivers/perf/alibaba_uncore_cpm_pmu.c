@@ -54,10 +54,14 @@
 /* CSR0 bit definitions */
 #define CPM_SWRST_N           BIT(0)
 #define CPM_INT_EN_MASK       GENMASK(12, 8)
+#define CPM_MON_DN_INT_EN     BIT(8)
 #define CPM_MON_EN            BIT(4)
 #define CPM_MON_DN_BIT        BIT(16)     /* mon_dn status in int_s */
 #define CPM_MON_DN_INT        BIT(24)     /* mon_dn status in int_rs (W1C) */
 #define CPM_INT_MASK          GENMASK(28, 24)
+/* CSR1: mon_mode=0 selects continuous monitoring; trigger_re=0 is SW. */
+#define CPM_CONTINUOUS_SW     0
+#define CPM_TRIGGER_SW       BIT(4)
 /* OSTD status registers */
 #define CPM_STT_OSTD0         0x10
 #define CPM_STT_OSTD1         0x14
@@ -638,11 +642,14 @@ static void cpm_hw_start(struct cpm_pmu *cpm)
 	if (cpm->sysreg_base)
 		writel(cpm->cpm_sel, cpm->sysreg_base);
 
-	writel(0x101, cpm->base + CPM_CSR0);
+	/* CSR0: release active-low reset and enable window-done interrupts. */
+	writel(CPM_SWRST_N | CPM_MON_DN_INT_EN, cpm->base + CPM_CSR0);
 	writel(cpm->mon_period, cpm->base + CPM_CSR2);
-	writel(0x0, cpm->base + CPM_CSR1);
-	writel(0x111, cpm->base + CPM_CSR0);
-	writel(0x10, cpm->base + CPM_CSR1);
+	writel(CPM_CONTINUOUS_SW, cpm->base + CPM_CSR1);
+	writel(CPM_SWRST_N | CPM_MON_DN_INT_EN | CPM_MON_EN,
+	       cpm->base + CPM_CSR0);
+	/* CSR1 trigger_sw starts monitoring and is cleared by hardware. */
+	writel(CPM_TRIGGER_SW, cpm->base + CPM_CSR1);
 
 	cpm->hw_started = true;
 }
