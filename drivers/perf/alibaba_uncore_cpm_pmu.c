@@ -619,6 +619,14 @@ static void cpm_event_update(struct perf_event *event)
 
 	if (mode == CPM_COUNT_AVG && val == 0)
 		return;
+	/*
+	 * Known IP erratum: OSTD/LCRD min can be wrong when the live value
+	 * reaches zero (even avg < min). These minima are not reliable.
+	 * Keep the existing zero-sample policy for now: accepting zero or
+	 * changing the software sentinel cannot repair the hardware result.
+	 * This erratum does not establish the validity of zero latency samples;
+	 * their no-transaction encoding needs separate hardware confirmation.
+	 */
 	if (mode == CPM_COUNT_MIN && val == 0)
 		return;
 
