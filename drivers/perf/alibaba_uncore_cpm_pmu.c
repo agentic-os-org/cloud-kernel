@@ -765,6 +765,10 @@ static int cpm_event_add(struct perf_event *event, int flags)
 	 * A pinned event may survive a flexible reschedule. Check hardware
 	 * state, not attr.pinned: no new configuration is safe while running.
 	 * Reject before allocating a slot or writing any control register.
+	 * The IP forbids changing control signals while mon_en is asserted.
+	 * Stopping the whole CPM to admit a new event would interrupt existing
+	 * measurements, including pinned events. Configure each idle batch
+	 * first; pmu_enable() starts it only after all add/start calls finish.
 	 */
 	if (cpm->hw_started) {
 		dev_warn_ratelimited(cpm->dev,
