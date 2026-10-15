@@ -307,6 +307,17 @@ config ALIBABA_UNCORE_CPM_PMU
 	depends on RISCV
 	default m
 	help
-	  Support for Alibaba Damo uncore CHI performance monitor driver.
+	  Enable support for the Alibaba Damo CHI Performance Monitor
+	  (CPM), an uncore PMU providing transaction counters, latency
+	  measurements, and outstanding transaction and link-credit
+	  statistics.
+
+	  The counters are accessible through the perf subsystem using
+	  tools such as perf stat.
+
+	  To compile this driver as a module, choose M here. The module
+	  will be called alibaba_uncore_cpm_pmu.
+
+	  If unsure, say N.
 
 endmenu
