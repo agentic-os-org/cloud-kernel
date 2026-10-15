@@ -312,6 +312,24 @@ is_midr_in_range_list(u32 midr, struct midr_range const *ranges)
 	return false;
 }
 
+#ifdef CONFIG_HISILICON_ERRATUM_1980005
+/*
+ * CPUs that support IDC but report it incorrectly (Hisilicon erratum
+ * 1980005). Shared between hisilicon_1980005_match() and
+ * read_cpuid_effective_cachetype().
+ */
+static inline bool is_hisilicon_erratum_1980005_cpu(u32 midr)
+{
+	static const struct midr_range idc_support_list[] = {
+		MIDR_ALL_VERSIONS(MIDR_HISI_TSV110),
+		MIDR_REV(MIDR_HISI_HIP09, 1, 0),
+		{ /* sentinel */ }
+	};
+
+	return is_midr_in_range_list(midr, idc_support_list);
+}
+#endif
+
 /*
  * The CPU ID never changes at run time, so we might as well tell the
  * compiler that it's constant.  Use this function to read the CPU ID

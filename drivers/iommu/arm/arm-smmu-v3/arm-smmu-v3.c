@@ -41,6 +41,59 @@ MODULE_PARM_DESC(disable_msipolling,
 static struct iommu_ops arm_smmu_ops;
 static struct iommu_dirty_ops arm_smmu_dirty_ops;
 
+#ifdef CONFIG_SMMU_BYPASS_DEV
+struct smmu_bypass_device {
+	unsigned short vendor;
+	unsigned short device;
+};
+#define MAX_CMDLINE_SMMU_BYPASS_DEV 16
+
+static struct smmu_bypass_device smmu_bypass_devices[MAX_CMDLINE_SMMU_BYPASS_DEV];
+static int smmu_bypass_devices_num;
+
+static int __init arm_smmu_bypass_dev_setup(char *str)
+{
+	unsigned short vendor;
+	unsigned short device;
+	int ret;
+
+	if (!str)
+		return -EINVAL;
+
+	ret = sscanf(str, "%hx:%hx", &vendor, &device);
+	if (ret != 2)
+		return -EINVAL;
+
+	if (smmu_bypass_devices_num >= MAX_CMDLINE_SMMU_BYPASS_DEV)
+		return -ERANGE;
+
+	smmu_bypass_devices[smmu_bypass_devices_num].vendor = vendor;
+	smmu_bypass_devices[smmu_bypass_devices_num].device = device;
+	smmu_bypass_devices_num++;
+
+	return 0;
+}
+
+__setup("smmu.bypassdev=", arm_smmu_bypass_dev_setup);
+
+static int arm_smmu_bypass_dev_domain_type(struct device *dev)
+{
+	int i;
+	struct pci_dev *pdev = to_pci_dev(dev);
+
+	for (i = 0; i < smmu_bypass_devices_num; i++) {
+		if ((smmu_bypass_devices[i].vendor == pdev->vendor) &&
+		    (smmu_bypass_devices[i].device == pdev->device)) {
+			dev_info(dev, "device 0x%hx:0x%hx uses identity mapping.",
+				pdev->vendor, pdev->device);
+			return IOMMU_DOMAIN_IDENTITY;
+		}
+	}
+
+	return 0;
+}
+#endif
+
 enum arm_smmu_msi_index {
 	EVTQ_MSI_INDEX,
 	GERROR_MSI_INDEX,
@@ -3742,6 +3795,8 @@ static void arm_smmu_get_resv_regions(struct device *dev,
 
 static int arm_smmu_def_domain_type(struct device *dev)
 {
+	int ret = 0;
+
 	if (dev_is_pci(dev)) {
 		struct pci_dev *pdev = to_pci_dev(dev);
 
@@ -3760,9 +3815,13 @@ static int arm_smmu_def_domain_type(struct device *dev)
 		    pdev->bus->self->vendor == PCI_VENDOR_ID_ASPEED &&
 		    pdev->bus->self->device == 0x1150)
 			return IOMMU_DOMAIN_IDENTITY;
+
+#ifdef CONFIG_SMMU_BYPASS_DEV
+		ret = arm_smmu_bypass_dev_domain_type(dev);
+#endif
 	}
 
-	return 0;
+	return ret;
 }
 
 static struct iommu_ops arm_smmu_ops = {
@@ -3921,12 +3980,56 @@ static int arm_smmu_init_queues(struct arm_smmu_device *smmu)
 				       PRIQ_ENT_DWORDS, "priq");
 }
 
+#ifdef CONFIG_SMMU_BYPASS_DEV
+static void arm_smmu_install_bypass_ste_for_dev(struct arm_smmu_device *smmu,
+				    u32 sid)
+{
+	u64 val;
+	struct arm_smmu_ste *step = arm_smmu_get_step_for_sid(smmu, sid);
+
+	if (!step)
+		return;
+
+	val = STRTAB_STE_0_V;
+	val |= FIELD_PREP(STRTAB_STE_0_CFG, STRTAB_STE_0_CFG_BYPASS);
+	step->data[0] = cpu_to_le64(val);
+	step->data[1] = cpu_to_le64(FIELD_PREP(STRTAB_STE_1_SHCFG,
+	STRTAB_STE_1_SHCFG_INCOMING));
+	step->data[2] = 0;
+}
+
+static int arm_smmu_prepare_init_l2_strtab(struct device *dev, void *data)
+{
+	u32 sid;
+	int ret;
+	struct pci_dev *pdev;
+	struct arm_smmu_device *smmu = (struct arm_smmu_device *)data;
+
+	if (!arm_smmu_bypass_dev_domain_type(dev))
+		return 0;
+
+	pdev = to_pci_dev(dev);
+	sid = PCI_DEVID(pdev->bus->number, pdev->devfn);
+	if (!arm_smmu_sid_in_range(smmu, sid))
+		return 0;
+
+	ret = arm_smmu_init_l2_strtab(smmu, sid);
+	if (ret)
+		return ret;
+
+	arm_smmu_install_bypass_ste_for_dev(smmu, sid);
+
+	return 0;
+}
+#endif
+
 static int arm_smmu_init_strtab_2lvl(struct arm_smmu_device *smmu)
 {
 	u32 l1size;
 	struct arm_smmu_strtab_cfg *cfg = &smmu->strtab_cfg;
 	unsigned int last_sid_idx =
 		arm_smmu_strtab_l1_idx((1ULL << smmu->sid_bits) - 1);
+	int ret = 0;
 
 	/* Calculate the L1 size, capped to the SIDSIZE. */
 	cfg->l2.num_l1_ents = min(last_sid_idx + 1, STRTAB_MAX_L1_ENTRIES);
@@ -3951,7 +4054,13 @@ static int arm_smmu_init_strtab_2lvl(struct arm_smmu_device *smmu)
 	if (!cfg->l2.l2ptrs)
 		return -ENOMEM;
 
-	return 0;
+#ifdef CONFIG_SMMU_BYPASS_DEV
+	if (!ret && smmu_bypass_devices_num) {
+		ret = bus_for_each_dev(&pci_bus_type, NULL, (void *)smmu,
+								arm_smmu_prepare_init_l2_strtab);
+	}
+#endif
+	return ret;
 }
 
 static int arm_smmu_init_strtab_linear(struct arm_smmu_device *smmu)
@@ -4062,6 +4171,13 @@ static void arm_smmu_write_msi_msg(struct msi_desc *desc, struct msi_msg *msg)
 	doorbell = (((u64)msg->address_hi) << 32) | msg->address_lo;
 	doorbell &= MSI_CFG0_ADDR_MASK;
 
+#ifdef CONFIG_ARM_SMMU_V3_PM
+	/* Saves the msg (base addr of msi irq) and restores it during resume */
+	desc->msg.address_lo = msg->address_lo;
+	desc->msg.address_hi = msg->address_hi;
+	desc->msg.data = msg->data;
+#endif
+
 	writeq_relaxed(doorbell, smmu->base + cfg[0]);
 	writel_relaxed(msg->data, smmu->base + cfg[1]);
 	writel_relaxed(ARM_SMMU_MEMATTR_DEVICE_nGnRE, smmu->base + cfg[2]);
@@ -4104,11 +4220,50 @@ static void arm_smmu_setup_msis(struct arm_smmu_device *smmu)
 	devm_add_action_or_reset(dev, arm_smmu_free_msis, dev);
 }
 
-static void arm_smmu_setup_unique_irqs(struct arm_smmu_device *smmu)
+#ifdef CONFIG_ARM_SMMU_V3_PM
+static void arm_smmu_resume_msis(struct arm_smmu_device *smmu)
+{
+	struct msi_desc *desc;
+	struct device *dev = smmu->dev;
+
+	msi_for_each_desc(desc, dev, MSI_DESC_ALL) {
+		switch (desc->msi_index) {
+		case EVTQ_MSI_INDEX:
+		case GERROR_MSI_INDEX:
+		case PRIQ_MSI_INDEX: {
+			phys_addr_t *cfg = arm_smmu_msi_cfg[desc->msi_index];
+			struct msi_msg *msg = &desc->msg;
+			phys_addr_t doorbell = (((u64)msg->address_hi) << 32) | msg->address_lo;
+
+			doorbell &= MSI_CFG0_ADDR_MASK;
+			writeq_relaxed(doorbell, smmu->base + cfg[0]);
+			writel_relaxed(msg->data, smmu->base + cfg[1]);
+			writel_relaxed(ARM_SMMU_MEMATTR_DEVICE_nGnRE,
+					smmu->base + cfg[2]);
+			break;
+		}
+		default:
+			continue;
+		}
+	}
+}
+#else
+static void arm_smmu_resume_msis(struct arm_smmu_device *smmu)
+{
+}
+#endif
+
+static void arm_smmu_setup_unique_irqs(struct arm_smmu_device *smmu, bool resume)
 {
 	int irq, ret;
 
-	arm_smmu_setup_msis(smmu);
+	if (!resume)
+		arm_smmu_setup_msis(smmu);
+	else {
+		/* The irq doesn't need to be re-requested during resume */
+		arm_smmu_resume_msis(smmu);
+		return;
+	}
 
 	/* Request interrupt lines */
 	irq = smmu->evtq.q.irq;
@@ -4150,7 +4305,7 @@ static void arm_smmu_setup_unique_irqs(struct arm_smmu_device *smmu)
 	}
 }
 
-static int arm_smmu_setup_irqs(struct arm_smmu_device *smmu)
+static int arm_smmu_setup_irqs(struct arm_smmu_device *smmu, bool resume)
 {
 	int ret, irq;
 	u32 irqen_flags = IRQ_CTRL_EVTQ_IRQEN | IRQ_CTRL_GERROR_IRQEN;
@@ -4169,15 +4324,17 @@ static int arm_smmu_setup_irqs(struct arm_smmu_device *smmu)
 		 * Cavium ThunderX2 implementation doesn't support unique irq
 		 * lines. Use a single irq line for all the SMMUv3 interrupts.
 		 */
-		ret = devm_request_threaded_irq(smmu->dev, irq,
+		if (!resume) {
+			ret = devm_request_threaded_irq(smmu->dev, irq,
 					arm_smmu_combined_irq_handler,
 					arm_smmu_combined_irq_thread,
 					IRQF_ONESHOT,
 					"arm-smmu-v3-combined-irq", smmu);
-		if (ret < 0)
-			dev_warn(smmu->dev, "failed to enable combined irq\n");
+			if (ret < 0)
+				dev_warn(smmu->dev, "failed to enable combined irq\n");
+		}
 	} else
-		arm_smmu_setup_unique_irqs(smmu);
+		arm_smmu_setup_unique_irqs(smmu, resume);
 
 	if (smmu->features & ARM_SMMU_FEAT_PRI)
 		irqen_flags |= IRQ_CTRL_PRIQ_IRQEN;
@@ -4235,7 +4392,7 @@ static void arm_smmu_write_strtab(struct arm_smmu_device *smmu)
 	writel_relaxed(reg, smmu->base + ARM_SMMU_STRTAB_BASE_CFG);
 }
 
-static int arm_smmu_device_reset(struct arm_smmu_device *smmu)
+static int arm_smmu_device_reset(struct arm_smmu_device *smmu, bool resume)
 {
 	int ret;
 	u32 reg, enables;
@@ -4339,7 +4496,7 @@ static int arm_smmu_device_reset(struct arm_smmu_device *smmu)
 		}
 	}
 
-	ret = arm_smmu_setup_irqs(smmu);
+	ret = arm_smmu_setup_irqs(smmu, resume);
 	if (ret) {
 		dev_err(smmu->dev, "failed to setup irqs\n");
 		return ret;
@@ -4811,6 +4968,29 @@ static void __iomem *arm_smmu_ioremap(struct device *dev, resource_size_t start,
 	return devm_ioremap_resource(dev, &res);
 }
 
+#ifdef CONFIG_ARM_SMMU_V3_PM
+static int arm_smmu_suspend(struct device *dev)
+{
+	/*
+	 * The smmu is powered off and related registers are automatically
+	 * cleared when suspend. No need to do anything.
+	 */
+	return 0;
+}
+
+static int arm_smmu_resume(struct device *dev)
+{
+	struct arm_smmu_device *smmu = dev_get_drvdata(dev);
+	int ret;
+
+	ret = arm_smmu_device_reset(smmu, true);
+	if (ret)
+		dev_err(smmu->dev, "failed to reset SMMU on resume: %d\n", ret);
+
+	return ret;
+}
+#endif
+
 static void arm_smmu_rmr_install_bypass_ste(struct arm_smmu_device *smmu)
 {
 	struct list_head rmr_list;
@@ -4978,7 +5158,7 @@ static int arm_smmu_device_probe(struct platform_device *pdev)
 	arm_smmu_rmr_install_bypass_ste(smmu);
 
 	/* Reset the device */
-	ret = arm_smmu_device_reset(smmu);
+	ret = arm_smmu_device_reset(smmu, false);
 	if (ret) {
 		arm_smmu_device_disable(smmu);
 		return ret;
@@ -5026,6 +5206,16 @@ static const struct of_device_id arm_smmu_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, arm_smmu_of_match);
 
+#ifdef CONFIG_ARM_SMMU_V3_PM
+static const struct dev_pm_ops arm_smmu_pm_ops = {
+	.suspend = arm_smmu_suspend,
+	.resume = arm_smmu_resume,
+};
+#define ARM_SMMU_PM_OPS		(&arm_smmu_pm_ops)
+#else
+#define ARM_SMMU_PM_OPS		NULL
+#endif
+
 static void arm_smmu_driver_unregister(struct platform_driver *drv)
 {
 	arm_smmu_sva_notifier_synchronize();
@@ -5037,6 +5227,7 @@ static struct platform_driver arm_smmu_driver = {
 		.name			= "arm-smmu-v3",
 		.of_match_table		= arm_smmu_of_match,
 		.suppress_bind_attrs	= true,
+		.pm			= ARM_SMMU_PM_OPS,
 	},
 	.probe	= arm_smmu_device_probe,
 	.remove_new = arm_smmu_device_remove,

@@ -112,6 +112,10 @@ int cache_line_size(void);
 static inline u32 __attribute_const__ read_cpuid_effective_cachetype(void)
 {
 	u32 ctr = read_cpuid_cachetype();
+#ifdef CONFIG_HISILICON_ERRATUM_1980005
+	if (is_hisilicon_erratum_1980005_cpu(read_cpuid_id()))
+		ctr |= BIT(CTR_EL0_IDC_SHIFT);
+#endif
 
 	if (!(ctr & BIT(CTR_EL0_IDC_SHIFT))) {
 		u64 clidr = read_sysreg(clidr_el1);
