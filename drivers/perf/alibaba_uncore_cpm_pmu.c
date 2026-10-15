@@ -374,7 +374,7 @@ static int cpm_pmu_offline_cpu(unsigned int cpu, struct hlist_node *node)
 
 	target = cpumask_any_but(cpu_online_mask, cpu);
 	if (target >= nr_cpu_ids)
-		return 0;
+		return -EBUSY;
 
 	/* Quiesce IRQ updates until affinity and perf context agree again. */
 	disable_irq(cpm->irq);
