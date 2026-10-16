@@ -49,6 +49,7 @@ struct ubase_query_version_cmd {
 
 enum ubase_drv_cap_bit {
 	UBASE_CAP_SUP_ACTIVATE_B = 0,
+	UBASE_PMU_CRQ_SUPPORT_B  = 1,
 };
 
 struct ubase_notify_drv_cap_cmd {
@@ -259,7 +260,8 @@ struct ubase_activate_req {
 	__le16	bus_ue_id;
 	__le16	msn;
 	u8	activate;
-	u8	resv[19];
+	u8	shutdown;
+	u8	resv[18];
 };
 
 struct ubase_activate_resp {

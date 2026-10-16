@@ -356,7 +356,8 @@ void ubase_ctrlq_disable_remote(struct ubase_dev *udev)
 	u32 resp;
 	int ret;
 
-	if (!ubase_dev_ctrlq_supported(udev))
+	if (!ubase_dev_ctrlq_supported(udev) ||
+	    (ubase_shutting_down(udev) && ubase_is_ctrl_node(udev)))
 		return;
 
 	msg.service_ver = UBASE_CTRLQ_SER_VER_01;
@@ -588,12 +589,20 @@ static int ubase_ctrlq_send_msg_to_sq(struct ubase_dev *udev,
 static int ubase_ctrlq_wait_completed(struct ubase_dev *udev, u16 seq,
 				      struct ubase_ctrlq_msg *msg)
 {
+#define UBASE_CTRLQ_TIMEOUT_CASE_SHUT_DOWN 500
+
 	struct ubase_ctrlq_msg_ctx *ctx = &udev->ctrlq.msg_queue[seq];
 	struct ubase_ctrlq_ring *csq = &udev->ctrlq.csq;
+	u32 timeout;
 	int ret;
 
+	if (ubase_shutting_down(udev) && ubase_is_ctrl_node(udev))
+		timeout = UBASE_CTRLQ_TIMEOUT_CASE_SHUT_DOWN;
+	else
+		timeout = msg->timeout ? msg->timeout : csq->tx_timeout;
+
 	if (!wait_for_completion_timeout(&ctx->done,
-					 msecs_to_jiffies(csq->tx_timeout))) {
+					 msecs_to_jiffies(timeout))) {
 		ubase_err(udev,
 			  "ctrlq wait resp timeout, seq = %u, opcode = 0x%x, service_type = 0x%x.\n",
 			  seq, msg->opcode, msg->service_type);
@@ -797,6 +806,9 @@ static int ubase_ctrlq_send_real(struct ubase_dev *udev,
 
 		if (ubase_ctrlq_msg_is_sync_req(msg))
 			ret = ubase_ctrlq_wait_completed(udev, seq, msg);
+
+		if (ubase_shutting_down(udev) && ubase_is_ctrl_node(udev))
+			break;
 	} while (ret == -ETIMEDOUT && retry++ < UBASE_CTRLQ_RETRY_TIMES);
 
 	if (ubase_ctrlq_msg_is_sync_req(msg) ||
@@ -920,7 +932,10 @@ static void ubase_ctrlq_crq_event_callback(struct ubase_dev *udev,
 					   u16 seq)
 {
 #define EDRVNOEXIST 255
+#define TIME_COST_THRESHOLD 200
+
 	struct ubase_ctrlq_crq_table *crq_tab = &udev->ctrlq.crq_table;
+	unsigned long start_jiffies, time_cost = 0;
 	int ret = -ENOENT;
 	u32 i;
 
@@ -936,15 +951,21 @@ static void ubase_ctrlq_crq_event_callback(struct ubase_dev *udev,
 				ret = -EDRVNOEXIST;
 				break;
 			}
+			start_jiffies = jiffies;
 			ret = crq_tab->crq_nbs[i].crq_handler(crq_tab->crq_nbs[i].back,
 							      head->service_ver,
 							      msg_data,
 							      msg_data_len,
 							      seq);
+			time_cost = jiffies_to_msecs(jiffies - start_jiffies);
 			break;
 		}
 	}
 	mutex_unlock(&crq_tab->lock);
+
+	if (time_cost > TIME_COST_THRESHOLD)
+		ubase_warn(udev, "ctrlq crq callback executed in %lums.\n",
+			   time_cost);
 
 	if (ret == -ENOENT) {
 		ubase_info(udev, "this notice is not supported.");
@@ -1148,7 +1169,7 @@ static void ubase_ctrlq_crq_handler(struct ubase_dev *udev)
 	if (udev->log_rs.ctrlq_self_seq_invalid_log_cnt ||
 	    udev->log_rs.ctrlq_other_seq_invalid_log_cnt) {
 		ubase_warn(udev,
-			   "ubase log rate is limited, ctrlq_self_seq_invalid_log_cnt = %u, ctrlq_other_seq_invalid_log_cnt = %u.\n",
+			   "rate limited log: ctrlq_self_seq_invalid_log_cnt = %u, ctrlq_other_seq_invalid_log_cnt = %u.\n",
 			   udev->log_rs.ctrlq_self_seq_invalid_log_cnt,
 			   udev->log_rs.ctrlq_other_seq_invalid_log_cnt);
 		udev->log_rs.ctrlq_self_seq_invalid_log_cnt = 0;
@@ -1159,16 +1180,16 @@ static void ubase_ctrlq_crq_handler(struct ubase_dev *udev)
 		ubase_ctrlq_task_schedule(udev);
 }
 
-void ubase_ctrlq_service_task(struct ubase_delay_work *ubase_work)
+void ubase_ctrlq_crq_service_task(struct ubase_delay_work *ubase_work)
 {
 	struct ubase_dev *udev = container_of(ubase_work, struct ubase_dev,
-				 service_task);
+				 ctrlq_service_task);
 	struct ubase_ctrlq_crq_table *crq_tab = &udev->ctrlq.crq_table;
 
 	if (!test_and_clear_bit(UBASE_STATE_CTRLQ_SERVICE_SCHED,
-				&udev->service_task.state) ||
+				&udev->ctrlq_service_task.state) ||
 		test_and_set_bit(UBASE_STATE_CTRLQ_HANDLING,
-				 &udev->service_task.state))
+				 &udev->ctrlq_service_task.state))
 		return;
 
 	if (time_is_before_eq_jiffies(crq_tab->last_crq_scheduled +
@@ -1180,13 +1201,11 @@ void ubase_ctrlq_service_task(struct ubase_delay_work *ubase_work)
 
 	ubase_ctrlq_crq_handler(udev);
 
-	clear_bit(UBASE_STATE_CTRLQ_HANDLING, &udev->service_task.state);
+	clear_bit(UBASE_STATE_CTRLQ_HANDLING, &udev->ctrlq_service_task.state);
 }
 
-void ubase_ctrlq_clean_service_task(struct ubase_delay_work *ubase_work)
+void ubase_ctrlq_clean_service_task(struct ubase_dev *udev)
 {
-	struct ubase_dev *udev = container_of(ubase_work, struct ubase_dev,
-				 service_task);
 	struct ubase_ctrlq_ring *csq = &udev->ctrlq.csq;
 	u16 i, max_seq = ubase_ctrlq_max_seq(udev);
 	struct ubase_ctrlq_msg_ctx *ctx;

@@ -288,6 +288,11 @@ static void ubase_uninit_aux_devices(struct ubase_dev *udev)
 	struct ubase_priv *priv = &udev->priv;
 	int i;
 
+	/* Before uninitializing the auxiliary device, disable the CE IRQ to
+	 * avoid concurrency.
+	 */
+	ubase_disable_ce_irqs(udev);
+
 	mutex_lock(&priv->uadev_lock);
 	for (i = ARRAY_SIZE(ubase_adev_devices) - 1; i >= 0; i--) {
 		if (!priv->uadev[i])
@@ -337,6 +342,7 @@ static int ubase_enable_period_service_task(struct ubase_dev *udev)
 static void ubase_period_service_task(struct work_struct *work)
 {
 #define UBASE_STATS_TIMER_INTERVAL		(300000 / (UBASE_PERIOD_100MS))
+#define UBASE_CTRLQ_TIMER_INTERVAL		(3000 / (UBASE_PERIOD_100MS))
 
 	struct ubase_delay_work *ubase_work =
 		container_of(work, struct ubase_delay_work, service_task.work);
@@ -351,6 +357,10 @@ static void ubase_period_service_task(struct work_struct *work)
 	if (test_bit(UBASE_STATE_INITED_B, &udev->state_bits) &&
 	    !(udev->serv_proc_cnt % UBASE_STATS_TIMER_INTERVAL))
 		ubase_update_stats_for_all(udev);
+
+	if (test_bit(UBASE_STATE_INITED_B, &udev->state_bits) &&
+	    !(udev->serv_proc_cnt % UBASE_CTRLQ_TIMER_INTERVAL))
+		ubase_ctrlq_clean_service_task(udev);
 
 	udev->serv_proc_cnt++;
 	ubase_enable_period_service_task(udev);
@@ -379,13 +389,21 @@ static void ubase_service_task(struct work_struct *work)
 
 	ubase_crq_service_task(ubase_work);
 	ubase_errhandle_service_task(ubase_work);
-	ubase_ctrlq_service_task(ubase_work);
-	ubase_ctrlq_clean_service_task(ubase_work);
+}
+
+static void ubase_ctrlq_service_task(struct work_struct *work)
+{
+	struct ubase_delay_work *ubase_work =
+		container_of(work, struct ubase_delay_work, service_task.work);
+
+	ubase_ctrlq_crq_service_task(ubase_work);
 }
 
 static void ubase_init_delayed_work(struct ubase_dev *udev)
 {
 	INIT_DELAYED_WORK(&udev->service_task.service_task, ubase_service_task);
+	INIT_DELAYED_WORK(&udev->ctrlq_service_task.service_task,
+			  ubase_ctrlq_service_task);
 	INIT_DELAYED_WORK(&udev->reset_service_task.service_task,
 			  ubase_reset_service_task);
 	INIT_DELAYED_WORK(&udev->period_service_task.service_task,
@@ -402,6 +420,12 @@ static int ubase_wq_init(struct ubase_dev *udev)
 	if (!udev->ubase_wq) {
 		ubase_err(udev, "failed to alloc ubase workqueue.\n");
 		goto err_alloc_ubase_wq;
+	}
+
+	udev->ubase_ctrlq_wq = UBASE_ALLOC_WQ("ubase_ctrlq_service");
+	if (!udev->ubase_ctrlq_wq) {
+		ubase_err(udev, "failed to alloc ubase ctrlq workqueue.\n");
+		goto err_alloc_ubase_ctrlq_wq;
 	}
 
 	udev->ubase_async_wq = UBASE_ALLOC_WQ("ubase_async_service");
@@ -438,6 +462,8 @@ err_alloc_ubase_period_wq:
 err_alloc_ubase_reset_wq:
 	destroy_workqueue(udev->ubase_async_wq);
 err_alloc_ubase_async_wq:
+	destroy_workqueue(udev->ubase_ctrlq_wq);
+err_alloc_ubase_ctrlq_wq:
 	destroy_workqueue(udev->ubase_wq);
 err_alloc_ubase_wq:
 	return -ENOMEM;
@@ -449,6 +475,7 @@ static void ubase_wq_uninit(struct ubase_dev *udev)
 	destroy_workqueue(udev->ubase_period_wq);
 	destroy_workqueue(udev->ubase_reset_wq);
 	destroy_workqueue(udev->ubase_async_wq);
+	destroy_workqueue(udev->ubase_ctrlq_wq);
 	destroy_workqueue(udev->ubase_wq);
 }
 
@@ -650,6 +677,7 @@ static int ubase_notify_drv_capbilities(struct ubase_dev *udev)
 	struct ubase_cmd_buf in;
 
 	set_bit(UBASE_CAP_SUP_ACTIVATE_B, (unsigned long *)req.cap_bits);
+	set_bit(UBASE_PMU_CRQ_SUPPORT_B, (unsigned long *)req.cap_bits);
 
 	__ubase_fill_inout_buf(&in, UBASE_OPC_NOTIFY_DRV_CAPS, false,
 			       sizeof(req), &req);
@@ -711,7 +739,7 @@ static const struct ubase_init_function ubase_init_func_map[] = {
 		ubase_query_port_bitmap, NULL
 	},
 	{
-		"init irq table", UBASE_SUP_NO_PMU, 1,
+		"init irq table", UBASE_SUP_ALL, 1,
 		ubase_irq_table_init, ubase_irq_table_uninit
 	},
 	{
@@ -757,10 +785,6 @@ static const struct ubase_init_function ubase_init_func_map[] = {
 	{
 		"enable period service task", UBASE_SUP_NO_PMU, 0,
 		ubase_enable_period_service_task, ubase_cancel_period_service_task
-	},
-	{
-		"enable ce irq", UBASE_SUP_NO_PMU, 1,
-		ubase_enable_ce_irqs, ubase_disable_ce_irqs
 	},
 };
 
@@ -1520,19 +1544,24 @@ EXPORT_SYMBOL(ubase_activate_unregister);
 
 static int ubase_wait_activate_done(struct ubase_dev *udev, u16 bus_ue_id)
 {
+#define UBASE_ACTIVE_DEV_TIMEOUT_SHUTDOWN 1000
 #define UBASE_ACTIVE_DEV_TIMEOUT 10000
 
 	struct ub_entity *ue = container_of(udev->dev, struct ub_entity, dev);
 	struct ubase_act_info *info;
+	u32 timeout;
 
 	info = (ue->entity_idx == bus_ue_id) ? &udev->act_ctx.self :
 		&udev->act_ctx.other;
 
+	timeout = ((ubase_shutting_down(udev) || info->shutdown) &&
+		   ubase_is_ctrl_node(udev)) ?
+		   UBASE_ACTIVE_DEV_TIMEOUT_SHUTDOWN : UBASE_ACTIVE_DEV_TIMEOUT;
 	if (!wait_for_completion_timeout(&info->activate_done,
-					 msecs_to_jiffies(UBASE_ACTIVE_DEV_TIMEOUT))) {
+					 msecs_to_jiffies(timeout))) {
 		ubase_err(udev,
-			  "wait activate dev resp timeout, bus_ue_id = %u, msn = %u.\n",
-			  bus_ue_id, info->wait_msn);
+			  "wait activate dev resp timeout(%u ms), bus_ue_id = %u, msn = %u.\n",
+			  timeout, bus_ue_id, info->wait_msn);
 		return -ETIMEDOUT;
 	}
 
@@ -1576,6 +1605,7 @@ static int ubase_send_activate_dev_req(struct ubase_dev *udev, bool activate,
 
 	req.activate = activate ? 1 : 0;
 	req.bus_ue_id = cpu_to_le16(bus_ue_id);
+	req.shutdown = ubase_shutting_down(udev);
 	ubase_alloc_msn(udev, &msn);
 	req.msn = cpu_to_le16(msn);
 	ubase_record_msn(udev, bus_ue_id, msn);
@@ -1849,3 +1879,21 @@ int ubase_get_dev_mac(struct auxiliary_device *adev, u8 *dev_addr, u8 addr_len)
 	return 0;
 }
 EXPORT_SYMBOL(ubase_get_dev_mac);
+
+/**
+ * ubase_adev_shutting_down() - Determine whether the device is shutting down.
+ * @adev: auxiliary device
+ *
+ * This function is used to determine whether the device is shutting down.
+ *
+ * Context: Any context.
+ * Return: true or false
+ */
+bool ubase_adev_shutting_down(struct auxiliary_device *adev)
+{
+	if (!adev)
+		return false;
+
+	return ubase_shutting_down(__ubase_get_udev_by_adev(adev));
+}
+EXPORT_SYMBOL(ubase_adev_shutting_down);
