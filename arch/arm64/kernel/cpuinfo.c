@@ -207,7 +207,7 @@ static int c_show(struct seq_file *m, void *v)
 	for_each_online_cpu(i) {
 		struct cpuinfo_arm64 *cpuinfo = &per_cpu(cpu_data, i);
 		u32 midr = cpuinfo->reg_midr;
-		struct bpf_rich_container_info *info;
+		struct bpf_rich_container_info __maybe_unused *info;
 
 		index = cpu = i;
 

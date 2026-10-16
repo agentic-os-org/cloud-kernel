@@ -42,7 +42,7 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 
 	struct mem_cgroup *memcg = NULL;
 	struct sysinfo_ext ext;
-	struct bpf_rich_container_info *info;
+	struct bpf_rich_container_info __maybe_unused *info;
 
 #ifdef CONFIG_MEMCG
 	rcu_read_lock();
