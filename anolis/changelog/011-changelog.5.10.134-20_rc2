@@ -1,0 +1,21 @@
+* Fri Oct 16 2026 Yuanhe Shu <xiangzao@linux.alibaba.com> [5.10.134-20_rc2%%DIST%%]
+- anolis: mm: memcg: fix wmark_min_adj write versus removal deadlock (Weilin Tong)
+- anolis: mm: Fix total_zswap accounting for memcgv1 (Zelin Deng)
+- perf test: Switch basic bpf filtering test to use syscall tracepoint (Naveen N. Rao)
+- x86/MCE/AMD: Fix inverted interrupt enablement during storm handling (Jasjeet Rangi)
+- fbcon: Fix OOB access in font allocation (Thomas Zimmermann)
+- anolis: sched/fair: Fix CFS bandwidth escape in the simple pick path (Qihang Zhou)
+- anolis: sched: fix cpu.group_balancer mode 2 to 1 transition (Peng Wang)
+- anolis: genirq/affinity: Fix managed_irqs_per_node clamp overflow (Guixin Liu)
+- anolis: genirq/affinity: Allocate affinity scratch masks before consuming the pool (Guixin Liu)
+- anolis: genirq/affinity: Consume the managed IRQ pool once per device (Guixin Liu)
+- anolis: genirq/cpuhotplug: Ratelimit the last-online-CPU warning and fix its wording (Guixin Liu)
+- anolis: genirq/cpuhotplug: Allow the last CPU of a managed IRQ to go offline during suspend (Guixin Liu)
+- anolis: genirq/affinity: Protect the managed IRQ CPU pool against concurrent probes (Guixin Liu)
+- anolis: genirq/affinity: Fall back to full mask when the managed IRQ pool is too small (Guixin Liu)
+- bpf: Free reuseport cBPF prog after RCU grace period. (Kuniyuki Iwashima) {CVE-2026-52910}
+- anolis: mm: fix PG_inited handling over full order range (Weilin Tong)
+- anolis: mm: export inited page counter (Yang Rong)
+- SUNRPC: Reject krb5 v2 wrap tokens with oversized ec field (Chuck Lever) {CVE-2026-89538}
+- SUNRPC: xdr_buf_trim: clamp buf->len to avoid underflow (Chris Mason) {CVE-2026-89551}
+
