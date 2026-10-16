@@ -6206,6 +6206,35 @@ This capability is aimed to mitigate the threat that malicious VMs can
 cause CPU stuck (due to event windows don't open up) and make the CPU
 unavailable to host or other VMs.
 
+7.26 KVM_CAP_HYGON_PREFETCH_MSR
+-----------------------------
+
+:Architectures: x86 (Hygon)
+:Target: vCPU
+:Parameters: none;
+
+This capability allows a guest assigned dedicated physical cores to access
+Hygon prefetch control MSRs.
+
+Userspace must set guest CPUID before enabling the capability with
+KVM_ENABLE_CAP on each participating vCPU fd, before its first KVM_RUN.
+At enable time, KVM requires the guest vendor, family, model and stepping
+to match the supported host.
+
+Userspace needs to satisfy following requirements before enabling the
+capability and maintain them for its lifetime, otherwise performance may
+be impacted by unmatched prefetch behavior.
+
+* Pin each participating vCPU to one fixed physical logical CPU, with a
+  one-to-one mapping and no overcommit.
+* Assign both SMT siblings of each physical core to the same VM, and map
+  the corresponding guest SMT siblings to that physical sibling pair.
+* KVM does not save or restore these MSRs on guest entry or exit.
+  Userspace is responsible for saving the original settings before
+  starting the guest and restoring them afterwards, if required.
+* Keep unrelated host workloads and other VMs off the assigned cores, to
+  prevent competing MSR writers.
+
 8. Other capabilities.
 ======================
 

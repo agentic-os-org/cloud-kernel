@@ -129,6 +129,8 @@ KVM_X86_OP_OPTIONAL(enable_hygon_coco_extension)
 KVM_X86_OP_OPTIONAL(control_pre_system_reset)
 KVM_X86_OP_OPTIONAL(control_post_system_reset)
 KVM_X86_OP_OPTIONAL(enable_exit_csv3_secure_call)
+KVM_X86_OP_OPTIONAL(get_hygon_pfmsr_extension)
+KVM_X86_OP_OPTIONAL(enable_hygon_pfmsr_extension)
 
 #undef KVM_X86_OP
 #undef KVM_X86_OP_OPTIONAL

@@ -45,7 +45,7 @@ static const struct svm_host_save_msrs {
 
 #define GUEST_PAT_WB_ATTR	0x0606060606060606
 
-#define MAX_DIRECT_ACCESS_MSRS	18
+#define MAX_DIRECT_ACCESS_MSRS	20
 #define MSRPM_OFFSETS	16
 extern u32 msrpm_offsets[MSRPM_OFFSETS] __read_mostly;
 extern bool npt_enabled;
@@ -226,6 +226,9 @@ struct vcpu_svm {
 	bool receiver_ghcb_map_fail;
 	/* CSV2 reboot vmsa */
 	struct vmcb_save_area *reset_vmsa;
+
+	/* Expose Hygon Specific Prefetch MSRs */
+	bool hygon_pfmsr_enabled;
 };
 
 struct svm_cpu_data {
