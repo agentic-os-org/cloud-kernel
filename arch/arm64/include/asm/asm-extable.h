@@ -5,11 +5,12 @@
 #include <linux/bits.h>
 #include <asm/gpr-num.h>
 
-#define EX_TYPE_NONE				0
-#define EX_TYPE_BPF				1
-#define EX_TYPE_UACCESS_ERR_ZERO		2
-#define EX_TYPE_KACCESS_ERR_ZERO		3
-#define EX_TYPE_LOAD_UNALIGNED_ZEROPAD		4
+#define EX_TYPE_NONE			0
+#define EX_TYPE_BPF			1
+#define EX_TYPE_UACCESS_ERR_ZERO	2
+#define EX_TYPE_KACCESS_ERR_ZERO	3
+#define EX_TYPE_LOAD_UNALIGNED_ZEROPAD	4
+#define EX_TYPE_COPY_MC_PAGE_ERR_ZERO	5
 /* kernel access memory error safe */
 #define EX_TYPE_KACCESS_ERR_ZERO_ME_SAFE	5
 
@@ -64,6 +65,8 @@
 #define _ASM_EXTABLE_KACCESS_ME_SAFE(insn, fixup)			\
 	_ASM_EXTABLE_KACCESS_ERR_ZERO_ME_SAFE(insn, fixup, wzr, wzr)
 
+#define _ASM_EXTABLE_COPY_MC_PAGE(insn, fixup)				\
+	_ASM_EXTABLE_COPY_MC_PAGE_ERR_ZERO(insn, fixup, wzr, wzr)
 /*
  * Create an exception table entry for uaccess `insn`, which will branch to `fixup`
  * when an unhandled fault is taken.

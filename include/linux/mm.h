@@ -4489,6 +4489,9 @@ static inline void accept_memory(phys_addr_t start, phys_addr_t end)
 
 #endif
 
+/* added to mm.h to avoid every caller adding new header file */
+#include <linux/mem_reliable.h>
+
 struct fast_reflink_work {
 	struct work_struct work;
 	struct address_space *mapping;
@@ -4680,5 +4683,40 @@ static inline void pgalloc_tag_swap(struct folio *new, struct folio *old)
 int arch_get_shadow_stack_status(struct task_struct *t, unsigned long __user *status);
 int arch_set_shadow_stack_status(struct task_struct *t, unsigned long status);
 int arch_lock_shadow_stack_status(struct task_struct *t, unsigned long status);
+
+#ifdef CONFIG_GMEM
+DECLARE_STATIC_KEY_FALSE(gmem_status);
+
+static inline bool gmem_is_enabled(void)
+{
+	return static_branch_likely(&gmem_status);
+}
+
+static inline bool vma_is_peer_shared(struct vm_area_struct *vma)
+{
+	if (!gmem_is_enabled())
+		return false;
+
+	return !!(vma->vm_flags & VM_PEER_SHARED);
+}
+#else
+static inline bool gmem_is_enabled(void) { return false; }
+static inline bool vma_is_peer_shared(struct vm_area_struct *vma)
+{
+	return false;
+}
+#endif
+
+#ifdef CONFIG_ACPI_APEI_RAS_CRITICAL
+static inline bool mm_is_critical_error(struct mm_struct *mm)
+{
+	return mm && test_bit(MMF_CRITICAL_ERR, &mm->flags);
+}
+#else
+static inline bool mm_is_critical_error(struct mm_struct *mm)
+{
+	return false;
+}
+#endif
 
 #endif /* _LINUX_MM_H */

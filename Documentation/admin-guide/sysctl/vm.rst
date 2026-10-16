@@ -1155,3 +1155,32 @@ To disable brk_thp_aligned:
 
 To enable brk_thp_aligned:
        echo 1 > /proc/sys/vm/enable_brk_thp_aligned
+This is used to set the upper limit of page cache in megabytes.
+Page cache will be reclaimed periodically if page cache is over limit.
+
+
+filemap_alloc_local
+===================
+
+When CONFIG_FILEMAP_LOCAL_ALLOC is enabled, the kernel provides this interface
+to restrict pagecache allocations to non-cpuless NUMA nodes only, excluding cpuless
+NUMA node like cxl NUMA nodes and ub NUMA nodes.
+
+This feature is designed to avoid the higher access latency associated with
+cpuless NUMA memory by ensuring that pagecache pages are allocated only from
+normal non-cpuless NUMA nodes within the current cpuset's mems_allowed range.
+
+0: Allow pagecache allocation on all NUMA nodes (default)
+1: Restrict pagecache allocation to non-cpuless NUMA nodes only
+
+When set to 1 and cpuless NUMA nodes are present:
+
+- Pagecache allocations use round-robin interleaving across non-cpuless NUMA nodes
+only, preventing allocation on cpuless NUMA nodes
+- For workloads with cpuset memory spreading enabled, non-cpuless-only interleave
+is used
+- For other workloads, allocation follows the task's NUMA mempolicy but is restricted
+to non-cpuless nodes only
+
+This sysctl requires CONFIG_LOCAL_PAGECACHE to be enabled at compile time.
+
