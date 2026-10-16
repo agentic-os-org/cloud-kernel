@@ -501,6 +501,9 @@ FOP_END;
 	_fault ? X86EMUL_UNHANDLEABLE : X86EMUL_CONTINUE; \
 })
 
+static u64 get_invlpg_linear_addr(struct x86_emulate_ctxt *ctxt,
+				  enum x86_intercept intercept);
+
 static int emulator_check_intercept(struct x86_emulate_ctxt *ctxt,
 				    enum x86_intercept intercept,
 				    enum x86_intercept_stage stage)
@@ -516,6 +519,7 @@ static int emulator_check_intercept(struct x86_emulate_ctxt *ctxt,
 		.src_bytes  = ctxt->src.bytes,
 		.dst_bytes  = ctxt->dst.bytes,
 		.ad_bytes   = ctxt->ad_bytes,
+		.invlpg_linear_addr = get_invlpg_linear_addr(ctxt, intercept),
 		.next_rip   = ctxt->eip,
 	};
 
@@ -787,6 +791,25 @@ bad:
 		return emulate_gp(ctxt, 0);
 }
 
+static u64 get_invlpg_linear_addr(struct x86_emulate_ctxt *ctxt,
+				  enum x86_intercept intercept)
+{
+	unsigned int max_size;
+	unsigned long linear = 0;
+
+	if (intercept != x86_intercept_invlpg)
+		return 0;
+
+	/*
+	 * Use the same address calculation as em_invlpg() for the address
+	 * reported to L1.  Ignore address-check failures, as __linearize()
+	 * sets linear before reporting a failure.
+	 */
+	__linearize(ctxt, ctxt->src.addr.mem, &max_size, 1,
+		    false, false, ctxt->mode, &linear);
+	return linear;
+}
+
 static int linearize(struct x86_emulate_ctxt *ctxt,
 		     struct segmented_address addr,
 		     unsigned size, bool write,
@@ -949,6 +972,28 @@ static __always_inline int do_insn_fetch_bytes(struct x86_emulate_ctxt *ctxt,
 	else
 		return X86EMUL_CONTINUE;
 }
+
+/*
+ * The caller is responsible for ensuring that the fetch cache belongs to
+ * the current instruction.  Matching EIP alone does not guarantee this.
+ */
+unsigned int x86_emulator_copy_insn_bytes(struct x86_emulate_ctxt *ctxt,
+					  unsigned long eip, u8 *bytes,
+					  unsigned int max_bytes)
+{
+	unsigned int nr_bytes;
+
+	if (!ctxt || ctxt->eip != eip ||
+	    ctxt->fetch.end < ctxt->fetch.data ||
+	    ctxt->fetch.end > ctxt->fetch.data + sizeof(ctxt->fetch.data))
+		return 0;
+
+	nr_bytes = min_t(unsigned int, ctxt->fetch.end - ctxt->fetch.data,
+			 max_bytes);
+	memcpy(bytes, ctxt->fetch.data, nr_bytes);
+	return nr_bytes;
+}
+EXPORT_SYMBOL_GPL(x86_emulator_copy_insn_bytes);
 
 /* Fetch next part of the instruction being emulated. */
 #define insn_fetch(_type, _ctxt)					\

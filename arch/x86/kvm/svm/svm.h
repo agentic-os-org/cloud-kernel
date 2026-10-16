@@ -115,6 +115,9 @@ struct svm_nested_state {
 	struct vmcb_control_area ctl;
 
 	bool initialized;
+
+	/* True if VMCB02 has instruction bytes for the current nested exit. */
+	bool vmcb02_insn_bytes_valid;
 };
 
 struct vcpu_svm {
