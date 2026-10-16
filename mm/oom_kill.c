@@ -56,6 +56,7 @@
 static int sysctl_panic_on_oom;
 static int sysctl_oom_kill_allocating_task;
 static int sysctl_oom_dump_tasks = 1;
+static unsigned long sysctl_oom_kill_min_kbytes;
 
 /*
  * Serializes oom killer invocations (out_of_memory()) from all contexts to
@@ -191,15 +192,17 @@ static bool should_dump_unreclaim_slab(void)
 }
 
 /**
- * oom_badness - heuristic function to determine which candidate task to kill
+ * __oom_badness - heuristic function to determine which candidate task to kill
  * @p: task struct of which task we should calculate
  * @totalpages: total present RAM allowed for page allocation
+ * @oom_skip_threshold_kb: skip tasks using less memory than this, 0 to disable
  *
  * The heuristic for determining which task to kill is made to be as simple and
  * predictable as possible.  The goal is to return the highest value for the
  * task consuming the most memory to avoid subsequent oom failures.
  */
-long oom_badness(struct task_struct *p, unsigned long totalpages)
+static long __oom_badness(struct task_struct *p, unsigned long totalpages,
+			  unsigned long oom_skip_threshold_kb)
 {
 	long points;
 	long adj;
@@ -230,6 +233,18 @@ long oom_badness(struct task_struct *p, unsigned long totalpages)
 	 */
 	points = get_mm_rss_sum(p->mm) + get_mm_counter_sum(p->mm, MM_SWAPENTS) +
 		mm_pgtables_bytes(p->mm) / PAGE_SIZE;
+
+	/*
+	 * Skip tasks whose RSS + swap + pagetables is below
+	 * oom_kill_min_kbytes, so the OOM killer avoids killing
+	 * small processes that free little memory.
+	 */
+	if (oom_skip_threshold_kb &&
+	    (points << (PAGE_SHIFT - 10)) < oom_skip_threshold_kb) {
+		task_unlock(p);
+		return LONG_MIN;
+	}
+
 	task_unlock(p);
 
 	/* Normalize to oom_score_adj units */
@@ -237,6 +252,11 @@ long oom_badness(struct task_struct *p, unsigned long totalpages)
 	points += adj;
 
 	return points;
+}
+
+long oom_badness(struct task_struct *p, unsigned long totalpages)
+{
+	return __oom_badness(p, totalpages, 0);
 }
 
 static const char * const oom_constraint_text[] = {
@@ -346,7 +366,12 @@ int oom_evaluate_task(struct task_struct *task, void *arg)
 		goto select;
 	}
 
-	points = oom_badness(task, oc->totalpages);
+	/*
+	 * Skipping the small tasks only applies to the global oom killer,
+	 * memcg oom behaviour is unchanged.
+	 */
+	points = __oom_badness(task, oc->totalpages,
+			       is_memcg_oom(oc) ? 0 : sysctl_oom_kill_min_kbytes);
 	if (points == LONG_MIN) {
 		mem_cgroup_account_oom_skip(task, oc);
 		goto next;
@@ -746,6 +771,14 @@ static const struct ctl_table vm_oom_kill_table[] = {
 		.maxlen		= sizeof(sysctl_oom_dump_tasks),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
+	},
+	{
+		.procname	= "oom_kill_min_kbytes",
+		.data		= &sysctl_oom_kill_min_kbytes,
+		.maxlen		= sizeof(sysctl_oom_kill_min_kbytes),
+		.mode		= 0644,
+		.proc_handler	= proc_doulongvec_minmax,
+		.extra1		= SYSCTL_LONG_ZERO,
 	},
 };
 #endif
