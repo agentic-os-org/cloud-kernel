@@ -13,3 +13,6 @@ UnifiedBus Subsystem
    ubase/index
    ubfi/index
    ubus/index
+   ummu/index
+   cdma/index
+   urma/ipourma/index
