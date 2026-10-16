@@ -17,6 +17,9 @@
 #include <linux/vmalloc.h>
 #include "debug.h"
 #include "direct.h"
+#ifdef CONFIG_PSWIOTLB
+#include "phytium/pswiotlb-dma.h"
+#endif
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/dma.h>
@@ -167,8 +170,16 @@ dma_addr_t dma_map_phys(struct device *dev, phys_addr_t phys, size_t size,
 	if (dma_map_direct(dev, ops) ||
 	    (!is_mmio && arch_dma_map_phys_direct(dev, phys + size)))
 		addr = dma_direct_map_phys(dev, phys, size, dir, attrs);
-	else if (use_dma_iommu(dev))
-		addr = iommu_dma_map_phys(dev, phys, size, dir, attrs);
+	else if (use_dma_iommu(dev)) {
+#ifdef CONFIG_PSWIOTLB
+		if (!is_mmio && check_if_pswiotlb_is_applicable(dev))
+			addr = pswiotlb_iommu_dma_map_page(dev,
+					phys_to_page(phys), offset_in_page(phys),
+					size, dir, attrs);
+		else
+#endif
+			addr = iommu_dma_map_phys(dev, phys, size, dir, attrs);
+	}
 	else if (is_mmio) {
 		if (!ops->map_resource)
 			return DMA_MAPPING_ERROR;
@@ -221,8 +232,15 @@ void dma_unmap_phys(struct device *dev, dma_addr_t addr, size_t size,
 	if (dma_map_direct(dev, ops) ||
 	    (!is_mmio && arch_dma_unmap_phys_direct(dev, addr + size)))
 		dma_direct_unmap_phys(dev, addr, size, dir, attrs);
-	else if (use_dma_iommu(dev))
-		iommu_dma_unmap_phys(dev, addr, size, dir, attrs);
+	else if (use_dma_iommu(dev)) {
+#ifdef CONFIG_PSWIOTLB
+		if (!is_mmio && check_if_pswiotlb_is_applicable(dev))
+			pswiotlb_iommu_dma_unmap_page(dev, addr, size, dir,
+						 attrs);
+		else
+#endif
+			iommu_dma_unmap_phys(dev, addr, size, dir, attrs);
+	}
 	else if (is_mmio) {
 		if (ops->unmap_resource)
 			ops->unmap_resource(dev, addr, size, dir, attrs);
@@ -257,8 +275,15 @@ static int __dma_map_sg_attrs(struct device *dev, struct scatterlist *sg,
 	if (dma_map_direct(dev, ops) ||
 	    arch_dma_map_sg_direct(dev, sg, nents))
 		ents = dma_direct_map_sg(dev, sg, nents, dir, attrs);
-	else if (use_dma_iommu(dev))
-		ents = iommu_dma_map_sg(dev, sg, nents, dir, attrs);
+	else if (use_dma_iommu(dev)) {
+#ifdef CONFIG_PSWIOTLB
+		if (check_if_pswiotlb_is_applicable(dev))
+			ents = pswiotlb_iommu_dma_map_sg(dev, sg, nents,
+						 dir, attrs);
+		else
+#endif
+			ents = iommu_dma_map_sg(dev, sg, nents, dir, attrs);
+	}
 	else
 		ents = ops->map_sg(dev, sg, nents, dir, attrs);
 
@@ -343,7 +368,6 @@ int dma_map_sgtable(struct device *dev, struct sg_table *sgt,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(dma_map_sgtable);
-
 void dma_unmap_sg_attrs(struct device *dev, struct scatterlist *sg,
 				      int nents, enum dma_data_direction dir,
 				      unsigned long attrs)
@@ -356,8 +380,15 @@ void dma_unmap_sg_attrs(struct device *dev, struct scatterlist *sg,
 	if (dma_map_direct(dev, ops) ||
 	    arch_dma_unmap_sg_direct(dev, sg, nents))
 		dma_direct_unmap_sg(dev, sg, nents, dir, attrs);
-	else if (use_dma_iommu(dev))
-		iommu_dma_unmap_sg(dev, sg, nents, dir, attrs);
+	else if (use_dma_iommu(dev)) {
+#ifdef CONFIG_PSWIOTLB
+		if (check_if_pswiotlb_is_applicable(dev))
+			pswiotlb_iommu_dma_unmap_sg(dev, sg, nents, dir,
+						 attrs);
+		else
+#endif
+			iommu_dma_unmap_sg(dev, sg, nents, dir, attrs);
+	}
 	else if (ops->unmap_sg)
 		ops->unmap_sg(dev, sg, nents, dir, attrs);
 }
@@ -390,8 +421,15 @@ void __dma_sync_single_for_cpu(struct device *dev, dma_addr_t addr, size_t size,
 	BUG_ON(!valid_dma_direction(dir));
 	if (dma_map_direct(dev, ops))
 		dma_direct_sync_single_for_cpu(dev, addr, size, dir);
-	else if (use_dma_iommu(dev))
-		iommu_dma_sync_single_for_cpu(dev, addr, size, dir);
+	else if (use_dma_iommu(dev)) {
+#ifdef CONFIG_PSWIOTLB
+		if (check_if_pswiotlb_is_applicable(dev))
+			pswiotlb_iommu_dma_sync_single_for_cpu(dev, addr,
+							 size, dir);
+		else
+#endif
+			iommu_dma_sync_single_for_cpu(dev, addr, size, dir);
+	}
 	else if (ops->sync_single_for_cpu)
 		ops->sync_single_for_cpu(dev, addr, size, dir);
 	trace_dma_sync_single_for_cpu(dev, addr, size, dir);
@@ -407,8 +445,15 @@ void __dma_sync_single_for_device(struct device *dev, dma_addr_t addr,
 	BUG_ON(!valid_dma_direction(dir));
 	if (dma_map_direct(dev, ops))
 		dma_direct_sync_single_for_device(dev, addr, size, dir);
-	else if (use_dma_iommu(dev))
-		iommu_dma_sync_single_for_device(dev, addr, size, dir);
+	else if (use_dma_iommu(dev)) {
+#ifdef CONFIG_PSWIOTLB
+		if (check_if_pswiotlb_is_applicable(dev))
+			pswiotlb_iommu_dma_sync_single_for_device(dev, addr,
+							    size, dir);
+		else
+#endif
+			iommu_dma_sync_single_for_device(dev, addr, size, dir);
+	}
 	else if (ops->sync_single_for_device)
 		ops->sync_single_for_device(dev, addr, size, dir);
 	trace_dma_sync_single_for_device(dev, addr, size, dir);
@@ -424,8 +469,15 @@ void __dma_sync_sg_for_cpu(struct device *dev, struct scatterlist *sg,
 	BUG_ON(!valid_dma_direction(dir));
 	if (dma_map_direct(dev, ops))
 		dma_direct_sync_sg_for_cpu(dev, sg, nelems, dir);
-	else if (use_dma_iommu(dev))
-		iommu_dma_sync_sg_for_cpu(dev, sg, nelems, dir);
+	else if (use_dma_iommu(dev)) {
+#ifdef CONFIG_PSWIOTLB
+		if (check_if_pswiotlb_is_applicable(dev))
+			pswiotlb_iommu_dma_sync_sg_for_cpu(dev, sg, nelems,
+							     dir);
+		else
+#endif
+			iommu_dma_sync_sg_for_cpu(dev, sg, nelems, dir);
+	}
 	else if (ops->sync_sg_for_cpu)
 		ops->sync_sg_for_cpu(dev, sg, nelems, dir);
 	trace_dma_sync_sg_for_cpu(dev, sg, nelems, dir);
@@ -441,8 +493,15 @@ void __dma_sync_sg_for_device(struct device *dev, struct scatterlist *sg,
 	BUG_ON(!valid_dma_direction(dir));
 	if (dma_map_direct(dev, ops))
 		dma_direct_sync_sg_for_device(dev, sg, nelems, dir);
-	else if (use_dma_iommu(dev))
-		iommu_dma_sync_sg_for_device(dev, sg, nelems, dir);
+	else if (use_dma_iommu(dev)) {
+#ifdef CONFIG_PSWIOTLB
+		if (check_if_pswiotlb_is_applicable(dev))
+			pswiotlb_iommu_dma_sync_sg_for_device(dev, sg,
+							nelems, dir);
+		else
+#endif
+			iommu_dma_sync_sg_for_device(dev, sg, nelems, dir);
+	}
 	else if (ops->sync_sg_for_device)
 		ops->sync_sg_for_device(dev, sg, nelems, dir);
 	trace_dma_sync_sg_for_device(dev, sg, nelems, dir);
