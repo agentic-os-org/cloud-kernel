@@ -2432,6 +2432,7 @@ int wcn36xx_smd_add_ba_session(struct wcn36xx *wcn,
 					     &session_id);
 	if (ret) {
 		wcn36xx_err("hal_add_ba_session response failed err=%d\n", ret);
+		ret = -EINVAL;
 		goto out;
 	}
 
@@ -2469,7 +2470,7 @@ out:
 	return ret;
 }
 
-int wcn36xx_smd_del_ba(struct wcn36xx *wcn, u16 tid, u8 sta_index)
+int wcn36xx_smd_del_ba(struct wcn36xx *wcn, u16 tid, u8 direction, u8 sta_index)
 {
 	struct wcn36xx_hal_del_ba_req_msg msg_body;
 	int ret;
@@ -2479,7 +2480,7 @@ int wcn36xx_smd_del_ba(struct wcn36xx *wcn, u16 tid, u8 sta_index)
 
 	msg_body.sta_index = sta_index;
 	msg_body.tid = tid;
-	msg_body.direction = 0;
+	msg_body.direction = direction;
 	PREPARE_HAL_BUF(wcn->hal_buf, msg_body);
 
 	ret = wcn36xx_smd_send_and_wait(wcn, msg_body.header.len);
@@ -2497,27 +2498,46 @@ out:
 	return ret;
 }
 
-static int wcn36xx_smd_trigger_ba_rsp(void *buf, int len)
+static int wcn36xx_smd_trigger_ba_rsp(void *buf, int len, struct add_ba_info *ba_info)
 {
+	struct wcn36xx_hal_trigger_ba_rsp_candidate *candidate;
 	struct wcn36xx_hal_trigger_ba_rsp_msg *rsp;
+	int i;
 
 	if (len < sizeof(*rsp))
 		return -EINVAL;
 
 	rsp = (struct wcn36xx_hal_trigger_ba_rsp_msg *) buf;
+
+	if (rsp->candidate_cnt < 1)
+		return rsp->status ? rsp->status : -EINVAL;
+
+	if (len < sizeof(*rsp) + sizeof(*candidate))
+		return -EINVAL;
+
+	candidate = (struct wcn36xx_hal_trigger_ba_rsp_candidate *)(buf + sizeof(*rsp));
+
+	for (i = 0; i < STACFG_MAX_TC; i++) {
+		ba_info[i] = candidate->ba_info[i];
+	}
+
 	return rsp->status;
 }
 
-int wcn36xx_smd_trigger_ba(struct wcn36xx *wcn, u8 sta_index, u16 tid, u8 session_id)
+int wcn36xx_smd_trigger_ba(struct wcn36xx *wcn, u8 sta_index, u16 tid, u16 *ssn)
 {
 	struct wcn36xx_hal_trigger_ba_req_msg msg_body;
 	struct wcn36xx_hal_trigger_ba_req_candidate *candidate;
+	struct add_ba_info ba_info[STACFG_MAX_TC];
 	int ret;
+
+	if (tid >= STACFG_MAX_TC)
+		return -EINVAL;
 
 	mutex_lock(&wcn->hal_mutex);
 	INIT_HAL_MSG(msg_body, WCN36XX_HAL_TRIGGER_BA_REQ);
 
-	msg_body.session_id = session_id;
+	msg_body.session_id = 0; /* not really used */
 	msg_body.candidate_cnt = 1;
 	msg_body.header.len += sizeof(*candidate);
 	PREPARE_HAL_BUF(wcn->hal_buf, msg_body);
@@ -2532,13 +2552,17 @@ int wcn36xx_smd_trigger_ba(struct wcn36xx *wcn, u8 sta_index, u16 tid, u8 sessio
 		wcn36xx_err("Sending hal_trigger_ba failed\n");
 		goto out;
 	}
-	ret = wcn36xx_smd_trigger_ba_rsp(wcn->hal_buf, wcn->hal_rsp_len);
+	ret = wcn36xx_smd_trigger_ba_rsp(wcn->hal_buf, wcn->hal_rsp_len, ba_info);
 	if (ret) {
 		wcn36xx_err("hal_trigger_ba response failed err=%d\n", ret);
 		goto out;
 	}
 out:
 	mutex_unlock(&wcn->hal_mutex);
+
+	if (ssn)
+		*ssn = ba_info[tid].starting_seq_num;
+
 	return ret;
 }
 
