@@ -36,24 +36,24 @@ static int ubase_dbg_dump_rst_info(struct seq_file *s, void *data)
 static void ubase_dbg_dump_caps_bits(struct seq_file *s, struct ubase_dev *udev)
 {
 #define CAP_FMT(name) "\tsupport_" #name ": %d\n"
-#define PRTINT_CAP(name, func) seq_printf(s, CAP_FMT(name), func(udev))
+#define PRINT_CAP(name, func) seq_printf(s, CAP_FMT(name), func(udev))
 
-	PRTINT_CAP(ub_link, ubase_dev_ubl_supported);
-	PRTINT_CAP(ta_extdb_buffer_config, ubase_dev_ta_extdb_buf_supported);
-	PRTINT_CAP(ta_timer_buffer_config, ubase_dev_ta_timer_buf_supported);
-	PRTINT_CAP(err_handle, ubase_dev_err_handle_supported);
-	PRTINT_CAP(ctrlq, ubase_dev_ctrlq_supported);
-	PRTINT_CAP(eth_mac, ubase_dev_eth_mac_supported);
-	PRTINT_CAP(mac_stats, ubase_dev_mac_stats_supported);
-	PRTINT_CAP(prealloc, __ubase_dev_prealloc_supported);
-	PRTINT_CAP(udma, ubase_dev_udma_supported);
-	PRTINT_CAP(unic, ubase_dev_unic_supported);
-	PRTINT_CAP(uvb, ubase_dev_uvb_supported);
-	PRTINT_CAP(ip_over_urma, ubase_ip_over_urma_supported);
+	PRINT_CAP(ub_link, ubase_dev_ubl_supported);
+	PRINT_CAP(ta_extdb_buffer_config, ubase_dev_ta_extdb_buf_supported);
+	PRINT_CAP(ta_timer_buffer_config, ubase_dev_ta_timer_buf_supported);
+	PRINT_CAP(err_handle, ubase_dev_err_handle_supported);
+	PRINT_CAP(ctrlq, ubase_dev_ctrlq_supported);
+	PRINT_CAP(eth_mac, ubase_dev_eth_mac_supported);
+	PRINT_CAP(mac_stats, ubase_dev_mac_stats_supported);
+	PRINT_CAP(prealloc, __ubase_dev_prealloc_supported);
+	PRINT_CAP(udma, ubase_dev_udma_supported);
+	PRINT_CAP(unic, ubase_dev_unic_supported);
+	PRINT_CAP(uvb, ubase_dev_uvb_supported);
+	PRINT_CAP(ip_over_urma, ubase_ip_over_urma_supported);
 	if (ubase_ip_over_urma_supported(udev))
-		PRTINT_CAP(ip_over_urma_utp, ubase_ip_over_urma_utp_supported);
-	PRTINT_CAP(activate_proxy, ubase_activate_proxy_supported);
-	PRTINT_CAP(utp, ubase_utp_supported);
+		PRINT_CAP(ip_over_urma_utp, ubase_ip_over_urma_utp_supported);
+	PRINT_CAP(activate_proxy, ubase_activate_proxy_supported);
+	PRINT_CAP(utp, ubase_utp_supported);
 }
 
 static void ubase_dbg_dump_caps_info(struct seq_file *s, struct ubase_dev *udev)
@@ -95,13 +95,17 @@ static void ubase_dbg_dump_caps_info(struct seq_file *s, struct ubase_dev *udev)
 		{"\tdie_id: %u\n", dev_caps->die_id},
 		{"\tue_id: %u\n", dev_caps->ue_id},
 		{"\tnl_id: %u\n", dev_caps->nl_id},
-		{"\tfw_version: %u\n", dev_caps->fw_version},
 	};
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(ubase_common_caps_info); i++)
 		seq_printf(s, ubase_common_caps_info[i].format,
 			   ubase_common_caps_info[i].caps_info);
+	seq_printf(s, "\tfw_version: %u.%u.%u.%u\n",
+		   u32_get_bits(dev_caps->fw_version, UBASE_FW_VERSION_BYTE3_MASK),
+		   u32_get_bits(dev_caps->fw_version, UBASE_FW_VERSION_BYTE2_MASK),
+		   u32_get_bits(dev_caps->fw_version, UBASE_FW_VERSION_BYTE1_MASK),
+		   u32_get_bits(dev_caps->fw_version, UBASE_FW_VERSION_BYTE0_MASK));
 }
 
 static void ubase_dbg_dump_common_caps(struct seq_file *s, struct ubase_dev *udev)
@@ -130,12 +134,8 @@ static void ubase_dbg_dump_adev_caps(struct seq_file *s,
 		{"\tjfr_depth: %u\n", caps->jfr.depth},
 		{"\tjfc_max_cnt: %u\n", caps->jfc.max_cnt},
 		{"\tjfc_depth: %u\n", caps->jfc.depth},
-		{"\ttp_max_cnt: %u\n", caps->tp.max_cnt},
-		{"\ttp_depth: %u\n", caps->tp.depth},
 		{"\ttpg_max_cnt: %u\n", caps->tpg.max_cnt},
-		{"\ttpg_depth: %u\n", caps->tpg.depth},
 		{"\tcqe_size: %hu\n", caps->cqe_size},
-		{"\tutp_port_bitmap: 0x%x\n", caps->utp_port_bitmap},
 		{"\tjtg_max_cnt: %u\n", caps->jtg_max_cnt},
 		{"\trc_max_cnt: %u\n", caps->rc_max_cnt},
 		{"\trc_depth: %u\n", caps->rc_que_depth},
@@ -536,14 +536,6 @@ static struct ubase_dbg_cmd_info ubase_dbg_cmd[] = {
 		.read_func = ubase_dbg_dump_activate_record,
 	},
 	{
-		.name = "tpg_context",
-		.dentry_index = UBASE_DBG_DENTRY_CONTEXT,
-		.property = UBASE_SUP_URMA | UBASE_SUP_UBL_ETH,
-		.support = __ubase_dbg_dentry_support,
-		.init = __ubase_dbg_seq_file_init,
-		.read_func = ubase_dbg_dump_tpg_ctx,
-	},
-	{
 		.name = "tp_context_hw",
 		.dentry_index = UBASE_DBG_DENTRY_CONTEXT,
 		.property = UBASE_SUP_URMA | UBASE_SUP_UBL_ETH,
@@ -624,12 +616,12 @@ static struct ubase_dbg_cmd_info ubase_dbg_cmd[] = {
 		.read_func = ubase_dbg_dump_perf_stats,
 	},
 	{
-		.name = "rack_vl_bitmap",
+		.name = "vl_bitmap",
 		.dentry_index = UBASE_DBG_DENTRY_QOS,
 		.property = UBASE_SUP_URMA | UBASE_SUP_CDMA | UBASE_SUP_UBL,
 		.support = __ubase_dbg_dentry_support,
 		.init = __ubase_dbg_seq_file_init,
-		.read_func = ubase_dbg_dump_rack_vl_bitmap,
+		.read_func = ubase_dbg_dump_vl_bitmap,
 	},
 	{
 		.name = "adev_qos",
@@ -864,7 +856,7 @@ int ubase_dbg_format_time(time64_t time, struct seq_file *s)
 {
 #define YEAR_OFFSET 1900
 	const char week[7][4] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-	const char mouth[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+	const char month[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
 				   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 	struct tm t;
 
@@ -874,7 +866,7 @@ int ubase_dbg_format_time(time64_t time, struct seq_file *s)
 	time64_to_tm(time, 0, &t);
 
 	seq_printf(s, "%s %s %02d %02d:%02d:%02d %ld", week[t.tm_wday],
-		   mouth[t.tm_mon], t.tm_mday, t.tm_hour, t.tm_min,
+		   month[t.tm_mon], t.tm_mday, t.tm_hour, t.tm_min,
 		   t.tm_sec, t.tm_year + YEAR_OFFSET);
 	return 0;
 }

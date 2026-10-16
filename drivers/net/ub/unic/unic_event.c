@@ -20,9 +20,10 @@
 #include "unic_dcbnl.h"
 #include "unic_dev.h"
 #include "unic_hw.h"
+#include "unic_ip.h"
+#include "unic_mac.h"
 #include "unic_netdev.h"
 #include "unic_qos_hw.h"
-#include "unic_rack_ip.h"
 #include "unic_reset.h"
 #include "unic_event.h"
 
@@ -31,7 +32,6 @@ int unic_comp_handler(struct notifier_block *nb, unsigned long jfcn, void *data)
 	struct auxiliary_device *adev = (struct auxiliary_device *)data;
 	struct unic_dev *unic_dev = dev_get_drvdata(&adev->dev);
 	struct unic_channels *channels = &unic_dev->channels;
-	struct unic_cq *cq;
 	u32 index;
 
 	if (test_bit(UNIC_STATE_CHANNEL_INVALID, &unic_dev->state))
@@ -40,13 +40,6 @@ int unic_comp_handler(struct notifier_block *nb, unsigned long jfcn, void *data)
 	index = jfcn < channels->num ? jfcn : jfcn - channels->num;
 	if (index >= channels->num)
 		return -EINVAL;
-
-	if (jfcn > channels->num)
-		cq = channels->c[index].rq->cq;
-	else
-		cq = channels->c[index].sq->cq;
-
-	cq->event_cnt++;
 
 	napi_schedule(&channels->c[index].napi);
 
@@ -86,6 +79,9 @@ static void unic_activate_event_process(struct unic_dev *unic_dev)
 	else
 		clear_bit(UNIC_VPORT_STATE_PROMISC_CHANGE, &unic_dev->vport.state);
 
+	if (unic_dev_eth_mac_supported(unic_dev))
+		unic_activate_mac_table(unic_dev);
+
 out:
 	mutex_lock(&act_info->mutex);
 	act_info->deactivate = false;
@@ -118,6 +114,9 @@ static void unic_deactivate_event_process(struct unic_dev *unic_dev)
 	mutex_lock(&act_info->mutex);
 	act_info->deactivate = true;
 	mutex_unlock(&act_info->mutex);
+
+	if (unic_dev_eth_mac_supported(unic_dev))
+		unic_deactivate_mac_table(unic_dev);
 
 	ret = unic_activate_promisc_mode(unic_dev, false);
 	if (ret)
@@ -152,12 +151,33 @@ static void unic_activate_handler(struct auxiliary_device *adev, bool activate)
 		unic_deactivate_event_process(unic_dev);
 }
 
-static void unic_rack_port_reset(struct unic_dev *unic_dev, bool link_up)
+static void unic_ub_port_reset(struct unic_dev *unic_dev, bool link_up)
 {
+	struct net_device *netdev = unic_dev->comdev.netdev;
+
+	if (!netif_running(netdev))
+		return;
+
 	if (link_up)
 		unic_dev->hw.mac.link_status = UNIC_LINK_STATUS_UP;
 	else
 		unic_dev->hw.mac.link_status = UNIC_LINK_STATUS_DOWN;
+}
+
+static void unic_eth_port_reset(struct net_device *netdev, bool link_up)
+{
+	rtnl_lock();
+
+	if (!netif_running(netdev))
+		goto unlock;
+
+	if (link_up)
+		unic_net_open(netdev);
+	else
+		unic_net_stop(netdev);
+
+unlock:
+	rtnl_unlock();
 }
 
 static void unic_port_handler(struct auxiliary_device *adev, bool link_up)
@@ -165,10 +185,10 @@ static void unic_port_handler(struct auxiliary_device *adev, bool link_up)
 	struct unic_dev *unic_dev = dev_get_drvdata(&adev->dev);
 	struct net_device *netdev = unic_dev->comdev.netdev;
 
-	if (!netif_running(netdev))
-		return;
-
-	unic_rack_port_reset(unic_dev, link_up);
+	if (unic_dev_ubl_supported(unic_dev))
+		unic_ub_port_reset(unic_dev, link_up);
+	else
+		unic_eth_port_reset(netdev, link_up);
 }
 
 static struct ubase_ctrlq_event_nb unic_ctrlq_events[] = {

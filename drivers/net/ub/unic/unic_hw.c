@@ -295,6 +295,20 @@ static void unic_update_fec_advertising(struct unic_mac *mac)
 				 mac->advertising);
 }
 
+static void unic_update_pause_advertising(struct unic_dev *unic_dev)
+{
+	u8 fc_mode = unic_dev->channels.vl.pfc_info.fc_mode;
+	struct unic_mac *mac = &unic_dev->hw.mac;
+	bool rx_en = false, tx_en = false;
+
+	if (!(fc_mode & UNIC_FC_PFC_EN)) {
+		rx_en = !!(fc_mode & UNIC_RX_PAUSE_EN);
+		tx_en = !!(fc_mode & UNIC_TX_PAUSE_EN);
+	}
+
+	linkmode_set_pause(mac->advertising, tx_en, rx_en);
+}
+
 static void unic_update_advertising(struct unic_dev *unic_dev)
 {
 	struct unic_mac *mac = &unic_dev->hw.mac;
@@ -303,6 +317,9 @@ static void unic_update_advertising(struct unic_dev *unic_dev)
 
 	unic_update_speed_advertising(mac);
 	unic_update_fec_advertising(mac);
+
+	if (unic_dev_pause_supported(unic_dev))
+		unic_update_pause_advertising(unic_dev);
 }
 
 static void unic_update_port_capability(struct unic_dev *unic_dev)
@@ -342,6 +359,10 @@ static void unic_setup_promisc_req(struct unic_promisc_cfg_cmd *req,
 
 	req->promisc_mc_ind = 1;
 	req->promisc_rx_mc_en = promisc_en->en_mc;
+
+	req->promisc_rx_uc_mac_en = promisc_en->en_uc_mac;
+	req->promisc_rx_mc_mac_en = promisc_en->en_mc_mac;
+	req->promisc_rx_bc_en = promisc_en->en_bc;
 }
 
 int unic_get_promisc_mode(struct unic_dev *unic_dev,
@@ -372,6 +393,9 @@ int unic_set_promisc_mode(struct unic_dev *unic_dev,
 	u32 time_out;
 	int ret;
 
+	if (!unic_dev_ubl_supported(unic_dev))
+		promisc_en->en_bc = 1;
+
 	unic_setup_promisc_req(&req, promisc_en);
 
 	ubase_fill_inout_buf(&in, UBASE_OPC_CFG_PROMISC_MODE, false,
@@ -390,6 +414,8 @@ void unic_fill_promisc_en(struct unic_promisc_en *promisc_en, u8 flags)
 {
 	promisc_en->en_uc_ip = !!(flags & UNIC_UPE);
 	promisc_en->en_mc = !!(flags & UNIC_MPE);
+	promisc_en->en_uc_mac = !!(flags & UNIC_UPE);
+	promisc_en->en_mc_mac = !!(flags & UNIC_MPE);
 }
 
 int unic_activate_promisc_mode(struct unic_dev *unic_dev, bool activate)
@@ -453,6 +479,9 @@ static void unic_parse_fiber_link_mode(struct unic_dev *unic_dev,
 	unic_set_linkmode_lr(speed_ability, mac->supported);
 	unic_set_linkmode_cr(speed_ability, mac->supported);
 
+	if (unic_dev_pause_supported(unic_dev))
+		linkmode_set_bit(ETHTOOL_LINK_MODE_Pause_BIT, mac->supported);
+
 	linkmode_set_bit(ETHTOOL_LINK_MODE_FIBRE_BIT, mac->supported);
 	linkmode_set_bit(ETHTOOL_LINK_MODE_FEC_NONE_BIT, mac->supported);
 }
@@ -463,6 +492,9 @@ static void unic_parse_backplane_link_mode(struct unic_dev *unic_dev,
 	struct unic_mac *mac = &unic_dev->hw.mac;
 
 	unic_set_linkmode_kr(speed_ability, mac->supported);
+
+	if (unic_dev_pause_supported(unic_dev))
+		linkmode_set_bit(ETHTOOL_LINK_MODE_Pause_BIT, mac->supported);
 
 	linkmode_set_bit(ETHTOOL_LINK_MODE_Backplane_BIT, mac->supported);
 	linkmode_set_bit(ETHTOOL_LINK_MODE_FEC_NONE_BIT, mac->supported);
@@ -528,6 +560,7 @@ static void unic_parse_dev_caps(struct unic_dev *unic_dev,
 	caps->uc_mac_tbl_size = le32_to_cpu(resp->uc_mac_tbl_size);
 	caps->mc_mac_tbl_size = le32_to_cpu(resp->mc_mac_tbl_size);
 	caps->vlan_tbl_size = le32_to_cpu(resp->vlan_tbl_size);
+	caps->mng_tbl_size = le32_to_cpu(resp->mng_tbl_size);
 	caps->max_trans_unit = le16_to_cpu(resp->max_trans_unit);
 	caps->min_trans_unit = le16_to_cpu(resp->min_trans_unit);
 	caps->vport_buf_size = le16_to_cpu(resp->vport_buf_size) * KB;

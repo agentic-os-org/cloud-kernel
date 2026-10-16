@@ -152,6 +152,20 @@ struct unic_query_flush_status_resp {
 	u8 rsv[23];
 };
 
+struct unic_query_mac_addr_resp {
+	u8	mac[ETH_ALEN];
+	u8	rsv[18];
+};
+
+struct unic_mac_tbl_entry_cmd {
+	u8	resp_code;
+	u8	mac_type;
+	u8	is_pfc;
+	u8	rsvd0;
+	u8	mac_addr[ETH_ALEN];
+	u8	rsvd1[14];
+};
+
 struct unic_vlan_filter_cfg_cmd {
 	u16 vlan_id;
 	u8 is_add;
@@ -197,6 +211,20 @@ struct unic_lb_en_cfg {
 	u8 rsvd : 7;
 	u8 result;
 	u8 rsv[21];
+};
+
+struct unic_cfg_mac_pause_cmd {
+	__le32 tx_en;
+	__le32 rx_en;
+	u8 rsv[16];
+};
+
+struct unic_cfg_pfc_pause_cmd {
+	u8 tx_enable : 1;
+	u8 rx_enable : 1;
+	u8 rsvd0 : 6;
+	u8 pri_bitmap;
+	u8 rsv1[22];
 };
 
 struct unic_query_link_diagnosis_resp {

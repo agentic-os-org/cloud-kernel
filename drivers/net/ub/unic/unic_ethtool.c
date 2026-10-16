@@ -188,6 +188,88 @@ static void unic_get_driver_info(struct net_device *netdev,
 		 u32_get_bits(fw_version, UBASE_FW_VERSION_BYTE0_MASK));
 }
 
+static void unic_update_pause_state(u8 pause_mode,
+				    struct ethtool_pauseparam *eth_pauseparam)
+{
+	eth_pauseparam->rx_pause = UNIC_RX_TX_PAUSE_OFF;
+	eth_pauseparam->tx_pause = UNIC_RX_TX_PAUSE_OFF;
+
+	if (pause_mode & UNIC_TX_PAUSE_EN)
+		eth_pauseparam->tx_pause = UNIC_RX_TX_PAUSE_ON;
+
+	if (pause_mode & UNIC_RX_PAUSE_EN)
+		eth_pauseparam->rx_pause = UNIC_RX_TX_PAUSE_ON;
+}
+
+static void unic_record_user_pauseparam(struct unic_dev *unic_dev,
+					struct ethtool_pauseparam *eth_pauseparam)
+{
+	struct	unic_pfc_info *pfc_info = &unic_dev->channels.vl.pfc_info;
+	u32 rx_en = eth_pauseparam->rx_pause;
+	u32 tx_en = eth_pauseparam->tx_pause;
+
+	pfc_info->fc_mode = 0;
+
+	if (tx_en)
+		pfc_info->fc_mode = UNIC_TX_PAUSE_EN;
+
+	if (rx_en)
+		pfc_info->fc_mode |= UNIC_RX_PAUSE_EN;
+}
+
+static void unic_get_pauseparam(struct net_device *ndev,
+				struct ethtool_pauseparam *eth_pauseparam)
+{
+#define PAUSE_AUTONEG_OFF 0
+
+	struct unic_dev *unic_dev = netdev_priv(ndev);
+
+	if (!unic_dev_pause_supported(unic_dev))
+		return;
+
+	eth_pauseparam->autoneg = PAUSE_AUTONEG_OFF;
+
+	if (unic_dev->channels.vl.pfc_info.fc_mode & UNIC_FC_PFC_EN) {
+		eth_pauseparam->rx_pause = UNIC_RX_TX_PAUSE_OFF;
+		eth_pauseparam->tx_pause = UNIC_RX_TX_PAUSE_OFF;
+		return;
+	}
+
+	unic_update_pause_state(unic_dev->channels.vl.pfc_info.fc_mode,
+				eth_pauseparam);
+}
+
+static int unic_set_pauseparam(struct net_device *ndev,
+			       struct ethtool_pauseparam *eth_pauseparam)
+{
+	struct unic_dev *unic_dev = netdev_priv(ndev);
+	int ret;
+
+	if (!unic_dev_pause_supported(unic_dev))
+		return -EOPNOTSUPP;
+
+	if (eth_pauseparam->autoneg) {
+		unic_warn(unic_dev,
+			  "failed to set pause, set autoneg not supported.\n");
+		return -EOPNOTSUPP;
+	}
+
+	if (unic_dev->channels.vl.pfc_info.fc_mode & UNIC_FC_PFC_EN) {
+		unic_warn(unic_dev,
+			  "failed to set pause, priority flow control enabled.\n");
+		return -EOPNOTSUPP;
+	}
+
+	ret = unic_mac_pause_en_cfg(unic_dev, eth_pauseparam->tx_pause,
+				    eth_pauseparam->rx_pause);
+	if (ret)
+		return ret;
+
+	unic_record_user_pauseparam(unic_dev, eth_pauseparam);
+
+	return ret;
+}
+
 static int unic_get_fecparam(struct net_device *ndev,
 			     struct ethtool_fecparam *fec)
 {
@@ -344,6 +426,53 @@ unic_check_coalesce_para(struct net_device *netdev,
 	return ret;
 }
 
+static int unic_backup_stats(struct unic_dev *unic_dev,
+			     struct unic_sq_stats **sq_stats,
+			     struct unic_rq_stats **rq_stats)
+{
+	struct unic_sq_stats *tx_stats;
+	struct unic_rq_stats *rx_stats;
+	u32 i;
+
+	tx_stats = kcalloc(unic_dev->channels.num, sizeof(*tx_stats),
+			   GFP_KERNEL);
+	if (!tx_stats)
+		return -ENOMEM;
+
+	rx_stats = kcalloc(unic_dev->channels.num, sizeof(*rx_stats),
+			   GFP_KERNEL);
+	if (!rx_stats) {
+		kfree(tx_stats);
+		return -ENOMEM;
+	}
+
+	for (i = 0; i < unic_dev->channels.num; i++) {
+		memcpy(&tx_stats[i], &unic_dev->channels.c[i].sq->stats,
+		       sizeof(struct unic_sq_stats));
+		memcpy(&rx_stats[i], &unic_dev->channels.c[i].rq->stats,
+		       sizeof(struct unic_rq_stats));
+	}
+
+	*sq_stats = tx_stats;
+	*rq_stats = rx_stats;
+
+	return 0;
+}
+
+static void unic_restore_stats(struct unic_dev *unic_dev,
+			       struct unic_sq_stats *sq_stats,
+			       struct unic_rq_stats *rq_stats)
+{
+	u32 i;
+
+	for (i = 0; i < unic_dev->channels.num; i++) {
+		memcpy(&unic_dev->channels.c[i].rq->stats, &rq_stats[i],
+		       sizeof(struct unic_rq_stats));
+		memcpy(&unic_dev->channels.c[i].sq->stats, &sq_stats[i],
+		       sizeof(struct unic_sq_stats));
+	}
+}
+
 static int unic_set_coalesce(struct net_device *netdev,
 			     struct ethtool_coalesce *cmd,
 			     struct kernel_ethtool_coalesce *kernel_coal,
@@ -354,6 +483,8 @@ static int unic_set_coalesce(struct net_device *netdev,
 	struct unic_coalesce *tx_coal = &unic_coal->tx_coal;
 	struct unic_coalesce *rx_coal = &unic_coal->rx_coal;
 	struct unic_coalesce old_tx_coal, old_rx_coal;
+	struct unic_sq_stats *sq_stats;
+	struct unic_rq_stats *rq_stats;
 	int ret, ret1;
 
 	if (netif_running(netdev)) {
@@ -368,6 +499,13 @@ static int unic_set_coalesce(struct net_device *netdev,
 	ret = unic_check_coalesce_para(netdev, cmd, kernel_coal);
 	if (ret)
 		return ret;
+
+	ret = unic_backup_stats(unic_dev, &sq_stats, &rq_stats);
+	if (ret) {
+		unic_err(unic_dev, "failed to backup txrx stats, ret = %d.\n",
+			 ret);
+		return ret;
+	}
 
 	memcpy(&old_tx_coal, tx_coal, sizeof(struct unic_coalesce));
 	memcpy(&old_rx_coal, rx_coal, sizeof(struct unic_coalesce));
@@ -386,11 +524,19 @@ static int unic_set_coalesce(struct net_device *netdev,
 		memcpy(tx_coal, &old_tx_coal, sizeof(struct unic_coalesce));
 		memcpy(rx_coal, &old_rx_coal, sizeof(struct unic_coalesce));
 		ret1 = unic_init_channels(unic_dev, unic_dev->channels.num);
-		if (ret1)
+		if (ret1) {
 			unic_err(unic_dev,
 				 "failed to recover old channels, ret = %d.\n",
 				 ret1);
+			goto err_recover_channels;
+		}
 	}
+
+	unic_restore_stats(unic_dev, sq_stats, rq_stats);
+
+err_recover_channels:
+	kfree(sq_stats);
+	kfree(rq_stats);
 
 	return ret;
 }
@@ -509,6 +655,8 @@ static const struct ethtool_ops unic_ethtool_ops = {
 	.get_link_ksettings = unic_get_link_ksettings,
 	.set_link_ksettings = unic_set_link_ksettings,
 	.get_drvinfo = unic_get_driver_info,
+	.get_pauseparam = unic_get_pauseparam,
+	.set_pauseparam = unic_set_pauseparam,
 	.get_regs_len = unic_get_regs_len,
 	.get_regs = unic_get_regs,
 	.get_ethtool_stats = unic_get_stats,

@@ -311,9 +311,6 @@ int __ubase_cmd_send_in(struct ubase_dev *udev, struct ubase_cmd_buf *in);
 int __ubase_cmd_send_inout(struct ubase_dev *udev, struct ubase_cmd_buf *in,
 			   struct ubase_cmd_buf *out);
 
-int ubase_cmd_mbx_event_cb(struct notifier_block *nb, unsigned long action,
-			   void *data);
-
 int __ubase_register_crq_event(struct ubase_dev *udev,
 			       struct ubase_crq_event_nb *nb);
 void __ubase_unregister_crq_event(struct ubase_dev *udev, u16 opcode);
