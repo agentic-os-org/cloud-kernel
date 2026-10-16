@@ -1396,6 +1396,19 @@ static int identify_page_state(unsigned long pfn, struct page *p,
 
 static int try_to_split_thp_page(struct page *page, const char *msg)
 {
+	struct page *head = compound_head(page);
+
+	/* Only page cache backed THPs (anon, shmem and file) sit on
+	 * the LRU; other compound pages (e.g. SLUB slabs) must not be
+	 * split here, see the commit message for the failure mode.
+	 */
+	if (!PageLRU(head)) {
+		pr_info("%s: %#lx: non LRU compound page\n", msg,
+			page_to_pfn(page));
+		put_page(page);
+		return -EBUSY;
+	}
+
 	lock_page(page);
 	if (unlikely(split_huge_page(page))) {
 		unsigned long pfn = page_to_pfn(page);
