@@ -93,6 +93,7 @@ static void vfio_ccw_sch_io_todo(struct work_struct *work)
 
 	is_final = !(scsw_actl(&irb->scsw) &
 		     (SCSW_ACTL_DEVACT | SCSW_ACTL_SCHACT));
+	mutex_lock(&private->io_mutex);
 	if (scsw_is_solicited(&irb->scsw)) {
 		cp_update_scsw(&private->cp, &irb->scsw);
 		if (is_final && private->state == VFIO_CCW_STATE_CP_PENDING) {
@@ -100,9 +101,7 @@ static void vfio_ccw_sch_io_todo(struct work_struct *work)
 			cp_is_finished = true;
 		}
 	}
-	mutex_lock(&private->io_mutex);
 	memcpy(private->io_region->irb_area, irb, sizeof(*irb));
-	mutex_unlock(&private->io_mutex);
 
 	/*
 	 * Reset to IDLE only if processing of a channel program
@@ -111,6 +110,7 @@ static void vfio_ccw_sch_io_todo(struct work_struct *work)
 	 */
 	if (private->mdev && cp_is_finished)
 		private->state = VFIO_CCW_STATE_IDLE;
+	mutex_unlock(&private->io_mutex);
 
 	if (private->io_trigger)
 		eventfd_signal(private->io_trigger, 1);
@@ -297,7 +297,7 @@ static int vfio_ccw_sch_event(struct subchannel *sch, int process)
 	private = dev_get_drvdata(&sch->dev);
 	if (private->state == VFIO_CCW_STATE_NOT_OPER) {
 		private->state = private->mdev ? VFIO_CCW_STATE_IDLE :
-				 VFIO_CCW_STATE_STANDBY;
+			 VFIO_CCW_STATE_STANDBY;
 	}
 	rc = 0;
 
@@ -454,27 +454,27 @@ static int __init vfio_ccw_sch_init(void)
 	}
 
 	vfio_ccw_io_region = kmem_cache_create_usercopy("vfio_ccw_io_region",
-					sizeof(struct ccw_io_region), 0,
-					SLAB_ACCOUNT, 0,
-					sizeof(struct ccw_io_region), NULL);
+				sizeof(struct ccw_io_region), 0,
+				SLAB_ACCOUNT, 0,
+				sizeof(struct ccw_io_region), NULL);
 	if (!vfio_ccw_io_region) {
 		ret = -ENOMEM;
 		goto out_err;
 	}
 
 	vfio_ccw_cmd_region = kmem_cache_create_usercopy("vfio_ccw_cmd_region",
-					sizeof(struct ccw_cmd_region), 0,
-					SLAB_ACCOUNT, 0,
-					sizeof(struct ccw_cmd_region), NULL);
+				sizeof(struct ccw_cmd_region), 0,
+				SLAB_ACCOUNT, 0,
+				sizeof(struct ccw_cmd_region), NULL);
 	if (!vfio_ccw_cmd_region) {
 		ret = -ENOMEM;
 		goto out_err;
 	}
 
 	vfio_ccw_schib_region = kmem_cache_create_usercopy("vfio_ccw_schib_region",
-					sizeof(struct ccw_schib_region), 0,
-					SLAB_ACCOUNT, 0,
-					sizeof(struct ccw_schib_region), NULL);
+				sizeof(struct ccw_schib_region), 0,
+				SLAB_ACCOUNT, 0,
+				sizeof(struct ccw_schib_region), NULL);
 
 	if (!vfio_ccw_schib_region) {
 		ret = -ENOMEM;
@@ -482,9 +482,9 @@ static int __init vfio_ccw_sch_init(void)
 	}
 
 	vfio_ccw_crw_region = kmem_cache_create_usercopy("vfio_ccw_crw_region",
-					sizeof(struct ccw_crw_region), 0,
-					SLAB_ACCOUNT, 0,
-					sizeof(struct ccw_crw_region), NULL);
+				sizeof(struct ccw_crw_region), 0,
+				SLAB_ACCOUNT, 0,
+				sizeof(struct ccw_crw_region), NULL);
 
 	if (!vfio_ccw_crw_region) {
 		ret = -ENOMEM;
