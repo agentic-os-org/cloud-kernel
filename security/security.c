@@ -1542,6 +1542,38 @@ int security_mmap_file(struct file *file, unsigned long prot,
 	return ima_file_mmap(file, prot);
 }
 
+/**
+ * security_ovl_mmap_file() - Check if mmap'ing an overlayfs real file is allowed
+ * @file: the underlying (real) file being mmap'd by overlayfs
+ * @prot: the protection map of the mapping
+ * @flags: the mmap flags (MAP_SHARED/MAP_PRIVATE) of the mapping
+ *
+ * Like security_mmap_file(), but for the real file of an overlayfs
+ * mount, whose ->mmap() runs under mmap_write_lock().  Skip the IMA
+ * measurement here: ima_file_mmap() ends up taking inode_lock(),
+ * which would invert the mmap_lock -> inode_lock order documented in
+ * ima_file_mprotect().  The user-visible file has already been through
+ * security_mmap_file() by the mmap() caller, outside the lock.
+ *
+ * Named security_ovl_mmap_file() rather than upstream's
+ * security_mmap_backing_file() on purpose: upstream's helper is backed
+ * by the dedicated mmap_backing_file hook (vma, backing_file,
+ * user_file) that only SELinux registers against, which does not exist
+ * in 5.10.  This one dispatches through the existing mmap_file hook
+ * head, so every LSM registered there (and any attached BPF-LSM
+ * program) also gets a say on the real file, under the mounter's
+ * credentials.
+ *
+ * Return: Returns 0 on success.
+ */
+int security_ovl_mmap_file(struct file *file, unsigned long prot,
+			       unsigned long flags)
+{
+	return call_int_hook(mmap_file, 0, file, prot,
+			     mmap_prot(file, prot), flags);
+}
+EXPORT_SYMBOL_GPL(security_ovl_mmap_file);
+
 int security_mmap_addr(unsigned long addr)
 {
 	return call_int_hook(mmap_addr, 0, addr);

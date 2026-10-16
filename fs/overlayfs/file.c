@@ -10,6 +10,7 @@
 #include <linux/uio.h>
 #include <linux/uaccess.h>
 #include <linux/splice.h>
+#include <linux/mman.h>
 #include <linux/security.h>
 #include <linux/mm.h>
 #include <linux/fs.h>
@@ -474,6 +475,7 @@ static int ovl_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct file *realfile = file->private_data;
 	const struct cred *old_cred;
+	unsigned long prot = 0;
 	int ret;
 
 	if (!realfile->f_op->mmap)
@@ -482,9 +484,31 @@ static int ovl_mmap(struct file *file, struct vm_area_struct *vma)
 	if (WARN_ON(file != vma->vm_file))
 		return -EIO;
 
+	/*
+	 * The LSM security_mmap_file() hook ran against the overlay file;
+	 * mediation of the underlying real file with the mounter's
+	 * credentials is missing.  Re-run the LSM check against the real
+	 * file under the mounter's credentials before swapping vm_file.
+	 * security_ovl_mmap_file() skips the IMA measurement, which
+	 * takes inode_lock() and must not run under mmap_write_lock().
+	 */
+	if (vma->vm_flags & VM_READ)
+		prot |= PROT_READ;
+	if (vma->vm_flags & VM_WRITE)
+		prot |= PROT_WRITE;
+	if (vma->vm_flags & VM_EXEC)
+		prot |= PROT_EXEC;
+	old_cred = ovl_override_creds(file_inode(file)->i_sb);
+	ret = security_ovl_mmap_file(realfile, prot,
+					 (vma->vm_flags & VM_SHARED) ?
+					 MAP_SHARED : MAP_PRIVATE);
+	if (ret) {
+		revert_creds(old_cred);
+		return ret;
+	}
+
 	vma->vm_file = get_file(realfile);
 
-	old_cred = ovl_override_creds(file_inode(file)->i_sb);
 	ret = call_mmap(vma->vm_file, vma);
 	revert_creds(old_cred);
 
