@@ -473,9 +473,9 @@ static int mpc52xx_spi_probe(struct platform_device *op)
 	/* Decide if interrupts can be used */
 	if (ms->irq0 && ms->irq1) {
 		rc = request_irq(ms->irq0, mpc52xx_spi_irq, 0,
-				  "mpc5200-spi-modf", ms);
+				 "mpc5200-spi-modf", ms);
 		rc |= request_irq(ms->irq1, mpc52xx_spi_irq, 0,
-				  "mpc5200-spi-spif", ms);
+				 "mpc5200-spi-spif", ms);
 		if (rc) {
 			free_irq(ms->irq0, ms);
 			free_irq(ms->irq1, ms);
@@ -500,6 +500,9 @@ static int mpc52xx_spi_probe(struct platform_device *op)
 
  err_register:
 	dev_err(&ms->master->dev, "initialization failed\n");
+	free_irq(ms->irq0, ms);
+	free_irq(ms->irq1, ms);
+	cancel_work_sync(&ms->work);
  err_gpio:
 	while (i-- > 0)
 		gpio_free(ms->gpio_cs[i]);
