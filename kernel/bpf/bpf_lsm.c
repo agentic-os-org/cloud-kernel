@@ -34,12 +34,24 @@ BTF_SET_START(bpf_lsm_hooks)
 #undef LSM_HOOK
 BTF_SET_END(bpf_lsm_hooks)
 
+BTF_SET_START(bpf_lsm_disabled_hooks)
+#ifdef CONFIG_SECURITY_NETWORK_XFRM
+BTF_ID(func, bpf_lsm_xfrm_decode_session)
+#endif
+BTF_SET_END(bpf_lsm_disabled_hooks)
+
 int bpf_lsm_verify_prog(struct bpf_verifier_log *vlog,
 			const struct bpf_prog *prog)
 {
 	if (!prog->gpl_compatible) {
 		bpf_log(vlog,
 			"LSM programs must have a GPL compatible license\n");
+		return -EINVAL;
+	}
+
+	if (btf_id_set_contains(&bpf_lsm_disabled_hooks, prog->aux->attach_btf_id)) {
+		bpf_log(vlog, "attach_btf_id %u points to disabled hook %s\n",
+			prog->aux->attach_btf_id, prog->aux->attach_func_name);
 		return -EINVAL;
 	}
 
