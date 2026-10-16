@@ -1102,6 +1102,18 @@ config ZONE_DEVICE
 	  on the physical address bits, on processor features, kernel config
 	  (5 level page table) and physical memory present on the system.
 
+config ZONE_EXTMEM
+	bool "Extension memory hotplug support"
+	default n
+	depends on MEMORY_HOTPLUG
+	depends on MEMORY_HOTREMOVE
+	depends on ARM64
+	help
+	  Extension memory hotplug support allows for customizing memory
+	  policy such as UB or CXL memory, mirroring memory, etc.
+
+	  If unsure, say N.
+
 #
 # Helpers to mirror range of the CPU page tables of a process into device page
 # tables.
