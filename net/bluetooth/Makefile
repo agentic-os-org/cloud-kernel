@@ -20,5 +20,9 @@ bluetooth-$(CONFIG_BT_BREDR) += sco.o
 bluetooth-$(CONFIG_BT_HS) += a2mp.o amp.o
 bluetooth-$(CONFIG_BT_LEDS) += leds.o
 bluetooth-$(CONFIG_BT_MSFTEXT) += msft.o
+# Bluetooth ISO support (net/bluetooth/iso.c, introduced upstream in v5.13)
+# is absent from this 5.10-based branch, so ISO-only upstream fixes such as
+# aa9f7cb2bd3a ("Bluetooth: ISO: ensure no dangling hcon references in
+# iso_conn") do not apply here.
 bluetooth-$(CONFIG_BT_DEBUGFS) += hci_debugfs.o
 bluetooth-$(CONFIG_BT_SELFTEST) += selftest.o
