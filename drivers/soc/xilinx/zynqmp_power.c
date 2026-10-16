@@ -73,7 +73,7 @@ static irqreturn_t zynqmp_pm_isr(int irq, void *data)
 			pm_suspend(PM_SUSPEND_MEM);
 			break;
 		default:
-			pr_err("%s Unsupported InitSuspendCb reason "
+			pr_err("%s Unsupported initSuspendCb reason "
 				"code %d\n", __func__, payload[1]);
 		}
 	}
@@ -123,7 +123,7 @@ static void zynqmp_pm_init_suspend_work_fn(struct work_struct *work)
 	} else if (pm_work->args[0] == SUSPEND_POWER_REQUEST) {
 		pm_suspend(PM_SUSPEND_MEM);
 	} else {
-		pr_err("%s Unsupported InitSuspendCb reason code %d.\n",
+		pr_err("%s Unsupported initSuspendCb reason code %d.\n",
 		       __func__, pm_work->args[0]);
 	}
 }
@@ -240,8 +240,10 @@ static int zynqmp_pm_remove(struct platform_device *pdev)
 {
 	sysfs_remove_file(&pdev->dev.kobj, &dev_attr_suspend_mode.attr);
 
-	if (!rx_chan)
+	if (rx_chan) {
 		mbox_free_channel(rx_chan);
+		rx_chan = NULL;
+	}
 
 	return 0;
 }
