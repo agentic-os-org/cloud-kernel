@@ -119,11 +119,14 @@ static void vfio_ccw_sch_io_todo(struct work_struct *work)
 static void vfio_ccw_crw_todo(struct work_struct *work)
 {
 	struct vfio_ccw_private *private;
+	unsigned long flags;
 
 	private = container_of(work, struct vfio_ccw_private, crw_work);
 
+	spin_lock_irqsave(&private->crw_lock, flags);
 	if (!list_empty(&private->crw) && private->crw_trigger)
 		eventfd_signal(private->crw_trigger, 1);
+	spin_unlock_irqrestore(&private->crw_lock, flags);
 }
 
 /*
@@ -205,6 +208,7 @@ static int vfio_ccw_sch_probe(struct subchannel *sch)
 		goto out_free;
 
 	INIT_LIST_HEAD(&private->crw);
+	spin_lock_init(&private->crw_lock);
 	INIT_WORK(&private->io_work, vfio_ccw_sch_io_todo);
 	INIT_WORK(&private->crw_work, vfio_ccw_crw_todo);
 	atomic_set(&private->avail, 1);
@@ -238,13 +242,16 @@ static int vfio_ccw_sch_remove(struct subchannel *sch)
 {
 	struct vfio_ccw_private *private = dev_get_drvdata(&sch->dev);
 	struct vfio_ccw_crw *crw, *temp;
+	unsigned long flags;
 
 	vfio_ccw_sch_quiesce(sch);
 
+	spin_lock_irqsave(&private->crw_lock, flags);
 	list_for_each_entry_safe(crw, temp, &private->crw, next) {
 		list_del(&crw->next);
 		kfree(crw);
 	}
+	spin_unlock_irqrestore(&private->crw_lock, flags);
 
 	vfio_ccw_mdev_unreg(sch);
 
@@ -297,7 +304,7 @@ static int vfio_ccw_sch_event(struct subchannel *sch, int process)
 	private = dev_get_drvdata(&sch->dev);
 	if (private->state == VFIO_CCW_STATE_NOT_OPER) {
 		private->state = private->mdev ? VFIO_CCW_STATE_IDLE :
-				 VFIO_CCW_STATE_STANDBY;
+					 VFIO_CCW_STATE_STANDBY;
 	}
 	rc = 0;
 
@@ -313,6 +320,7 @@ static void vfio_ccw_queue_crw(struct vfio_ccw_private *private,
 			       unsigned int rsid)
 {
 	struct vfio_ccw_crw *crw;
+	unsigned long flags;
 
 	/*
 	 * If unable to allocate a CRW, just drop the event and
@@ -330,7 +338,9 @@ static void vfio_ccw_queue_crw(struct vfio_ccw_private *private,
 	crw->crw.erc = erc;
 	crw->crw.rsid = rsid;
 
+	spin_lock_irqsave(&private->crw_lock, flags);
 	list_add_tail(&crw->next, &private->crw);
+	spin_unlock_irqrestore(&private->crw_lock, flags);
 	queue_work(vfio_ccw_work_q, &private->crw_work);
 }
 
@@ -454,27 +464,27 @@ static int __init vfio_ccw_sch_init(void)
 	}
 
 	vfio_ccw_io_region = kmem_cache_create_usercopy("vfio_ccw_io_region",
-					sizeof(struct ccw_io_region), 0,
-					SLAB_ACCOUNT, 0,
-					sizeof(struct ccw_io_region), NULL);
+				sizeof(struct ccw_io_region), 0,
+				SLAB_ACCOUNT, 0,
+				sizeof(struct ccw_io_region), NULL);
 	if (!vfio_ccw_io_region) {
 		ret = -ENOMEM;
 		goto out_err;
 	}
 
 	vfio_ccw_cmd_region = kmem_cache_create_usercopy("vfio_ccw_cmd_region",
-					sizeof(struct ccw_cmd_region), 0,
-					SLAB_ACCOUNT, 0,
-					sizeof(struct ccw_cmd_region), NULL);
+				sizeof(struct ccw_cmd_region), 0,
+				SLAB_ACCOUNT, 0,
+				sizeof(struct ccw_cmd_region), NULL);
 	if (!vfio_ccw_cmd_region) {
 		ret = -ENOMEM;
 		goto out_err;
 	}
 
 	vfio_ccw_schib_region = kmem_cache_create_usercopy("vfio_ccw_schib_region",
-					sizeof(struct ccw_schib_region), 0,
-					SLAB_ACCOUNT, 0,
-					sizeof(struct ccw_schib_region), NULL);
+				sizeof(struct ccw_schib_region), 0,
+				SLAB_ACCOUNT, 0,
+				sizeof(struct ccw_schib_region), NULL);
 
 	if (!vfio_ccw_schib_region) {
 		ret = -ENOMEM;
@@ -482,9 +492,9 @@ static int __init vfio_ccw_sch_init(void)
 	}
 
 	vfio_ccw_crw_region = kmem_cache_create_usercopy("vfio_ccw_crw_region",
-					sizeof(struct ccw_crw_region), 0,
-					SLAB_ACCOUNT, 0,
-					sizeof(struct ccw_crw_region), NULL);
+				sizeof(struct ccw_crw_region), 0,
+				SLAB_ACCOUNT, 0,
+				sizeof(struct ccw_crw_region), NULL);
 
 	if (!vfio_ccw_crw_region) {
 		ret = -ENOMEM;
