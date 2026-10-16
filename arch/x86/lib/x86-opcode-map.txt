@@ -889,10 +889,10 @@ AVXcode: 3
 71: vpshldd/q Vx,Hx,Wx,Ib (66),(ev)
 72: vpshrdw Vx,Hx,Wx,Ib (66),(ev)
 73: vpshrdd/q Vx,Hx,Wx,Ib (66),(ev)
-88: vsm3randa Vx,Hx,Wx,Ib (66),(v1)
+88: vsm3rnda Vx,Hx,Wx,Ib (66),(v1)
 89: vsm3msga Vx,Hx,Wx,Ib (66),(v1)
-8a: vsm4rand Vx,Hx,Wx,Ib (66),(v1) | sm4rand Vk,Wx,Ib (66)
-8b: vsm4rk Vx,Hx,Wx,Ib (66),(v1) | sm4rk Vk,Wx,Ib (66)
+8a: vsm4rnd Vx,Hx,Wx,Ib (66),(v1) | sm4rnd Vx,Wx,Ib (66)
+8b: vsm4rk Vx,Hx,Wx,Ib (66),(v1) | sm4rk Vx,Wx,Ib (66)
 c2: vcmpph Vx,Hx,Wx,Ib (ev) | vcmpsh Vx,Hx,Wx,Ib (F3),(ev)
 cc: sha1rnds4 Vdq,Wdq,Ib
 ce: vgf2p8affineqb Vx,Wx,Ib (66)
