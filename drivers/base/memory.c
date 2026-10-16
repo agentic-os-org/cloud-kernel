@@ -189,13 +189,24 @@ static int memory_block_online(struct memory_block *mem)
 	unsigned long nr_pages = PAGES_PER_SECTION * sections_per_block;
 	unsigned long nr_vmemmap_pages = 0;
 	struct zone *zone;
-	int ret;
+	int ret, phase = MHP_PHASE_DEFAULT;
 
 	if (memblk_nr_poison(mem))
 		return -EHWPOISON;
 
 	zone = zone_for_pfn_range(mem->online_type, mem->nid, mem->group,
 				  start_pfn, nr_pages);
+
+	/*
+	 * If we defer initializing zone's first memory block, the zone will
+	 * remain in unpopulated state during the prepare phase. Since
+	 * `auto_movable_can_online_movable()` only traverses populated zones,
+	 * `movable_pages` will always be 0, causing subsequent memory blocks to be
+	 * determined as inserted into the movable zone during the prepare phase.
+	 * Alse rebuilding the zone is not required from that point onwards.
+	 */
+	if (parallel_hotplug_ratio && populated_zone(zone))
+		phase = MHP_PHASE_PREPARE;
 
 	/*
 	 * Although vmemmap pages have a different lifecycle than the pages
@@ -208,17 +219,20 @@ static int memory_block_online(struct memory_block *mem)
 		nr_vmemmap_pages = mem->altmap->free;
 
 	mem_hotplug_begin();
+	clear_zone_contiguous(zone);
 	if (nr_vmemmap_pages) {
-		ret = mhp_init_memmap_on_memory(start_pfn, nr_vmemmap_pages, zone);
+		ret = __mhp_init_memmap_on_memory(start_pfn, nr_vmemmap_pages, zone, phase);
 		if (ret)
 			goto out;
 	}
 
-	ret = online_pages(start_pfn + nr_vmemmap_pages,
-			   nr_pages - nr_vmemmap_pages, zone, mem->group);
+	ret = __online_pages(start_pfn + nr_vmemmap_pages,
+				nr_pages - nr_vmemmap_pages, zone,
+				mem->group, phase);
+
 	if (ret) {
 		if (nr_vmemmap_pages)
-			mhp_deinit_memmap_on_memory(start_pfn, nr_vmemmap_pages);
+			__mhp_deinit_memmap_on_memory(start_pfn, nr_vmemmap_pages, zone, phase);
 		goto out;
 	}
 
@@ -227,11 +241,14 @@ static int memory_block_online(struct memory_block *mem)
 	 * now already properly populated.
 	 */
 	if (nr_vmemmap_pages)
-		adjust_present_page_count(pfn_to_page(start_pfn), mem->group,
-					  nr_vmemmap_pages);
+		__adjust_present_page_count(pfn_to_page(start_pfn), mem->group,
+					nr_vmemmap_pages, zone, phase);
 
+	if (phase == MHP_PHASE_PREPARE)
+		atomic_set(&mem->deferred_state, MEM_NEED_DEFER);
 	mem->zone = zone;
 out:
+	set_zone_contiguous(zone);
 	mem_hotplug_done();
 	return ret;
 }
@@ -257,6 +274,7 @@ static int memory_block_offline(struct memory_block *mem)
 		nr_vmemmap_pages = mem->altmap->free;
 
 	mem_hotplug_begin();
+	clear_zone_contiguous(mem->zone);
 	if (nr_vmemmap_pages)
 		adjust_present_page_count(pfn_to_page(start_pfn), mem->group,
 					  -nr_vmemmap_pages);
@@ -274,8 +292,10 @@ static int memory_block_offline(struct memory_block *mem)
 	if (nr_vmemmap_pages)
 		mhp_deinit_memmap_on_memory(start_pfn, nr_vmemmap_pages);
 
-	mem->zone = NULL;
 out:
+	set_zone_contiguous(mem->zone);
+	if (!ret)
+		mem->zone = NULL;
 	mem_hotplug_done();
 	return ret;
 }
@@ -317,7 +337,9 @@ static int memory_block_change_state(struct memory_block *mem,
 		mem->state = MEM_GOING_OFFLINE;
 
 	ret = memory_block_action(mem, to_state);
-	mem->state = ret ? from_state_req : to_state;
+	mem->state =
+		(ret || atomic_read(&mem->deferred_state) == MEM_NEED_DEFER) ?
+			from_state_req : to_state;
 
 	return ret;
 }
@@ -635,6 +657,21 @@ struct memory_block *find_memory_block(unsigned long section_nr)
 	return find_memory_block_by_id(block_id);
 }
 
+unsigned long get_memory_block_vmemmap_size(unsigned long block_id)
+{
+	struct memory_block *mem = find_memory_block_by_id(block_id);
+	unsigned long nr_vmemmap_size;
+
+	if (!mem || !mem->altmap)
+		return 0;
+
+	nr_vmemmap_size = mem->altmap->free << PAGE_SHIFT;
+	put_device(&mem->dev);
+
+	return nr_vmemmap_size;
+}
+EXPORT_SYMBOL(get_memory_block_vmemmap_size);
+
 static struct attribute *memory_memblk_attrs[] = {
 	&dev_attr_phys_index.attr,
 	&dev_attr_state.attr,
@@ -773,6 +810,7 @@ static int add_memory_block(unsigned long block_id, unsigned long state,
 	mem->start_section_nr = block_id * sections_per_block;
 	mem->state = state;
 	mem->nid = NUMA_NO_NODE;
+	atomic_set(&mem->deferred_state, MEM_SKIP_DEFER);
 	INIT_LIST_HEAD(&mem->group_next);
 
 #ifndef CONFIG_NUMA

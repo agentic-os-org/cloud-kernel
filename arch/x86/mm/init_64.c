@@ -1292,6 +1292,15 @@ void __ref arch_remove_memory(u64 start, u64 size, struct vmem_altmap *altmap)
 	unsigned long start_pfn = start >> PAGE_SHIFT;
 	unsigned long nr_pages = size >> PAGE_SHIFT;
 
+	/*
+	 * The actual page mapping for this range has been replaced with
+	 * buddy-allocated pages, so subsequent page-table releases should use
+	 * `free_pagetable` instead of `vmem_altmap_free`. Based on this, we set
+	 * altmap to NULL.
+	 */
+	if (altmap && !altmap->alloc)
+		altmap = NULL;
+
 	__remove_pages(start_pfn, nr_pages, altmap);
 	kernel_physical_mapping_remove(start, start + size);
 }
