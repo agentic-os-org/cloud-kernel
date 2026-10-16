@@ -105,7 +105,7 @@ static int u32_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 {
 	struct {
 		struct tc_u_knode *knode;
-		unsigned int	  off;
+		unsigned int	 off;
 	} stack[TC_U32_MAXDEPTH];
 
 	struct tc_u_hnode *ht = rcu_dereference_bh(tp->root);
@@ -430,7 +430,7 @@ static void u32_delete_key_work(struct work_struct *work)
 
 /* u32_delete_key_freepf_rcu is the rcu callback variant
  * that free's the entire structure including the statistics
- * percpu variables. Only use this if the key is not a copy
+ * percpu variables. Only use this for the key if it is not a copy
  * returned by u32_init_knode(). See u32_delete_key_rcu()
  * for the variant that should be used with keys return from
  * u32_init_knode()
@@ -1260,7 +1260,10 @@ static void u32_bind_class(void *fh, u32 classid, unsigned long cl, void *q,
 {
 	struct tc_u_knode *n = fh;
 
-	if (n && n->res.classid == classid) {
+	if (TC_U32_KEY(n->handle) == 0)
+		return;
+
+	if (n->res.classid == classid) {
 		if (cl)
 			__tcf_bind_filter(q, &n->res, base);
 		else
