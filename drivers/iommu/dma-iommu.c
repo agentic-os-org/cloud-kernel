@@ -28,6 +28,7 @@
 #include <linux/of_iommu.h>
 #include <linux/pci.h>
 #include <linux/pci-p2pdma.h>
+#include <linux/pswiotlb.h>
 #include <linux/scatterlist.h>
 #include <linux/spinlock.h>
 #include <linux/swiotlb.h>
@@ -2138,6 +2139,11 @@ void iommu_setup_dma_ops(struct device *dev, struct iommu_domain *domain)
 	dev->dma_iommu = iommu_is_dma_domain(domain);
 	if (dev->dma_iommu && iommu_dma_init_domain(domain, dev))
 		goto out_err;
+
+#ifdef CONFIG_PSWIOTLB
+	if (dev->dma_iommu)
+		pswiotlb_teardown_dma_ops(dev);
+#endif
 
 	return;
 out_err:
