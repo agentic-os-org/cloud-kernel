@@ -699,6 +699,14 @@ S:	Supported
 F:	Documentation/admin-guide/perf/alibaba_pmu.rst
 F:	drivers/perf/alibaba_uncore_drw_pmu.c
 
+LRW PCIE PMU DRIVER
+M:	Jiabao Wu <wu.jiabao@zte.com.cn>
+M:	Chang Guo <guo.chang2@zte.com.cn>
+M:	Wu Guo <guo.wu1@zte.com.cn>
+R:	Qingtao Liu <liu.qingtao2@zte.com.cn>
+S:	Maintained
+F:	drivers/perf/lrw_pcie_pmu.c
+
 ALIENWARE WMI DRIVER
 L:	Dell.Client.Kernel@dell.com
 S:	Maintained
