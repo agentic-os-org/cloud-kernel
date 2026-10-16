@@ -135,7 +135,7 @@ static struct tap_dev *tap_dev_get_rcu(const struct net_device *dev)
  * q->vlan becomes inaccessible. When the files gets closed,
  * tap_get_queue() fails.
  *
- * There may still be references to the struct sock inside of the
+ * There may still be references to the struct sock inside the
  * queue from outbound SKBs, but these never reference back to the
  * file or the dev. The data structure is freed through __sk_free
  * when both our references and any pending SKBs are gone.
@@ -217,7 +217,7 @@ static int tap_disable_queue(struct tap_queue *q)
  * one from the macvlan_dev if that still exists.
  *
  * Using the spinlock makes sure that we don't get
- * to the queue again after destroying it.
+ * to the queue again after destroying the file.
  */
 static void tap_put_queue(struct tap_queue *q)
 {
@@ -365,7 +365,7 @@ rx_handler_result_t tap_handle_frame(struct sk_buff **pskb)
 		/* If we receive a partial checksum and the tap side
 		 * doesn't support checksum offload, compute the checksum.
 		 * Note: it doesn't matter which checksum feature to
-		 *	  check, we either support them all or none.
+		 *	 检查, we either support them all or none.
 		 */
 		if (skb->ip_summed == CHECKSUM_PARTIAL &&
 		    !(features & NETIF_F_CSUM_MASK) &&
@@ -433,7 +433,7 @@ void tap_free_minor(dev_t major, struct tap_dev *tap)
 	struct major_info *tap_major;
 
 	rcu_read_lock();
-	tap_major = tap_get_major(MAJOR(major));
+	tap_major = tap_get_major(major);
 	if (!tap_major) {
 		goto unlock;
 	}
@@ -592,7 +592,7 @@ out:
 
 static inline struct sk_buff *tap_alloc_skb(struct sock *sk, size_t prepad,
 					    size_t len, size_t linear,
-						int noblock, int *err)
+					    int noblock, int *err)
 {
 	struct sk_buff *skb;
 
@@ -650,8 +650,8 @@ static ssize_t tap_get_user(struct tap_queue *q, void *msg_control,
 		     tap16_to_cpu(q, vnet_hdr.csum_offset) + 2 >
 			     tap16_to_cpu(q, vnet_hdr.hdr_len))
 			vnet_hdr.hdr_len = cpu_to_tap16(q,
-				 tap16_to_cpu(q, vnet_hdr.csum_start) +
-				 tap16_to_cpu(q, vnet_hdr.csum_offset) + 2);
+				tap16_to_cpu(q, vnet_hdr.csum_start) +
+				tap16_to_cpu(q, vnet_hdr.csum_offset) + 2);
 		err = -EINVAL;
 		if (tap16_to_cpu(q, vnet_hdr.hdr_len) > len)
 			goto err;
@@ -1173,10 +1173,21 @@ static int tap_get_user_xdp(struct tap_queue *q, struct xdp_buff *xdp)
 	skb_reset_mac_header(skb);
 	skb->protocol = eth_hdr(skb)->h_proto;
 
+	rcu_read_lock();
+	tap = rcu_dereference(q->tap);
+	if (!tap) {
+		kfree_skb(skb);
+		rcu_read_unlock();
+		return 0;
+	}
+	skb->dev = tap->dev;
+
 	if (vnet_hdr_len) {
 		err = virtio_net_hdr_to_skb(skb, gso, tap_is_little_endian(q));
-		if (err)
+		if (err) {
+			rcu_read_unlock();
 			goto err_kfree;
+		}
 	}
 
 	/* Move network header to the right position for VLAN tagged packets */
@@ -1184,15 +1195,8 @@ static int tap_get_user_xdp(struct tap_queue *q, struct xdp_buff *xdp)
 	    vlan_get_protocol_and_depth(skb, skb->protocol, &depth) != 0)
 		skb_set_network_header(skb, depth);
 
-	rcu_read_lock();
-	tap = rcu_dereference(q->tap);
-	if (tap) {
-		skb->dev = tap->dev;
-		skb_probe_transport_header(skb);
-		dev_queue_xmit(skb);
-	} else {
-		kfree_skb(skb);
-	}
+	skb_probe_transport_header(skb);
+	dev_queue_xmit(skb);
 	rcu_read_unlock();
 
 	return 0;
@@ -1262,7 +1266,7 @@ static const struct proto_ops tap_socket_ops = {
 };
 
 /* Get an underlying socket object from tun file.  Returns error unless file is
- * attached to a device.  The returned object works like a packet socket, it
+ * attached to a device.  The return value works like a packet socket, it
  * can be used for sock_sendmsg/sock_recvmsg.  The caller is responsible for
  * holding a reference to the file for as long as the socket is in use. */
 struct socket *tap_get_socket(struct file *file)
