@@ -2539,7 +2539,12 @@ skip_left:
 	}
 got_it:
 	/* set it as dirty segment in free segmap */
-	f2fs_bug_on(sbi, test_bit(segno, free_i->free_segmap));
+	if (test_bit(segno, free_i->free_segmap)) {
+		f2fs_stop_checkpoint(sbi, false);
+		spin_unlock(&free_i->segmap_lock);
+		return;
+	}
+
 	__set_inuse(sbi, segno);
 	*newseg = segno;
 	spin_unlock(&free_i->segmap_lock);

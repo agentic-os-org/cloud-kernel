@@ -409,7 +409,7 @@ struct f2fs_summary {
 
 struct summary_footer {
 	unsigned char entry_type;	/* SUM_TYPE_XXX */
-	__le32 check_sum;		/* summary checksum */
+	__le32 check_sum;		/* checksum of summary block */
 } __packed;
 
 #define SUM_JOURNAL_SIZE	(F2FS_BLKSIZE - SUM_FOOTER_SIZE -\
