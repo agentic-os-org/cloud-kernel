@@ -4568,35 +4568,39 @@ int tracing_open_generic_tr(struct inode *inode, struct file *filp)
  */
 int tracing_open_file_tr(struct inode *inode, struct file *filp)
 {
-	struct trace_event_file *file = inode->i_private;
+	struct trace_event_file *file;
 	int ret;
-
-	ret = tracing_check_open_get_tr(file->tr);
-	if (ret)
-		return ret;
 
 	mutex_lock(&event_mutex);
 
-	/* Fail if the file is marked for removal */
-	if (file->flags & EVENT_FILE_FL_FREED) {
-		trace_array_put(file->tr);
-		ret = -ENODEV;
-	} else {
-		event_file_get(file);
+	/*
+	 * Read i_private and pin the file under event_mutex; removal clears
+	 * i_private under the same lock. The pin keeps file->tr valid below.
+	 */
+	file = inode->i_private;
+	if (!file || (file->flags & EVENT_FILE_FL_FREED)) {
+		mutex_unlock(&event_mutex);
+		return -ENODEV;
 	}
+	event_file_get(file);
 
 	mutex_unlock(&event_mutex);
-	if (ret)
-		return ret;
 
-	filp->private_data = inode->i_private;
+	ret = tracing_check_open_get_tr(file->tr);
+	if (ret) {
+		event_file_put(file);
+		return ret;
+	}
+
+	filp->private_data = file;
 
 	return 0;
 }
 
 int tracing_release_file_tr(struct inode *inode, struct file *filp)
 {
-	struct trace_event_file *file = inode->i_private;
+	/* Use the file pinned at open; i_private may already be cleared. */
+	struct trace_event_file *file = filp->private_data;
 
 	trace_array_put(file->tr);
 	event_file_put(file);

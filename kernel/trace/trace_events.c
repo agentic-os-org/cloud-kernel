@@ -767,8 +767,24 @@ void event_file_put(struct trace_event_file *file)
 static void remove_event_file_dir(struct trace_event_file *file)
 {
 	struct dentry *dir = file->dir;
+	struct dentry *child;
 
-	tracefs_remove(dir);
+	lockdep_assert_held(&event_mutex);
+
+	if (dir) {
+		/*
+		 * Clear child inodes' i_private under event_mutex so concurrent
+		 * openers/readers see NULL, not the file about to be freed.
+		 */
+		spin_lock(&dir->d_lock);
+		list_for_each_entry(child, &dir->d_subdirs, d_child) {
+			if (d_really_is_positive(child))
+				WRITE_ONCE(d_inode(child)->i_private, NULL);
+		}
+		spin_unlock(&dir->d_lock);
+
+		tracefs_remove(dir);
+	}
 
 	list_del(&file->list);
 	remove_subsystem(file->system);
