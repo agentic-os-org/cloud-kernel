@@ -623,8 +623,6 @@ static int amd_uncore_df_event_init(struct perf_event *event)
 	int ret = amd_uncore_event_init(event);
 	u64 event_mask = AMD64_RAW_EVENT_MASK_NB;
 
-	if (ret)
-		return ret;
 	if (pmu_version >= 2) {
 		event_mask = AMD64_PERFMON_V2_RAW_EVENT_MASK_NB;
 	} else if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON &&
@@ -640,7 +638,7 @@ static int amd_uncore_df_event_init(struct perf_event *event)
 
 	hwc->config = event->attr.config & event_mask;
 
-	return 0;
+	return ret;
 }
 
 static int amd_uncore_df_add(struct perf_event *event, int flags)
