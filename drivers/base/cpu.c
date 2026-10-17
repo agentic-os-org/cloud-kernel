@@ -222,7 +222,7 @@ static ssize_t show_cpus_attr(struct device *dev,
 	struct cpumask cpuset_allowed;
 	struct task_struct __maybe_unused *scenario;
 	bool rich_container;
-	struct bpf_rich_container_info *info;
+	struct bpf_rich_container_info __maybe_unused *info;
 
 	rcu_read_lock();
 	rich_container = in_rich_container(current, RC_CPUINFO);

@@ -75,7 +75,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	unsigned int cpu, index, total;
 	int i;
 	bool rich_container = false;
-	struct bpf_rich_container_info *info;
+	struct bpf_rich_container_info __maybe_unused *info;
 
 	index = cpu = c->cpu_index;
 
