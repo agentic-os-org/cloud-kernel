@@ -118,30 +118,7 @@ extern struct rb_root kfence_pool_root;
 	     (iter) && ((kpa) = kfence_rbentry((iter)));		\
 	     (iter) = rb_next((iter)))
 
-/**
- * get_kfence_pool_area() - find the kfence pool area of the address
- * @addr: address to check
- *
- * Return: the kfence pool area, NULL if not a kfence address
- */
-static inline struct kfence_pool_area *get_kfence_pool_area(const void *addr)
-{
-	struct rb_node *cur;
-	struct kfence_pool_area *res = NULL;
-
-	for (cur = kfence_pool_root.rb_node; cur;) {
-		struct kfence_pool_area *kpa = kfence_rbentry(cur);
-
-		if ((unsigned long)addr < (unsigned long)kpa->addr)
-			cur = cur->rb_left;
-		else {
-			res = kpa;
-			cur = cur->rb_right;
-		}
-	}
-
-	return is_kfence_address_area(addr, res) ? res : NULL;
-}
+/* get_kfence_pool_area() lives in include/linux/kfence.h */
 
 static inline struct kfence_metadata *addr_to_metadata(unsigned long addr)
 {

@@ -15,11 +15,22 @@
 #ifdef CONFIG_KFENCE
 
 #include <linux/atomic.h>
+#include <linux/rbtree.h>
 #include <linux/static_key.h>
 #include <linux/percpu-refcount.h>
 #include <linux/workqueue.h>
 
 extern long kfence_sample_interval;
+
+extern struct rb_root kfence_pool_root;
+/*
+ * Address span covering every kfence pool area (incl. none -> min > max).
+ * Maintained only at pool topology changes, which run inside stop_machine(),
+ * so lockless reads are safe. Used as the cheap first-level filter in
+ * is_kfence_address() on architectures whose pools live in the linear map.
+ */
+extern unsigned long kfence_pool_span_min;
+extern unsigned long kfence_pool_span_max;
 
 struct kfence_pool_area {
 	struct rb_node rb_node; /* binary tree linked to root */
@@ -64,6 +75,32 @@ static __always_inline bool is_kfence_address_area(const void *addr,
 }
 
 /**
+ * get_kfence_pool_area() - find the kfence pool area of the address
+ * @addr: address to check
+ *
+ * Return: the kfence pool area, NULL if not a kfence address
+ */
+static inline struct kfence_pool_area *get_kfence_pool_area(const void *addr)
+{
+	struct rb_node *cur;
+	struct kfence_pool_area *res = NULL;
+
+	for (cur = kfence_pool_root.rb_node; cur;) {
+		struct kfence_pool_area *kpa =
+			rb_entry(cur, struct kfence_pool_area, rb_node);
+
+		if ((unsigned long)addr < (unsigned long)kpa->addr)
+			cur = cur->rb_left;
+		else {
+			res = kpa;
+			cur = cur->rb_right;
+		}
+	}
+
+	return is_kfence_address_area(addr, res) ? res : NULL;
+}
+
+/**
  * is_kfence_address() - check if an address belongs to KFENCE pool
  * @addr: address to check
  *
@@ -83,15 +120,31 @@ static __always_inline bool is_kfence_address_area(const void *addr,
  */
 static __always_inline bool is_kfence_address(const void *addr)
 {
-#if defined(CONFIG_KASAN) || defined(CONFIG_DEBUG_KMEMLEAK)
+#ifdef CONFIG_LOONGARCH
 	/*
-	 * KASAN functions such as kasan_record_aux_stack(),
-	 * kasan_poison_shadow(), or kasan_unpoison_shadow()
-	 * may give an invalid kaddr (direct mapping kernel address).
-	 * We must add a check here.
+	 * LoongArch maps the pool into the vmalloc region, and its
+	 * __virt_addr_valid() consults is_kfence_address() for pool
+	 * addresses, so gating on virt_addr_valid() here would recurse.
+	 * Range-check the pools instead: virt_to_page() is TLB-aware on
+	 * loongarch, and the rb-tree holds the actual pool ranges,
+	 * including pools added at runtime in the linear map.
 	 */
-	return virt_addr_valid(addr) && PageKfence(virt_to_page(addr));
+	return get_kfence_pool_area(addr) &&
+	       PageKfence(virt_to_page(addr));
 #else
+	/*
+	 * virt_to_page() is only valid for linear-mapping addresses, but
+	 * callers may pass any kernel pointer (e.g. vmalloc addresses).
+	 * On these architectures every pool area lives in the linear map,
+	 * so the pool span filter already rejects vmalloc/module addresses,
+	 * and a virt_to_page() inside the span is always safe.  Compared to
+	 * virt_addr_valid() this keeps the hot path at two loads and a
+	 * compare, matches upstream's "no extra load" contract above, and
+	 * costs nothing when kfence is disabled (span empty -> min > max).
+	 */
+	if (unlikely((unsigned long)addr < kfence_pool_span_min ||
+		     (unsigned long)addr >= kfence_pool_span_max))
+		return false;
 	return PageKfence(virt_to_page(addr));
 #endif
 }
