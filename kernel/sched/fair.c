@@ -5720,6 +5720,13 @@ void __refill_cfs_bandwidth_runtime(struct cfs_bandwidth *cfs_b)
 	if (unlikely(cfs_b->quota == RUNTIME_INF))
 		return;
 
+	/*
+	 * Preserve any leftover from the init buffer: while runtime is
+	 * still above the burst buffer level (quota + burst), raise the
+	 * cap to it so that refill does not shave it off.  Once runtime
+	 * drops below quota + burst, normal burst behaviour is restored.
+	 */
+	cfs_b->current_buffer = max(cfs_b->runtime, cfs_b->quota + cfs_b->burst);
 	cfs_b->runtime += cfs_b->quota;
 	runtime = cfs_b->runtime_snap - cfs_b->runtime;
 	if (runtime > 0) {
@@ -5727,7 +5734,7 @@ void __refill_cfs_bandwidth_runtime(struct cfs_bandwidth *cfs_b)
 		cfs_b->nr_burst++;
 	}
 
-	cfs_b->runtime = min(cfs_b->runtime, cfs_b->quota + cfs_b->burst);
+	cfs_b->runtime = min(cfs_b->runtime, cfs_b->current_buffer);
 	cfs_b->runtime_snap = cfs_b->runtime;
 }
 
@@ -6621,6 +6628,8 @@ void init_cfs_bandwidth(struct cfs_bandwidth *cfs_b, struct cfs_bandwidth *paren
 	cfs_b->quota = RUNTIME_INF;
 	cfs_b->period = us_to_ktime(default_bw_period_us());
 	cfs_b->burst = 0;
+	cfs_b->init_buffer = 0;
+	cfs_b->current_buffer = 0;
 	cfs_b->hierarchical_quota = parent ? parent->hierarchical_quota : RUNTIME_INF;
 
 	INIT_LIST_HEAD(&cfs_b->throttled_cfs_rq);
