@@ -113,13 +113,28 @@ static bool __init __maybe_unused csv3_check_cpu_support(void)
 	return !!me_mask && csv3_enabled;
 }
 
+/*
+ * csv3_active() is noinstr and can run very early from head64.c.  gcc 12 may
+ * emit an out-of-line native_cpuid.constprop clone (native_cpuid()'s address is
+ * taken by paravirt, so it cannot be made __always_inline); calling that clone
+ * from .noinstr.text trips objtool ("leaves .noinstr.text section").  Force
+ * the vendor CPUID to be inlined here.
+ */
+static __always_inline void csv3_cpuid_vendor(u32 *eax, u32 *ebx, u32 *ecx, u32 *edx)
+{
+	asm volatile("cpuid"
+		     : "=a" (*eax), "=b" (*ebx), "=c" (*ecx), "=d" (*edx)
+		     : "0" (*eax), "2" (*ecx)
+		     : "memory");
+}
+
 /* csv3_active() indicate whether the guest is protected by CSV3 */
 bool noinstr csv3_active(void)
 {
 	if (vendor_ebx == 0 || vendor_ecx == 0 || vendor_edx == 0) {
 		u32 eax = 0;
 
-		native_cpuid(&eax, &vendor_ebx, &vendor_ecx, &vendor_edx);
+		csv3_cpuid_vendor(&eax, &vendor_ebx, &vendor_ecx, &vendor_edx);
 	}
 
 	/* HygonGenuine */
