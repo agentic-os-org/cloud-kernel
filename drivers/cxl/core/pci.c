@@ -151,7 +151,6 @@ int cxl_await_media_ready(struct cxl_dev_state *cxlds)
 	struct pci_dev *pdev = to_pci_dev(cxlds->dev);
 	int d = cxlds->cxl_dvsec;
 	int rc, i, hdm_count;
-	u64 md_status;
 	u16 cap;
 
 	rc = pci_read_config_word(pdev,
@@ -172,9 +171,17 @@ int cxl_await_media_ready(struct cxl_dev_state *cxlds)
 			return rc;
 	}
 
-	md_status = readq(cxlds->regs.memdev + CXLMDEV_STATUS_OFFSET);
-	if (!CXLMDEV_READY(md_status))
-		return -EIO;
+	/*
+	 * It is possible some Type-2 devices (CXL_DEVTYPE_DEVMEM) do not
+	 * implement regs.memdev; only consult the Memdev Status register when
+	 * the group is actually present.
+	 */
+	if (cxlds->regs.memdev) {
+		u64 md_status = readq(cxlds->regs.memdev + CXLMDEV_STATUS_OFFSET);
+
+		if (!CXLMDEV_READY(md_status))
+			return -EIO;
+	}
 
 	return 0;
 }
@@ -720,7 +727,7 @@ static int cxl_rcrb_get_comp_regs(struct pci_dev *pdev,
 }
 
 int cxl_pci_setup_regs(struct pci_dev *pdev, enum cxl_regloc_type type,
-		       struct cxl_register_map *map)
+		       struct cxl_register_map *map, bool bar_owned)
 {
 	int rc;
 
@@ -749,6 +756,13 @@ int cxl_pci_setup_regs(struct pci_dev *pdev, enum cxl_regloc_type type,
 	} else if (rc) {
 		return rc;
 	}
+
+	/*
+	 * A caller that owns the whole register BAR (for example vfio-cxl)
+	 * maps the sub-blocks without claiming them, so the later
+	 * cxl_map_component_regs() does not collide with the full-BAR request.
+	 */
+	map->skip_sub_bar_request = bar_owned;
 
 	return cxl_setup_regs(map);
 }

@@ -44,6 +44,19 @@ ssize_t vfio_pci_config_rw_single(struct vfio_pci_core_device *vdev,
 ssize_t vfio_pci_bar_rw(struct vfio_pci_core_device *vdev, char __user *buf,
 			size_t count, loff_t *ppos, bool iswrite);
 
+/*
+ * A provider (e.g. vfio-cxl) can carve a sub-range out of a BAR that must be
+ * reached only through its trap, never the direct BAR.  Returns true when
+ * [start, start + len) on this BAR overlaps that excluded range.
+ */
+static inline bool vfio_pci_bar_is_excluded(struct vfio_pci_core_device *vdev,
+					    int bar, u64 start, u64 len)
+{
+	return vdev->mmap_exclude_len && bar == vdev->mmap_exclude_bar &&
+	       start < vdev->mmap_exclude_start + vdev->mmap_exclude_len &&
+	       start + len > vdev->mmap_exclude_start;
+}
+
 #ifdef CONFIG_VFIO_PCI_VGA
 ssize_t vfio_pci_vga_rw(struct vfio_pci_core_device *vdev, char __user *buf,
 			size_t count, loff_t *ppos, bool iswrite);
@@ -69,6 +82,28 @@ int vfio_pci_set_power_state(struct vfio_pci_core_device *vdev,
 			     pci_power_t state);
 
 void vfio_pci_zap_and_down_write_memory_lock(struct vfio_pci_core_device *vdev);
+
+static inline void vfio_pci_cxl_zap(struct vfio_pci_core_device *vdev)
+{
+	if (vdev->cxl_ops && vdev->cxl_ops->zap)
+		vdev->cxl_ops->zap(vdev);
+}
+
+static inline void vfio_pci_cxl_post_reset(struct vfio_pci_core_device *vdev)
+{
+	if (vdev->cxl_ops && vdev->cxl_ops->post_reset)
+		vdev->cxl_ops->post_reset(vdev);
+}
+
+static inline int vfio_pci_cxl_pm_restore(struct vfio_pci_core_device *vdev)
+{
+	if (vdev->cxl_ops && vdev->cxl_ops->pm_restore)
+		return vdev->cxl_ops->pm_restore(vdev);
+	return 0;
+}
+
+int vfio_pci_reset_function(struct vfio_pci_core_device *vdev);
+
 u16 vfio_pci_memory_lock_and_enable(struct vfio_pci_core_device *vdev);
 void vfio_pci_memory_unlock_and_restore(struct vfio_pci_core_device *vdev,
 					u16 cmd);

@@ -29,6 +29,7 @@ struct vfio_pci_core_device;
 struct vfio_pci_region;
 struct p2pdma_provider;
 struct dma_buf_attachment;
+struct vfio_cxl_state;
 
 struct vfio_pci_eventfd {
 	struct eventfd_ctx	*ctx;
@@ -66,6 +67,32 @@ struct vfio_pci_device_ops {
 			       size_t nr_ranges);
 };
 
+struct vfio_cxl_ops {
+	int	(*init_device)(struct vfio_pci_core_device *vdev);
+	void	(*release_device)(struct vfio_pci_core_device *vdev);
+	int     (*open_device)(struct vfio_pci_core_device *vdev);
+	void    (*close_device)(struct vfio_pci_core_device *vdev);
+	int     (*config_read)(struct vfio_pci_core_device *vdev, int pos,
+			       int count, __le32 *val);
+	int     (*config_write)(struct vfio_pci_core_device *vdev, int pos,
+				int count, __le32 val);
+	/* Revoke the HDM mapping; paired with the BAR zap */
+	void    (*zap)(struct vfio_pci_core_device *vdev);
+	/* Re-sample the decoder state once a reset has settled */
+	void    (*post_reset)(struct vfio_pci_core_device *vdev);
+	/* Restore the HDM decoder after a D3hot->D0 soft reset */
+	int     (*pm_restore)(struct vfio_pci_core_device *vdev);
+	/* Run the CXL reset sequence; the core holds memory_lock across it */
+	int     (*reset)(struct vfio_pci_core_device *vdev);
+
+	/* Pinned per bound CXL device so vfio-cxl cannot unload under usage */
+	struct module *owner;
+};
+
+int vfio_pci_core_register_cxl_ops(const struct vfio_cxl_ops *ops);
+void vfio_pci_core_unregister_cxl_ops(const struct vfio_cxl_ops *ops);
+int vfio_pci_core_cxl_reset(struct vfio_pci_core_device *vdev);
+
 #if IS_ENABLED(CONFIG_VFIO_PCI_DMABUF)
 int vfio_pci_core_fill_phys_vec(struct phys_vec *phys_vec,
 				struct vfio_region_dma_range *dma_ranges,
@@ -99,6 +126,8 @@ struct vfio_pci_core_device {
 	struct vfio_device	vdev;
 	struct pci_dev		*pdev;
 	const struct vfio_pci_device_ops *pci_ops;
+	const struct vfio_cxl_ops *cxl_ops;
+	struct vfio_cxl_state	*cxl;
 	void __iomem		*barmap[PCI_STD_NUM_BARS];
 	bool			bar_mmap_supported[PCI_STD_NUM_BARS];
 	/* Flags modified at runtime - dedicated storage unit */
@@ -129,6 +158,7 @@ struct vfio_pci_core_device {
 	bool			disable_idle_d3:1;
 	bool			nointxmask:1;
 	bool			disable_vga:1;
+	bool			disable_cxl:1;
 	/* Flags modified at runtime - dedicated storage unit */
 	bool			needs_reset;
 	bool			pm_intx_masked;
@@ -149,6 +179,10 @@ struct vfio_pci_core_device {
 	struct notifier_block	nb;
 	struct rw_semaphore	memory_lock;
 	struct list_head	dmabufs;
+	/* BAR sub-range a provider keeps off mmap, reached only through a trap */
+	int			mmap_exclude_bar;
+	u64			mmap_exclude_start;
+	u64			mmap_exclude_len;
 };
 
 enum vfio_pci_io_width {
@@ -163,6 +197,9 @@ int vfio_pci_core_register_dev_region(struct vfio_pci_core_device *vdev,
 				      unsigned int type, unsigned int subtype,
 				      const struct vfio_pci_regops *ops,
 				      size_t size, u32 flags, void *data);
+void vfio_pci_core_unregister_dev_region(struct vfio_pci_core_device *vdev);
+void vfio_pci_core_set_mmap_exclude(struct vfio_pci_core_device *vdev, int bar,
+				    u64 start, u64 len);
 void vfio_pci_core_close_device(struct vfio_device *core_vdev);
 int vfio_pci_core_init_dev(struct vfio_device *core_vdev);
 void vfio_pci_core_release_dev(struct vfio_device *core_vdev);
